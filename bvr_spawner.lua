@@ -68,11 +68,8 @@ function DynamicBVRMission:AttemptSpawn(spawner, templateName)
         spawnedGroup = result
         success = true
         env.info("[SPAWNER] Spawn SUCCESS for template: " .. templateName .. " | Spawned group: " ..
-                     spawnedGroup:GetName())
-
-        -- Add to tracking and setup
+                     spawnedGroup:GetName()) -- Add to tracking (no need to setup individual event handlers anymore)
         self.SpawnedRedGroups:AddGroup(spawnedGroup)
-        self:SetupGroupEventHandlers(spawnedGroup)
     else
         env.warning("[SPAWNER] Spawn FAILED for template: " .. templateName ..
                         (result and (" | Error: " .. tostring(result)) or ""))

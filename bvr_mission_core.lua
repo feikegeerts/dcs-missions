@@ -73,8 +73,22 @@ function DynamicBVRMission:UpdateWaveMessage()
         currentWave = 0
     end
 
-    local messageText = string.format("WAVE STATUS: %d/%d | ACTIVE: %d | REMAINING: %d", currentWave, self.TotalWaves,
-        remainingGroups, remainingWaves)
+    -- Cost overview (from BVR_CostTracker)
+    local costStats = BVR_CostTracker:GetStats()
+    local function fmt(val)
+        return string.format("%d", val or 0)
+    end
+    local function fmtCost(val)
+        return string.format("$%.2fM", val or 0)
+    end
+    local costText = string.format(
+        "\nCOST OVERVIEW:\n" .. "BLUE  | Planes Lost: %s | Missiles Fired: %s | Total: %s\n" ..
+            "RED   | Planes Lost: %s | Missiles Fired: %s | Total: %s", fmt(costStats.blue.aircraftLost),
+        fmt(costStats.blue.missilesFired), fmtCost(costStats.blue.totalCost), fmt(costStats.red.aircraftLost),
+        fmt(costStats.red.missilesFired), fmtCost(costStats.red.totalCost))
+
+    local messageText = string.format("WAVE STATUS: %d/%d | ACTIVE: %d | REMAINING: %d%s", currentWave, self.TotalWaves,
+        remainingGroups, remainingWaves, costText)
 
     -- Display message for 15 seconds (not permanent)
     MESSAGE:New(messageText, 15):ToAll()
@@ -195,11 +209,11 @@ function DynamicBVRMission:Initialize()
     self:InitializeSpawners()
 
     -- Show initial wave status
-    self:UpdateWaveMessage()
-
-    -- Start monitoring after a delay to ensure everything is loaded
+    self:UpdateWaveMessage() -- Start monitoring after a delay to ensure everything is loaded
     TIMER:New(function()
         self:StartPlayerMonitoring()
+        self:SetupMissileEventHandler() -- Start missile event tracking
+        self:SetupGlobalEventHandlers() -- Start global aircraft destruction tracking
         env.info("Dynamic BVR Mission fully initialized!")
     end):Start(5)
 end

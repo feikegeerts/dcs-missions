@@ -9,8 +9,11 @@ from watchdog.events import FileSystemEventHandler
 # CONFIGURATION
 MIZ_FILE = "Dynamic BVR mission.miz"
 MAIN_LUA_FILE = "bvr_main.lua"
-LUA_FILES = ["bvr_main.lua", "bvr_mission_core.lua", 
-             "bvr_spawner.lua", "bvr_events.lua", "bvr_menu.lua"]
+LUA_FILES = [
+    "bvr_main.lua", "bvr_mission_core.lua", 
+    "bvr_spawner.lua", "bvr_events.lua", "bvr_menu.lua",
+    "bvr_costs.lua", "bvr_cost_tracker.lua"
+]
 TMP_DIR = "_miz_temp_unpack"
 
 class LuaChangeHandler(FileSystemEventHandler):

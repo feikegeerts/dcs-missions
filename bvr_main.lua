@@ -8,6 +8,11 @@ dofile(scriptPath .. "bvr_mission_core.lua")
 dofile(scriptPath .. "bvr_spawner.lua")
 dofile(scriptPath .. "bvr_events.lua")
 dofile(scriptPath .. "bvr_menu.lua")
+dofile(scriptPath .. "bvr_costs.lua") -- Load cost mapping
+local CostTracker = dofile(scriptPath .. "bvr_cost_tracker.lua")
+
+-- Create global cost tracker instance
+BVR_CostTracker = CostTracker:New()
 
 -- Create global instance
 DynamicBVR = DynamicBVRMission:New()
