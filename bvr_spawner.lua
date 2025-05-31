@@ -25,7 +25,7 @@ function DynamicBVRMission:InitializeSpawners()
                     :InitCleanUp(300) -- Cleanup after 5 minutes
                     :InitDelayOff() -- No spawn delay
 
-                    spawner.TemplateGroupName = groupName -- Store template name for later logging
+                    spawner.TemplateGroupName = groupName
                     table.insert(self.Spawners[direction], spawner)
                     templatesFound = templatesFound + 1
                     env.info("Created spawner for: " .. groupName)
@@ -112,18 +112,15 @@ function DynamicBVRMission:SpawnRedFighters()
     end
 
     -- Calculate number of enemy jets based on player count
-    -- For solo play, spawn 1-3 enemy jets
-    -- For multiplayer, spawn 1-3 jets per player
-    local minJetsPerPlayer = 1
-    local maxJetsPerPlayer = 3
+    -- For solo play, spawn 1-2 enemy jets
+    -- For multiplayer, spawn exactly 2 jets per player
+    local minJetsPerPlayer = 2
+    local maxJetsPerPlayer = 2
     local totalRedJets
     if currentBluePlayers == 1 then
-        totalRedJets = math.random(1, 3)
+        totalRedJets = math.random(1, 2)
     else
-        totalRedJets = 0
-        for i = 1, currentBluePlayers do
-            totalRedJets = totalRedJets + math.random(minJetsPerPlayer, maxJetsPerPlayer)
-        end
+        totalRedJets = currentBluePlayers * 2
     end
 
     env.info("[SPAWNER] Will attempt to spawn up to " .. totalRedJets .. " red jets from direction " ..

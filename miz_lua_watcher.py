@@ -19,6 +19,8 @@ class LuaChangeHandler(FileSystemEventHandler):
         self.miz_path = miz_path
         self.tmp_dir = tmp_dir
         self.last_mtimes = {file: 0 for file in lua_files}
+        # Always update the miz on startup to ensure Lua files are up to date
+        self.update_miz()
 
     def on_modified(self, event):
         for lua_file in self.lua_files:
