@@ -63,66 +63,6 @@ function DynamicBVRMission:CountBluePlayers()
     return count
 end
 
-function DynamicBVRMission:UpdateWaveMessage()
-    local remainingGroups = self.SpawnedRedGroups:Count()
-    local remainingWaves = #self.AvailableDirections
-    local currentWave = self.TotalWaves - remainingWaves
-
-    -- If no RED groups have ever spawned and all directions are available, show 0
-    if currentWave == 0 and remainingGroups == 0 and remainingWaves == self.TotalWaves then
-        currentWave = 0
-    end
-
-    -- Cost overview (from BVR_CostTracker)
-    local costStats = BVR_CostTracker:GetStats()
-    local function fmt(val)
-        return string.format("%d", val or 0)
-    end
-    local function fmtCost(val)
-        return string.format("$%.2fM", val or 0)
-    end
-    local costText = string.format(
-        "\nCOST OVERVIEW:\n" .. "BLUE  | Planes Lost: %s | Missiles Fired: %s | Total: %s\n" ..
-            "RED   | Planes Lost: %s | Missiles Fired: %s | Total: %s", fmt(costStats.blue.aircraftLost),
-        fmt(costStats.blue.missilesFired), fmtCost(costStats.blue.totalCost), fmt(costStats.red.aircraftLost),
-        fmt(costStats.red.missilesFired), fmtCost(costStats.red.totalCost))
-
-    local messageText = string.format("WAVE STATUS: %d/%d | ACTIVE: %d | REMAINING: %d%s", currentWave, self.TotalWaves,
-        remainingGroups, remainingWaves, costText)
-
-    -- Display message for 15 seconds (not permanent)
-    MESSAGE:New(messageText, 15):ToAll()
-
-    env.info("Wave status updated: " .. messageText)
-end
-
-function DynamicBVRMission:CleanupDeadGroups()
-    local removedGroups = 0
-    local groupsToRemove = {}
-
-    -- Find dead groups that need to be removed
-    self.SpawnedRedGroups:ForEachGroup(function(group)
-        if not group:IsAlive() or group:GetSize() == 0 then
-            table.insert(groupsToRemove, group:GetName())
-            env.info("Found dead group to remove: " .. group:GetName())
-        end
-    end)
-
-    -- Remove dead groups from tracking
-    for _, groupName in pairs(groupsToRemove) do
-        self.SpawnedRedGroups:Remove(groupName, true)
-        removedGroups = removedGroups + 1
-        env.info("Removed dead group from tracking: " .. groupName)
-    end
-
-    if removedGroups > 0 then
-        env.info("Cleanup complete - removed " .. removedGroups .. " dead groups")
-        self:UpdateWaveMessage()
-    end
-
-    return removedGroups
-end
-
 function DynamicBVRMission:CleanupSpawnedGroups()
     env.info("Cleaning up spawned RED groups using MOOSE...")
 
@@ -142,10 +82,9 @@ function DynamicBVRMission:CleanupSpawnedGroups()
     self.CurrentWave = 0
 
     -- Update wave message
-    self:UpdateWaveMessage()
+    self:UpdatePermanentCostDisplay()
 end
 
--- Add a function to validate and cleanup problematic templates
 function DynamicBVRMission:ValidateAndCleanupTemplates()
     env.info("Validating and cleaning up template groups...")
 
@@ -164,7 +103,56 @@ function DynamicBVRMission:ValidateAndCleanupTemplates()
 
     env.info("Template validation and cleanup complete")
 end
+-- Add this function to your bvr_mission_core.lua file
 
+function DynamicBVRMission:UpdatePermanentCostDisplay()
+    local remainingWaves = #self.AvailableDirections
+    local currentWave = self.TotalWaves - remainingWaves
+
+    -- Count individual RED aircraft units (not groups)
+    local activeRedAircraft = 0
+    self.SpawnedRedGroups:ForEachGroup(function(group)
+        if group:IsAlive() then
+            activeRedAircraft = activeRedAircraft + group:GetSize()
+        end
+    end)
+
+    -- If no RED groups have ever spawned and all directions are available, show 0
+    if currentWave == 0 and activeRedAircraft == 0 and remainingWaves == self.TotalWaves then
+        currentWave = 0
+    end
+
+    -- Get cost overview from BVR_CostTracker
+    local costStats = BVR_CostTracker:GetStats()
+
+    -- Determine who's winning based on cost efficiency
+    local winner = ""
+    local costDiff = math.abs(costStats.blue.totalCost - costStats.red.totalCost)
+    if costStats.blue.totalCost > costStats.red.totalCost then
+        winner = string.format("RED WINNING (+$%.1fM)", costDiff)
+    elseif costStats.red.totalCost > costStats.blue.totalCost then
+        winner = string.format("BLUE WINNING (+$%.1fM)", costDiff)
+    else
+        winner = "TIED"
+    end
+
+    local messageText = string.format("═══ BVR MISSION STATUS ═══\n" ..
+                                          "WAVE: %d/%d | ACTIVE RED: %d | REMAINING: %d\n\n" .. "COST BATTLE:\n" ..
+                                          "BLUE: %d lost, %d missiles = $%.1fM\n" ..
+                                          "RED:  %d lost, %d missiles = $%.1fM\n\n" .. "%s", currentWave,
+        self.TotalWaves, activeRedAircraft, remainingWaves, costStats.blue.aircraftLost, costStats.blue.missilesFired,
+        costStats.blue.totalCost, costStats.red.aircraftLost, costStats.red.missilesFired, costStats.red.totalCost,
+        winner)
+
+    -- Use MOOSE MESSAGE with ClearScreen parameter to prevent stacking
+    -- According to documentation, ClearScreen is the 4th parameter in MESSAGE:New()
+    MESSAGE:New(messageText, 999, "BVR Status", true):ToAll()
+
+    env.info("Cost display updated: Wave " .. currentWave .. "/" .. self.TotalWaves .. " | Active aircraft: " ..
+                 activeRedAircraft .. " | Remaining waves: " .. remainingWaves)
+end
+
+-- Update the StartPlayerMonitoring function to use the new display
 function DynamicBVRMission:StartPlayerMonitoring()
     env.info("Starting player monitoring with MOOSE Scheduler...")
 
@@ -196,20 +184,50 @@ function DynamicBVRMission:StartPlayerMonitoring()
         end
     end, {}, 0, 15) -- Start immediately, repeat every 15 seconds
 
-    -- Separate scheduler for wave status updates (once per minute)
-    self.WaveMessageScheduler = SCHEDULER:New(nil, function()
-        self:UpdateWaveMessage()
+    -- Separate scheduler for cost display updates (once per minute)
+    self.CostDisplayScheduler = SCHEDULER:New(nil, function()
+        self:UpdatePermanentCostDisplay()
     end, {}, 10, 60) -- Start after 10 seconds, repeat every 60 seconds
 end
 
+-- Update the CleanupDeadGroups function to use new display
+function DynamicBVRMission:CleanupDeadGroups()
+    local removedGroups = 0
+    local groupsToRemove = {}
+
+    -- Find dead groups that need to be removed
+    self.SpawnedRedGroups:ForEachGroup(function(group)
+        if not group:IsAlive() or group:GetSize() == 0 then
+            table.insert(groupsToRemove, group:GetName())
+            env.info("Found dead group to remove: " .. group:GetName())
+        end
+    end)
+
+    -- Remove dead groups from tracking
+    for _, groupName in pairs(groupsToRemove) do
+        self.SpawnedRedGroups:Remove(groupName, true)
+        removedGroups = removedGroups + 1
+        env.info("Removed dead group from tracking: " .. groupName)
+    end
+
+    if removedGroups > 0 then
+        env.info("Cleanup complete - removed " .. removedGroups .. " dead groups")
+        self:UpdatePermanentCostDisplay()
+    end
+
+    return removedGroups
+end
+
+-- Update the Initialize function to use new display
 function DynamicBVRMission:Initialize()
     env.info("Initializing Dynamic BVR Mission with MOOSE...")
 
     -- Initialize spawners
     self:InitializeSpawners()
 
-    -- Show initial wave status
-    self:UpdateWaveMessage() -- Start monitoring after a delay to ensure everything is loaded
+    -- Show initial cost display
+    self:UpdatePermanentCostDisplay()
+
     TIMER:New(function()
         self:StartPlayerMonitoring()
         self:SetupMissileEventHandler() -- Start missile event tracking

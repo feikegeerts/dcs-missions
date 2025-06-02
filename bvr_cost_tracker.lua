@@ -1,6 +1,3 @@
--- bvr_cost_tracker.lua
--- Standalone cost tracking module for DCS missions
--- Usage: local CostTracker = dofile("bvr_cost_tracker.lua")
 local CostTracker = {}
 CostTracker.__index = CostTracker
 
@@ -38,44 +35,42 @@ end
 
 function CostTracker:OnAircraftLost(coalition, typeName, costTable)
     if not (coalition and typeName and costTable) then
-        env.info("[BVR DEBUG] OnAircraftLost called with missing parameters: coalition=" .. tostring(coalition) ..
-                     ", typeName=" .. tostring(typeName))
+        env.info("OnAircraftLost: Missing parameters")
         return
     end
-    env.info("[BVR DEBUG] OnAircraftLost: coalition param value=" .. tostring(coalition) .. ", type=" .. type(coalition))
-    env.info("[BVR DEBUG] OnAircraftLost: self instance=" .. tostring(self))
-    local c = self.stats[coalition]
-    if not c then
-        env.info("[BVR DEBUG] OnAircraftLost: No stats table for coalition " .. tostring(coalition))
+
+    local stats = self.stats[coalition]
+    if not stats then
+        env.info("OnAircraftLost: Invalid coalition " .. tostring(coalition))
         return
     end
-    env.info("[BVR DEBUG] OnAircraftLost: aircraftLost before increment=" .. tostring(c.aircraftLost))
-    c.aircraftLost = c.aircraftLost + 1
-    env.info("[BVR DEBUG] OnAircraftLost: aircraftLost after increment=" .. tostring(c.aircraftLost))
+
+    stats.aircraftLost = stats.aircraftLost + 1
     local cost = costTable[typeName] or 0
-    env.info("[BVR DEBUG] Aircraft cost lookup: typeName=" .. tostring(typeName) .. ", cost=$" .. tostring(cost) .. "M")
-    c.totalCost = c.totalCost + cost
-    env.info("[BVR DEBUG] Aircraft lost: coalition=" .. tostring(coalition) .. ", typeName=" .. tostring(typeName) ..
-                 ", cost=$" .. tostring(cost) .. "M, totalCost=$" .. tostring(c.totalCost) .. "M")
+    stats.totalCost = stats.totalCost + cost
+
+    env.info(string.format("Aircraft lost: %s %s ($%.1fM) - Total: $%.2fM", coalition:upper(), typeName, cost,
+        stats.totalCost))
 end
 
 function CostTracker:OnMissileFired(coalition, typeName, costTable)
     if not (coalition and typeName and costTable) then
-        env.info("[BVR DEBUG] OnMissileFired called with missing parameters: coalition=" .. tostring(coalition) ..
-                     ", typeName=" .. tostring(typeName))
+        env.info("OnMissileFired: Missing parameters")
         return
     end
-    local c = self.stats[coalition]
-    if not c then
-        env.info("[BVR DEBUG] OnMissileFired: No stats table for coalition " .. tostring(coalition))
+
+    local stats = self.stats[coalition]
+    if not stats then
+        env.info("OnMissileFired: Invalid coalition " .. tostring(coalition))
         return
     end
-    c.missilesFired = c.missilesFired + 1
+
+    stats.missilesFired = stats.missilesFired + 1
     local cost = costTable[typeName] or 0
-    env.info("[BVR DEBUG] Missile cost lookup: typeName=" .. tostring(typeName) .. ", cost=$" .. tostring(cost) .. "M")
-    c.totalCost = c.totalCost + cost
-    env.info("[BVR DEBUG] Missile fired: coalition=" .. tostring(coalition) .. ", typeName=" .. tostring(typeName) ..
-                 ", cost=$" .. tostring(cost) .. "M, totalCost=$" .. tostring(c.totalCost) .. "M")
+    stats.totalCost = stats.totalCost + cost
+
+    env.info(string.format("Missile fired: %s %s ($%.2fM) - Total: $%.2fM", coalition:upper(), typeName, cost,
+        stats.totalCost))
 end
 
 function CostTracker:GetStats()

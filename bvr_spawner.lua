@@ -70,13 +70,13 @@ function DynamicBVRMission:AttemptSpawn(spawner, templateName)
         env.info("[SPAWNER] Spawn SUCCESS for template: " .. templateName .. " | Spawned group: " ..
                      spawnedGroup:GetName())
 
-        -- Store aircraft type for cost tracking
-        local firstUnit = spawnedGroup:GetFirstUnitAlive()
-        if firstUnit then
-            local aircraftType = firstUnit:GetTypeName()
-            if aircraftType then
-                self:StoreGroupAircraftType(spawnedGroup:GetName(), aircraftType)
-            end
+        -- Store aircraft type for cost tracking - IMPROVED METHOD
+        local aircraftType = self:GetSpawnedGroupAircraftType(spawnedGroup, templateName)
+        if aircraftType then
+            self:StoreGroupAircraftType(spawnedGroup:GetName(), aircraftType)
+            env.info("[SPAWNER] Stored aircraft type: " .. aircraftType .. " for group: " .. spawnedGroup:GetName())
+        else
+            env.warning("[SPAWNER] Could not determine aircraft type for group: " .. spawnedGroup:GetName())
         end
 
         -- Add to tracking (no need to setup individual event handlers anymore)
@@ -87,6 +87,142 @@ function DynamicBVRMission:AttemptSpawn(spawner, templateName)
     end
 
     return success, spawnedGroup
+end
+
+-- New helper function to get aircraft type from spawned group
+function DynamicBVRMission:GetSpawnedGroupAircraftType(spawnedGroup, templateName)
+    local aircraftType = nil
+
+    -- Method 1: Try from first alive unit in spawned group
+    local firstUnit = spawnedGroup:GetFirstUnitAlive()
+    if firstUnit then
+        if firstUnit.GetTypeName and firstUnit:GetTypeName() then
+            aircraftType = firstUnit:GetTypeName()
+            env.info("[SPAWNER] Got aircraft type from spawned unit: " .. aircraftType)
+            return aircraftType
+        end
+    end
+
+    -- Method 2: Try from template group (if it still exists)
+    local templateGroup = Group.getByName(templateName)
+    if templateGroup then
+        local templateUnits = templateGroup:getUnits()
+        if templateUnits and #templateUnits > 0 then
+            for _, unit in ipairs(templateUnits) do
+                if unit and unit.getTypeName then
+                    aircraftType = unit:getTypeName()
+                    env.info("[SPAWNER] Got aircraft type from template: " .. aircraftType)
+                    return aircraftType
+                end
+            end
+        end
+    end
+
+    -- Method 3: Try from DCS group units
+    local dcsGroup = Group.getByName(spawnedGroup:GetName())
+    if dcsGroup and dcsGroup:isExist() then
+        local units = dcsGroup:getUnits()
+        if units and #units > 0 then
+            for _, unit in ipairs(units) do
+                if unit and unit:isExist() and unit.getTypeName then
+                    aircraftType = unit:getTypeName()
+                    env.info("[SPAWNER] Got aircraft type from DCS group: " .. aircraftType)
+                    return aircraftType
+                end
+            end
+        end
+    end
+
+    -- Method 4: Try with a delay (sometimes units need time to fully spawn)
+    timer.scheduleFunction(function()
+        local delayedType = nil
+        local delayedFirstUnit = spawnedGroup:GetFirstUnitAlive()
+        if delayedFirstUnit and delayedFirstUnit.GetTypeName then
+            delayedType = delayedFirstUnit:GetTypeName()
+            if delayedType then
+                self:StoreGroupAircraftType(spawnedGroup:GetName(), delayedType)
+                env.info("[SPAWNER] Got aircraft type with delay: " .. delayedType .. " for group: " ..
+                             spawnedGroup:GetName())
+            end
+        end
+    end, nil, timer.getTime() + 2)
+
+    return aircraftType
+end
+
+-- Enhanced StoreGroupAircraftType function
+function DynamicBVRMission:StoreGroupAircraftType(groupName, aircraftType)
+    if not self.GroupAircraftTypes then
+        self.GroupAircraftTypes = {}
+    end
+
+    if groupName and aircraftType then
+        self.GroupAircraftTypes[groupName] = aircraftType
+        env.info("[STORAGE] Stored aircraft type: " .. aircraftType .. " for group: " .. groupName)
+    else
+        env.warning("[STORAGE] Cannot store aircraft type - missing groupName or aircraftType")
+    end
+end
+
+-- New helper function to get aircraft type from spawned group
+function DynamicBVRMission:GetSpawnedGroupAircraftType(spawnedGroup, templateName)
+    local aircraftType = nil
+
+    -- Method 1: Try from first alive unit in spawned group
+    local firstUnit = spawnedGroup:GetFirstUnitAlive()
+    if firstUnit then
+        if firstUnit.GetTypeName and firstUnit:GetTypeName() then
+            aircraftType = firstUnit:GetTypeName()
+            env.info("[SPAWNER] Got aircraft type from spawned unit: " .. aircraftType)
+            return aircraftType
+        end
+    end
+
+    -- Method 2: Try from template group (if it still exists)
+    local templateGroup = Group.getByName(templateName)
+    if templateGroup then
+        local templateUnits = templateGroup:getUnits()
+        if templateUnits and #templateUnits > 0 then
+            for _, unit in ipairs(templateUnits) do
+                if unit and unit.getTypeName then
+                    aircraftType = unit:getTypeName()
+                    env.info("[SPAWNER] Got aircraft type from template: " .. aircraftType)
+                    return aircraftType
+                end
+            end
+        end
+    end
+
+    -- Method 3: Try from DCS group units
+    local dcsGroup = Group.getByName(spawnedGroup:GetName())
+    if dcsGroup and dcsGroup:isExist() then
+        local units = dcsGroup:getUnits()
+        if units and #units > 0 then
+            for _, unit in ipairs(units) do
+                if unit and unit:isExist() and unit.getTypeName then
+                    aircraftType = unit:getTypeName()
+                    env.info("[SPAWNER] Got aircraft type from DCS group: " .. aircraftType)
+                    return aircraftType
+                end
+            end
+        end
+    end
+
+    -- Method 4: Try with a delay (sometimes units need time to fully spawn)
+    timer.scheduleFunction(function()
+        local delayedType = nil
+        local delayedFirstUnit = spawnedGroup:GetFirstUnitAlive()
+        if delayedFirstUnit and delayedFirstUnit.GetTypeName then
+            delayedType = delayedFirstUnit:GetTypeName()
+            if delayedType then
+                self:StoreGroupAircraftType(spawnedGroup:GetName(), delayedType)
+                env.info("[SPAWNER] Got aircraft type with delay: " .. delayedType .. " for group: " ..
+                             spawnedGroup:GetName())
+            end
+        end
+    end, nil, timer.getTime() + 2)
+
+    return aircraftType
 end
 
 function DynamicBVRMission:SpawnRedFighters()
@@ -235,7 +371,7 @@ function DynamicBVRMission:SpawnRedFighters()
     table.remove(self.AvailableDirections, randomIndex)
 
     -- Update wave counter message
-    self:UpdateWaveMessage()
+    self:UpdatePermanentCostDisplay()
 
     -- Only announce TAKEOFF for the first wave
     local currentWaveNum = self.TotalWaves - #self.AvailableDirections
