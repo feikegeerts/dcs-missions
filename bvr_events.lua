@@ -17,6 +17,11 @@ function DynamicBVRMission:SetupGlobalEventHandlers()
     -- Track processed aircraft to prevent double counting
     self.ProcessedAircraft = {}
 
+    -- Track aircraft types by group name for fallback lookup
+    if not self.GroupAircraftTypes then
+        self.GroupAircraftTypes = {}
+    end
+
     function self.GlobalEventHandler:OnEventDead(EventData)
         env.info("[BVR DEBUG] OnEventDead triggered - calling HandleAircraftLoss")
         DynamicBVR:HandleAircraftLoss(EventData, "Dead")
@@ -181,6 +186,12 @@ function DynamicBVRMission:HandleAircraftLoss(EventData, eventType)
                 end
             end
 
+            -- NEW: Fallback to stored aircraft type if all other methods failed
+            if not unitType and self.GroupAircraftTypes and self.GroupAircraftTypes[deadGroupName] then
+                unitType = self.GroupAircraftTypes[deadGroupName]
+                env.info("[BVR DEBUG] Got RED aircraft type from stored group data: " .. tostring(unitType))
+            end
+
             if unitType then
                 -- Debug check before calling
                 env.info("[BVR DEBUG] About to call BVR_CostTracker:OnAircraftLost for RED with type: " .. unitType)
@@ -211,6 +222,12 @@ function DynamicBVRMission:HandleAircraftLoss(EventData, eventType)
 
             -- Remove from our tracking set
             self.SpawnedRedGroups:Remove(deadGroupName, true)
+
+            -- Clean up stored aircraft type data
+            if self.GroupAircraftTypes and self.GroupAircraftTypes[deadGroupName] then
+                self.GroupAircraftTypes[deadGroupName] = nil
+                env.info("[BVR DEBUG] Cleaned up stored aircraft type for group: " .. deadGroupName)
+            end
 
             -- Update wave counter after group destruction
             self:UpdateWaveMessage()
@@ -296,6 +313,15 @@ function DynamicBVRMission:HandleAircraftLoss(EventData, eventType)
             end
         end
     end
+end
+
+-- NEW: Helper function to store aircraft type when groups are spawned
+function DynamicBVRMission:StoreGroupAircraftType(groupName, aircraftType)
+    if not self.GroupAircraftTypes then
+        self.GroupAircraftTypes = {}
+    end
+    self.GroupAircraftTypes[groupName] = aircraftType
+    env.info("[BVR DEBUG] Stored aircraft type for group " .. groupName .. ": " .. aircraftType)
 end
 
 function DynamicBVRMission:SetupMissileEventHandler()

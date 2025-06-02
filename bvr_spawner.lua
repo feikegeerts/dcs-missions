@@ -68,7 +68,18 @@ function DynamicBVRMission:AttemptSpawn(spawner, templateName)
         spawnedGroup = result
         success = true
         env.info("[SPAWNER] Spawn SUCCESS for template: " .. templateName .. " | Spawned group: " ..
-                     spawnedGroup:GetName()) -- Add to tracking (no need to setup individual event handlers anymore)
+                     spawnedGroup:GetName())
+
+        -- Store aircraft type for cost tracking
+        local firstUnit = spawnedGroup:GetFirstUnitAlive()
+        if firstUnit then
+            local aircraftType = firstUnit:GetTypeName()
+            if aircraftType then
+                self:StoreGroupAircraftType(spawnedGroup:GetName(), aircraftType)
+            end
+        end
+
+        -- Add to tracking (no need to setup individual event handlers anymore)
         self.SpawnedRedGroups:AddGroup(spawnedGroup)
     else
         env.warning("[SPAWNER] Spawn FAILED for template: " .. templateName ..
