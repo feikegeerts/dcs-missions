@@ -140,9 +140,8 @@ function DynamicBVRMission:UpdatePermanentCostDisplay()
         winner = "TIED"
     end
 
-    local messageText = string.format("═══ BVR MISSION STATUS ═══\n" ..
-                                          "WAVE: %d/%d | ACTIVE RED: %d | REMAINING: %d\n\n" .. "COST BATTLE:\n" ..
-                                          "BLUE: %d lost, %d missiles = $%.1fM\n" ..
+    local messageText = string.format("BVR MISSION STATUS\n" .. "WAVE: %d/%d | ACTIVE RED: %d | REMAINING: %d\n\n" ..
+                                          "BATTLE COSTS:\n" .. "BLUE: %d lost, %d missiles = $%.1fM\n" ..
                                           "RED:  %d lost, %d missiles = $%.1fM\n\n" .. "%s", currentWave,
         self.TotalWaves, activeRedAircraft, remainingWaves, costStats.blue.aircraftLost, costStats.blue.missilesFired,
         costStats.blue.totalCost, costStats.red.aircraftLost, costStats.red.missilesFired, costStats.red.totalCost,
@@ -150,7 +149,7 @@ function DynamicBVRMission:UpdatePermanentCostDisplay()
 
     -- Use MOOSE MESSAGE with ClearScreen parameter to prevent stacking
     -- According to documentation, ClearScreen is the 4th parameter in MESSAGE:New()
-    MESSAGE:New(messageText, 999, "BVR Status", true):ToAll()
+    MESSAGE:New(messageText, 999, "", true):ToAll()
 
     env.info("Cost display updated: Wave " .. currentWave .. "/" .. self.TotalWaves .. " | Active aircraft: " ..
                  activeRedAircraft .. " | Remaining waves: " .. remainingWaves)
