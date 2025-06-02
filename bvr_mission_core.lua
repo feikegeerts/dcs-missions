@@ -4,6 +4,7 @@
 DynamicBVRMission = {}
 DynamicBVRMission.__index = DynamicBVRMission
 
+-- Add this to the DynamicBVRMission:New() function
 function DynamicBVRMission:New()
     local self = setmetatable({}, DynamicBVRMission)
 
@@ -33,6 +34,9 @@ function DynamicBVRMission:New()
     self.CurrentWave = 0
     self.TotalWaves = 5
     self.WaveStatusMessage = nil -- For permanent message display
+
+    -- Initialize loss tracking
+    self:InitializeLossTracking()
 
     return self
 end

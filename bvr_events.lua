@@ -35,21 +35,53 @@ function DynamicBVRMission:HandleAircraftLoss(EventData, eventType)
         return
     end
 
-    -- Create robust unique identifier using multiple sources
     local unitName = EventData.IniUnit:GetName()
     local groupName = EventData.IniGroup and EventData.IniGroup:GetName() or "unknown"
     local objectId = EventData.IniDCSUnit and EventData.IniDCSUnit:getID() or "unknown"
 
-    -- Combine multiple identifiers for uniqueness
-    local aircraftId = groupName .. "_" .. unitName .. "_" .. tostring(objectId)
+    -- Get the birth time of the aircraft to create a truly unique identifier
+    local birthTime = "unknown"
+    if EventData.IniDCSUnit and EventData.IniDCSUnit.getLife then
+        -- Try to get unique birth time or life data
+        local life = EventData.IniDCSUnit:getLife()
+        if life then
+            -- Use initial life as a pseudo birth time identifier
+            birthTime = tostring(life)
+        end
+    end
+
+    -- If we can't get birth time, use the current mission time when we first see this unit
+    if birthTime == "unknown" then
+        local currentTime = timer.getTime()
+        -- Create a birth time tracking table if it doesn't exist
+        if not self.UnitBirthTimes then
+            self.UnitBirthTimes = {}
+        end
+
+        local unitKey = tostring(objectId) .. "_" .. unitName
+        if not self.UnitBirthTimes[unitKey] then
+            self.UnitBirthTimes[unitKey] = currentTime
+            birthTime = tostring(currentTime)
+        else
+            birthTime = tostring(self.UnitBirthTimes[unitKey])
+        end
+    end
+
+    -- Create unique identifier using Object ID + birth identifier
+    -- This ensures each aircraft spawn gets a unique ID even if Object ID is reused
+    local aircraftId = tostring(objectId) .. "_" .. birthTime
 
     if self.ProcessedAircraft[aircraftId] then
-        env.info("Aircraft " .. aircraftId .. " already processed for loss, skipping " .. eventType .. " event")
+        env.info("Aircraft with unique ID " .. aircraftId .. " (" .. unitName ..
+                     ") already processed for loss, skipping " .. eventType .. " event")
         return
     end
+
+    -- Mark this specific aircraft instance as processed permanently
     self.ProcessedAircraft[aircraftId] = true
 
-    env.info("Processing aircraft loss via " .. eventType .. " event for aircraft: " .. aircraftId)
+    env.info("Processing aircraft loss via " .. eventType .. " event for aircraft: " .. unitName .. " (Unique ID: " ..
+                 aircraftId .. ")")
 
     -- Get unit type and group info
     local unitType = nil
@@ -200,9 +232,35 @@ function DynamicBVRMission:HandleAircraftLoss(EventData, eventType)
     -- Check if it's a blue coalition aircraft (coalition 2 = blue)
     if unitCoalition == 2 then
         if unitType then
-            env.info("BLUE aircraft lost: " .. unitType)
+            env.info(
+                "BLUE aircraft lost: " .. unitType .. " (Player: " .. (EventData.IniUnit:GetPlayerName() or "AI") .. ")")
             BVR_CostTracker:OnAircraftLost("blue", unitType, BVR_COSTS.aircraft)
         end
+    end
+end
+
+-- Helper function to store aircraft type when groups are spawned
+function DynamicBVRMission:StoreGroupAircraftType(groupName, aircraftType)
+    if not self.GroupAircraftTypes then
+        self.GroupAircraftTypes = {}
+    end
+    self.GroupAircraftTypes[groupName] = aircraftType
+end
+
+-- Function to clear processed aircraft tracking and birth times (call when mission resets)
+function DynamicBVRMission:ClearProcessedAircraft()
+    env.info("Clearing processed aircraft tracking for fresh mission start")
+    self.ProcessedAircraft = {}
+    self.UnitBirthTimes = {}
+end
+
+-- Initialize birth time tracking in the constructor
+function DynamicBVRMission:InitializeLossTracking()
+    if not self.ProcessedAircraft then
+        self.ProcessedAircraft = {}
+    end
+    if not self.UnitBirthTimes then
+        self.UnitBirthTimes = {}
     end
 end
 
