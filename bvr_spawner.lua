@@ -1,383 +1,192 @@
--- BVR Spawner Module
--- Contains all spawning related functionality
+-- Debug version of spawner initialization
+-- Add this to your bvr_spawner.lua to troubleshoot
 function DynamicBVRMission:InitializeSpawners()
-    env.info("Initializing MOOSE Spawners...")
+    env.info("=== DEBUG: Starting spawner initialization ===")
 
-    -- For each direction, find template groups and create MOOSE spawners
-    for _, direction in pairs({"North", "Northeast", "East", "Southeast", "South"}) do
-        local templatesFound = 0
-        local prefix = "Red_" .. direction .. "_"
+    -- Define spawn zones with debugging
+    self.SpawnZones = {"BVR_Zone_North", "BVR_Zone_Northeast", "BVR_Zone_East", "BVR_Zone_Southeast", "BVR_Zone_South"}
+    env.info("DEBUG: Defined " .. #self.SpawnZones .. " spawn zones")
 
-        -- Create a SET to find all RED groups matching this direction strictly
-        local templateSet = SET_GROUP:New():FilterCoalitions("red"):FilterCategoryAirplane():FilterStart()
-
-        templateSet:ForEachGroup(function(templateGroup)
-            local groupName = templateGroup:GetName()
-            local isAlive = templateGroup:IsAlive()
-            -- Only match groups with exact prefix (e.g., Red_North_*)
-            if string.sub(groupName, 1, #prefix) == prefix then
-                if isAlive == false then
-                    local unitCount = templateGroup:GetSize()
-                    env.info("[SPAWNER INIT] Found template: " .. groupName .. " | Units: " .. tostring(unitCount))
-
-                    -- Create spawner with improved settings
-                    local spawner = SPAWN:New(groupName):InitLimit(10, 0) -- Allow more spawns, auto-clean old ones
-                    :InitCleanUp(300) -- Cleanup after 5 minutes
-                    :InitDelayOff() -- No spawn delay
-
-                    spawner.TemplateGroupName = groupName
-                    table.insert(self.Spawners[direction], spawner)
-                    templatesFound = templatesFound + 1
-                    env.info("Created spawner for: " .. groupName)
-                else
-                    env.warning("[SPAWNER INIT] WARNING: Template group '" .. groupName ..
-                                    "' is ALIVE at mission start! This will prevent MOOSE from spawning from this template.")
-
-                    -- Try to force destroy the template if it exists but shouldn't be alive
-                    local dcsGroup = Group.getByName(groupName)
-                    if dcsGroup and dcsGroup:isExist() then
-                        env.info("[SPAWNER INIT] Attempting to force destroy alive template: " .. groupName)
-                        dcsGroup:destroy()
-                        -- Wait a moment and try to create spawner anyway
-                        timer.scheduleFunction(function()
-                            local spawner = SPAWN:New(groupName):InitLimit(10, 0):InitCleanUp(300):InitDelayOff()
-
-                            spawner.TemplateGroupName = groupName
-                            table.insert(self.Spawners[direction], spawner)
-                            env.info("Created spawner for previously alive template: " .. groupName)
-                        end, nil, timer.getTime() + 1)
-                    end
-                end
-            end
-        end)
-
-        env.info("Direction " .. direction .. " has " .. templatesFound .. " spawner templates")
-    end
-end
-
--- New helper function for spawn attempts with better error handling
-function DynamicBVRMission:AttemptSpawn(spawner, templateName)
-    local success = false
-    local spawnedGroup = nil
-
-    -- Only use the standard spawn strategy
-    local ok, result = pcall(function()
-        return spawner:Spawn()
-    end)
-    if ok and result then
-        spawnedGroup = result
-        success = true
-        env.info("[SPAWNER] Spawn SUCCESS for template: " .. templateName .. " | Spawned group: " ..
-                     spawnedGroup:GetName())
-
-        -- Store aircraft type for cost tracking - IMPROVED METHOD
-        local aircraftType = self:GetSpawnedGroupAircraftType(spawnedGroup, templateName)
-        if aircraftType then
-            self:StoreGroupAircraftType(spawnedGroup:GetName(), aircraftType)
-            env.info("[SPAWNER] Stored aircraft type: " .. aircraftType .. " for group: " .. spawnedGroup:GetName())
+    -- Check if zones exist
+    for i, zoneName in ipairs(self.SpawnZones) do
+        local zone = ZONE:FindByName(zoneName)
+        if zone then
+            env.info("DEBUG: ✓ Found zone: " .. zoneName)
         else
-            env.warning("[SPAWNER] Could not determine aircraft type for group: " .. spawnedGroup:GetName())
+            env.warning("DEBUG: ✗ Missing zone: " .. zoneName)
         end
-
-        -- Add to tracking (no need to setup individual event handlers anymore)
-        self.SpawnedRedGroups:AddGroup(spawnedGroup)
-    else
-        env.warning("[SPAWNER] Spawn FAILED for template: " .. templateName ..
-                        (result and (" | Error: " .. tostring(result)) or ""))
     end
 
-    return success, spawnedGroup
+    -- Define fighter templates with debugging
+    self.FighterTemplates = {"Red_MiG29_Single", "Red_MiG29_Pair", "Red_MiG29_3ship", "Red_Su27_Single",
+                             "Red_Su27_Pair", "Red_Su27_3ship", "Red_Su33_Single", "Red_Su33_Pair", "Red_Su33_3ship"}
+    env.info("DEBUG: Defined " .. #self.FighterTemplates .. " fighter templates")
+
+    -- Check if templates exist
+    local validTemplates = {}
+    for i, templateName in ipairs(self.FighterTemplates) do
+        local templateGroup = GROUP:FindByName(templateName)
+        if templateGroup then
+            env.info("DEBUG: ✓ Found template: " .. templateName)
+            table.insert(validTemplates, templateName)
+        else
+            env.warning("DEBUG: ✗ Missing template: " .. templateName)
+        end
+    end
+
+    if #validTemplates == 0 then
+        env.error("DEBUG: ✗ NO VALID TEMPLATES FOUND! Cannot create spawner.")
+        env.error("DEBUG: Make sure template groups exist and have 'Late Activation' checked")
+        return
+    end
+
+    env.info("DEBUG: Found " .. #validTemplates .. " valid templates")
+
+    -- Try to create spawner with first valid template
+    local baseTemplate = validTemplates[1]
+    env.info("DEBUG: Creating spawner with base template: " .. baseTemplate)
+
+    local success, spawner = pcall(function()
+        return SPAWN:New(baseTemplate)
+    end)
+
+    if not success then
+        env.error("DEBUG: ✗ Failed to create base SPAWN object: " .. tostring(spawner))
+        return
+    end
+
+    env.info("DEBUG: ✓ Base SPAWN object created")
+
+    -- Try to configure spawner
+    success, self.RandomSpawner = pcall(function()
+        return spawner:InitRandomizeTemplate(validTemplates) -- Only use valid templates
+        :InitLimit(6, 3) -- Max 6 spawns, cleanup when 3 left
+        :InitCleanUp(600) -- 10 minute cleanup
+        :InitDelayOn(5, 15) -- 5-15 second spawn delay
+        :InitHeading(0, 360) -- Random heading
+        :InitHeight(20000, 40000) -- Random BVR altitude
+        :InitAIOnOff(true) -- Ensure AI active
+        :InitRepeatOnEngineShutDown() -- Auto-cleanup shutdowns
+        :InitRepeatOnLanding() -- Auto-cleanup landings
+        :OnSpawnGroup(function(spawnedGroup) -- Callback when spawned
+            env.info("DEBUG: Spawn callback triggered for: " .. spawnedGroup:GetName())
+            self:OnFighterSpawned(spawnedGroup)
+        end)
+    end)
+
+    if not success then
+        env.error("DEBUG: ✗ Failed to configure spawner: " .. tostring(self.RandomSpawner))
+        return
+    end
+
+    env.info("DEBUG: ✓ Spawner configured successfully")
+
+    -- Only add zone randomization if zones exist
+    if #self.SpawnZones > 0 then
+        local zonesExist = false
+        for _, zoneName in ipairs(self.SpawnZones) do
+            if ZONE:FindByName(zoneName) then
+                zonesExist = true
+                break
+            end
+        end
+
+        if zonesExist then
+            self.RandomSpawner:InitRandomizeZones(self.SpawnZones)
+            env.info("DEBUG: ✓ Zone randomization enabled")
+        else
+            env.warning("DEBUG: ⚠ No zones found - spawning at template positions")
+        end
+    end
+
+    env.info("=== DEBUG: Spawner initialization complete ===")
+    env.info("DEBUG: Templates: " .. #validTemplates .. ", Zones: " .. #self.SpawnZones)
 end
 
--- New helper function to get aircraft type from spawned group
-function DynamicBVRMission:GetSpawnedGroupAircraftType(spawnedGroup, templateName)
-    local aircraftType = nil
-
-    -- Method 1: Try from first alive unit in spawned group
-    local firstUnit = spawnedGroup:GetFirstUnitAlive()
-    if firstUnit then
-        if firstUnit.GetTypeName and firstUnit:GetTypeName() then
-            aircraftType = firstUnit:GetTypeName()
-            env.info("[SPAWNER] Got aircraft type from spawned unit: " .. aircraftType)
-            return aircraftType
-        end
-    end
-
-    -- Method 2: Try from template group (if it still exists)
-    local templateGroup = Group.getByName(templateName)
-    if templateGroup then
-        local templateUnits = templateGroup:getUnits()
-        if templateUnits and #templateUnits > 0 then
-            for _, unit in ipairs(templateUnits) do
-                if unit and unit.getTypeName then
-                    aircraftType = unit:getTypeName()
-                    env.info("[SPAWNER] Got aircraft type from template: " .. aircraftType)
-                    return aircraftType
-                end
-            end
-        end
-    end
-
-    -- Method 3: Try from DCS group units
-    local dcsGroup = Group.getByName(spawnedGroup:GetName())
-    if dcsGroup and dcsGroup:isExist() then
-        local units = dcsGroup:getUnits()
-        if units and #units > 0 then
-            for _, unit in ipairs(units) do
-                if unit and unit:isExist() and unit.getTypeName then
-                    aircraftType = unit:getTypeName()
-                    env.info("[SPAWNER] Got aircraft type from DCS group: " .. aircraftType)
-                    return aircraftType
-                end
-            end
-        end
-    end
-
-    -- Method 4: Try with a delay (sometimes units need time to fully spawn)
-    timer.scheduleFunction(function()
-        local delayedType = nil
-        local delayedFirstUnit = spawnedGroup:GetFirstUnitAlive()
-        if delayedFirstUnit and delayedFirstUnit.GetTypeName then
-            delayedType = delayedFirstUnit:GetTypeName()
-            if delayedType then
-                self:StoreGroupAircraftType(spawnedGroup:GetName(), delayedType)
-                env.info("[SPAWNER] Got aircraft type with delay: " .. delayedType .. " for group: " ..
-                             spawnedGroup:GetName())
-            end
-        end
-    end, nil, timer.getTime() + 2)
-
-    return aircraftType
-end
-
--- Enhanced StoreGroupAircraftType function
-function DynamicBVRMission:StoreGroupAircraftType(groupName, aircraftType)
-    if not self.GroupAircraftTypes then
-        self.GroupAircraftTypes = {}
-    end
-
-    if groupName and aircraftType then
-        self.GroupAircraftTypes[groupName] = aircraftType
-        env.info("[STORAGE] Stored aircraft type: " .. aircraftType .. " for group: " .. groupName)
-    else
-        env.warning("[STORAGE] Cannot store aircraft type - missing groupName or aircraftType")
-    end
-end
-
--- New helper function to get aircraft type from spawned group
-function DynamicBVRMission:GetSpawnedGroupAircraftType(spawnedGroup, templateName)
-    local aircraftType = nil
-
-    -- Method 1: Try from first alive unit in spawned group
-    local firstUnit = spawnedGroup:GetFirstUnitAlive()
-    if firstUnit then
-        if firstUnit.GetTypeName and firstUnit:GetTypeName() then
-            aircraftType = firstUnit:GetTypeName()
-            env.info("[SPAWNER] Got aircraft type from spawned unit: " .. aircraftType)
-            return aircraftType
-        end
-    end
-
-    -- Method 2: Try from template group (if it still exists)
-    local templateGroup = Group.getByName(templateName)
-    if templateGroup then
-        local templateUnits = templateGroup:getUnits()
-        if templateUnits and #templateUnits > 0 then
-            for _, unit in ipairs(templateUnits) do
-                if unit and unit.getTypeName then
-                    aircraftType = unit:getTypeName()
-                    env.info("[SPAWNER] Got aircraft type from template: " .. aircraftType)
-                    return aircraftType
-                end
-            end
-        end
-    end
-
-    -- Method 3: Try from DCS group units
-    local dcsGroup = Group.getByName(spawnedGroup:GetName())
-    if dcsGroup and dcsGroup:isExist() then
-        local units = dcsGroup:getUnits()
-        if units and #units > 0 then
-            for _, unit in ipairs(units) do
-                if unit and unit:isExist() and unit.getTypeName then
-                    aircraftType = unit:getTypeName()
-                    env.info("[SPAWNER] Got aircraft type from DCS group: " .. aircraftType)
-                    return aircraftType
-                end
-            end
-        end
-    end
-
-    -- Method 4: Try with a delay (sometimes units need time to fully spawn)
-    timer.scheduleFunction(function()
-        local delayedType = nil
-        local delayedFirstUnit = spawnedGroup:GetFirstUnitAlive()
-        if delayedFirstUnit and delayedFirstUnit.GetTypeName then
-            delayedType = delayedFirstUnit:GetTypeName()
-            if delayedType then
-                self:StoreGroupAircraftType(spawnedGroup:GetName(), delayedType)
-                env.info("[SPAWNER] Got aircraft type with delay: " .. delayedType .. " for group: " ..
-                             spawnedGroup:GetName())
-            end
-        end
-    end, nil, timer.getTime() + 2)
-
-    return aircraftType
-end
-
+-- Enhanced debugging for spawn attempts
 function DynamicBVRMission:SpawnRedFighters()
+    env.info("=== DEBUG: SpawnRedFighters called ===")
+
     local currentBluePlayers = self:CountBluePlayers()
     local airborneBluePlayers = self:CountAirborneBluePlayers()
 
+    env.info("DEBUG: Blue players - Total: " .. currentBluePlayers .. ", Airborne: " .. airborneBluePlayers)
+
     if airborneBluePlayers == 0 then
-        env.info("No airborne blue players detected - not spawning")
+        env.info("DEBUG: No airborne blue players - not spawning")
         return
     end
 
-    if #self.AvailableDirections == 0 then
-        env.info("No more spawn directions available")
+    if not self.RandomSpawner then
+        env.error("DEBUG: ✗ RandomSpawner is nil! Cannot spawn.")
         return
     end
 
-    -- Randomly select spawn direction
-    local randomIndex = math.random(1, #self.AvailableDirections)
-    local selectedDirection = self.AvailableDirections[randomIndex]
+    -- Calculate groups to spawn
+    local groupsToSpawn = (currentBluePlayers == 1) and math.random(1, 2) or math.min(currentBluePlayers, 4)
 
-    env.info("Selected spawn direction: " .. selectedDirection .. " for " .. currentBluePlayers .. " blue clients (" ..
-                 airborneBluePlayers .. " airborne)")
+    env.info("DEBUG: Attempting to spawn " .. groupsToSpawn .. " groups")
 
-    -- Get spawners for this direction
-    local availableSpawners = self.Spawners[selectedDirection]
+    -- Spawn groups with debugging
+    local spawnedCount = 0
+    for i = 1, groupsToSpawn do
+        env.info("DEBUG: Spawn attempt " .. i .. "/" .. groupsToSpawn)
 
-    if #availableSpawners == 0 then
-        env.info("No spawners available for direction: " .. selectedDirection)
-        table.remove(self.AvailableDirections, randomIndex)
-        return
-    end
+        local success, spawnedGroup = pcall(function()
+            return self.RandomSpawner:Spawn()
+        end)
 
-    -- Calculate number of enemy jets based on player count
-    -- For solo play, spawn 1-2 enemy jets
-    -- For multiplayer, spawn exactly 2 jets per player
-    local minJetsPerPlayer = 2
-    local maxJetsPerPlayer = 2
-    local totalRedJets
-    if currentBluePlayers == 1 then
-        totalRedJets = math.random(1, 2)
-    else
-        totalRedJets = currentBluePlayers * 2
-    end
-
-    env.info("[SPAWNER] Will attempt to spawn up to " .. totalRedJets .. " red jets from direction " ..
-                 selectedDirection)
-
-    -- Improved spawning logic: spawn groups until we reach the jet limit
-    local spawnedUnits = 0
-    local spawnedGroups = 0
-    local spawnerIndices = {}
-    for i = 1, #availableSpawners do
-        table.insert(spawnerIndices, i)
-    end
-
-    -- Shuffle indices for randomness
-    for i = #spawnerIndices, 2, -1 do
-        local j = math.random(1, i)
-        spawnerIndices[i], spawnerIndices[j] = spawnerIndices[j], spawnerIndices[i]
-    end
-
-    local spawnsAttempted = 0
-    local maxAttempts = #availableSpawners
-
-    for _, idx in ipairs(spawnerIndices) do
-        if spawnedUnits >= totalRedJets or spawnsAttempted >= maxAttempts then
-            break
-        end
-
-        local spawner = availableSpawners[idx]
-        local templateName = spawner.TemplateGroupName or "(unknown)"
-
-        -- Pre-spawn validation
-        local templateGroup = Group.getByName(templateName)
-        local templateExists = templateGroup ~= nil
-        local templateAlive = templateExists and templateGroup:isExist() and templateGroup:getSize() > 0
-
-        env.info(
-            "[SPAWNER] Pre-spawn check for template: " .. templateName .. " | Exists: " .. tostring(templateExists) ..
-                " | Alive: " .. tostring(templateAlive))
-
-        -- If template is unexpectedly alive, try to clean it up first
-        if templateAlive then
-            env.warning("[SPAWNER] Template is alive when it shouldn't be, attempting cleanup: " .. templateName)
-            templateGroup:destroy()
-            -- Small delay to let DCS process the destruction
-            if spawnedUnits < totalRedJets then
-                timer.scheduleFunction(function()
-                    if spawnedUnits < totalRedJets then
-                        local success, spawnedGroup = self:AttemptSpawn(spawner, templateName)
-                        if success and spawnedGroup then
-                            local groupSize = spawnedGroup:GetSize()
-                            if spawnedUnits + groupSize > totalRedJets then
-                                -- Too many, destroy excess units in the group
-                                local excess = (spawnedUnits + groupSize) - totalRedJets
-                                for u = groupSize, groupSize - excess + 1, -1 do
-                                    local unit = spawnedGroup:GetUnit(u)
-                                    if unit then
-                                        unit:Destroy()
-                                    end
-                                end
-                                groupSize = groupSize - excess
-                            end
-                            spawnedGroups = spawnedGroups + 1
-                            spawnedUnits = spawnedUnits + groupSize
-                        end
-                    else
-                        env.info("[SPAWNER] Skipping delayed spawn as target jet count reached: " .. templateName)
-                    end
-                end, nil, timer.getTime() + 0.5)
-            else
-                env.info("[SPAWNER] Skipping delayed spawn as target jet count already reached: " .. templateName)
-            end
+        if success and spawnedGroup then
+            spawnedCount = spawnedCount + 1
+            env.info("DEBUG: ✓ Spawn " .. i .. " successful: " .. spawnedGroup:GetName())
         else
-            -- Attempt spawn immediately
-            if spawnedUnits < totalRedJets then
-                local success, spawnedGroup = self:AttemptSpawn(spawner, templateName)
-                if success and spawnedGroup then
-                    local groupSize = spawnedGroup:GetSize()
-                    if spawnedUnits + groupSize > totalRedJets then
-                        -- Too many, destroy excess units in the group
-                        local excess = (spawnedUnits + groupSize) - totalRedJets
-                        for u = groupSize, groupSize - excess + 1, -1 do
-                            local unit = spawnedGroup:GetUnit(u)
-                            if unit then
-                                unit:Destroy()
-                            end
-                        end
-                        groupSize = groupSize - excess
-                    end
-                    spawnedGroups = spawnedGroups + 1
-                    spawnedUnits = spawnedUnits + groupSize
-                end
-            else
-                env.info("[SPAWNER] Skipping spawn as target jet count already reached: " .. templateName)
-            end
+            env.warning("DEBUG: ✗ Spawn " .. i .. " failed: " .. tostring(spawnedGroup))
         end
-
-        spawnsAttempted = spawnsAttempted + 1
     end
 
-    env.info("Successfully spawned " .. spawnedGroups .. " groups (" .. spawnedUnits .. " total units) from " ..
-                 selectedDirection .. " (attempted " .. spawnsAttempted .. " spawners)")
+    env.info("DEBUG: Spawned " .. spawnedCount .. "/" .. groupsToSpawn .. " groups")
 
-    -- Remove this direction from available options
-    table.remove(self.AvailableDirections, randomIndex)
-
-    -- Update wave counter message
-    self:UpdatePermanentCostDisplay()
-
-    -- Only announce TAKEOFF for the first wave
-    local currentWaveNum = self.TotalWaves - #self.AvailableDirections
-    if currentWaveNum == 1 then
-        MESSAGE:New("TAKEOFF DETECTED!\nWAVE " .. currentWaveNum .. " INCOMING!\n", 15):ToAll()
+    if spawnedCount > 0 then
+        self:UpdatePermanentCostDisplay()
+        MESSAGE:New("DEBUG: " .. spawnedCount .. " enemy groups spawned!", 15):ToAll()
     else
-        MESSAGE:New("WAVE " .. currentWaveNum .. " INCOMING!\n", 15):ToAll()
+        MESSAGE:New("DEBUG: Spawn failed - check DCS log", 15):ToAll()
     end
+end
+
+-- Debug player counting
+function DynamicBVRMission:CountBluePlayers()
+    local count = 0
+    local playerNames = {}
+
+    self.BluePlayerSet:ForEachClient(function(client)
+        if client:IsAlive() and client:GetPlayerName() then
+            count = count + 1
+            table.insert(playerNames, client:GetPlayerName())
+        end
+    end)
+
+    if count > 0 then
+        env.info("DEBUG: Found " .. count .. " blue players: " .. table.concat(playerNames, ", "))
+    end
+
+    return count
+end
+
+function DynamicBVRMission:CountAirborneBluePlayers()
+    local count = 0
+    local airborneNames = {}
+
+    self.BluePlayerSet:ForEachClient(function(client)
+        if client:IsAlive() and client:GetPlayerName() and client:InAir() then
+            count = count + 1
+            table.insert(airborneNames, client:GetPlayerName())
+        end
+    end)
+
+    if count > 0 then
+        env.info("DEBUG: Found " .. count .. " airborne blue players: " .. table.concat(airborneNames, ", "))
+    end
+
+    return count
 end
