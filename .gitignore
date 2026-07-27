@@ -1,0 +1,23 @@
+# Build / generated
+out/
+/missions/
+
+# DCS Saved Games mirror
+Saved Games/
+
+# Third-party reference repos (regenerate from scripts/upstream)
+lib/moose-src/
+lib/mist/
+lib/dcs-world-schema/
+
+# opencode runtime
+.opencode/node_modules/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
+*.swp

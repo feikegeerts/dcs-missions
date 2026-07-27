@@ -1,0 +1,34 @@
+{
+  "runtime": {
+    "version": "Lua 5.1",
+    "pathStrict": true
+  },
+  "diagnostics": {
+    "globals": [
+      "env", "timer", "trigger", "world", "coalition", "country", "land",
+      "missionCommands", "lfs", "mist",
+      "SPAWN", "SPAWNSTATIC", "ZONE", "ZONE_AIRBASE", "ZONE_GROUP", "SET_GROUP",
+      "SET_UNIT", "SET_CLIENT", "MESSAGE", "MENU_COALITION", "MENU_COALITION_COMMAND",
+      "TIMER", "EVENTS", "BASE", "AUFTRAG", "FLIGHTGROUP", "ARMYGROUP", "SCORING",
+      "_DATABASE", "_SETTINGS",
+      "MY_SCRIPTS_ROOT"
+    ],
+    "disable": ["deprecated"]
+  },
+  "workspace": {
+    "library": [
+      "lib/moose-src/Moose Development/Moose",
+      "lib"
+    ],
+    "checkThirdParty": false
+  },
+  "files": {
+    "ignore": [
+      "lib/**",
+      "src/lib/**",
+      "out/**",
+      "missions/**",
+      "Saved Games/**"
+    ]
+  }
+}
