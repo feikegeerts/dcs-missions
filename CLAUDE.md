@@ -25,8 +25,9 @@ C:\Projects\dcs-missions\
       main.lua                  # entry point
       score.lua                 # siblings
   lib\moose-src\                # MOOSE source tree (for IDE only)
-  build\pack-miz.ps1            # re-zips missions\<name>\ → out\<name>.miz
-  out\                          # generated .miz files
+  build\pack-miz.ps1            # re-zips missions\<name>\ → out\<name>.miz (dev only)
+  build\pack-shipping-miz.ps1   # builds a self-contained shipping .miz from the dev .miz + src/
+  out\                          # generated .miz files + staging dir for inspection
   docs\                         # see "Documentation" below
 ```
 
@@ -72,7 +73,7 @@ Repack with `build\pack-miz.ps1` — never re-zip manually in the editor mid-dev
 
 1. Edit Lua in `src\` with VSCode
 2. Dynamic mode: restart mission (WebGUI / `net.load_mission` / LShift+R) — no repack
-3. Otherwise: `build\pack-miz.ps1 <mission-name>`, drop in server `Missions\`
+3. Otherwise: `build\pack-shipping-miz.ps1` (writes to `out/duel-dynamic.miz` and leaves `out/duel-dynamic-build/` as a inspectable staging dir). The dev `.miz` and `src/` are NEVER modified. Restore `MissionScripting.lua` to stock first to actually verify the shipping build runs without the dev environment.
 4. Test on dedicated server; tail `Saved Games\DCS.server\Logs\dcs.log`
 5. Sanity-check spawn logic visually in Tacview
 

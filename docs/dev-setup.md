@@ -373,20 +373,148 @@ here never cost a DCS restart.
 
 ## 8. Shipping a mission (static mode)
 
-1. Remove/disable all `TraceOn()`.
-2. Switch the mission trigger from the dev `DO SCRIPT` loader to `DO SCRIPT FILE`
-   entries (embed `Moose_.lua`, then your modules in order) — or pack via
-   `build\pack-miz.ps1`, which assembles `missions\<name>\` (including embedded
-   scripts) into `out\<name>.miz`.
-3. The shipped .miz must run on a **stock** (sanitized) DCS — no `lfs`/`io`/`os`
-   dependencies in shipping code paths.
-4. Final QA: load the packed .miz on the dedicated server from a clean copy, fly it,
-   check dcs.log, watch the Tacview.
+The shipping build is assembled by `build/pack-shipping-miz.ps1`. Read
+`docs/shipping-duel-dynamic.md` for the full reference (what it does, what
+it strips, what to verify). TL;DR:
+
+```pwsh
+# From the project root:
+pwsh -File build\pack-shipping-miz.ps1       # leaves out/duel-dynamic-build/ for inspection
+pwsh -File build\pack-shipping-miz.ps1 -Zip  # also produces out/duel-dynamic.miz
+```
+
+What the packager does:
+
+1. Extracts the dev `.miz` into `out/duel-dynamic-build/` (wiped each run).
+2. Rewrites the MISSION START trigger in the `mission` file: one
+   `a_do_script` action → two `a_do_script_file` actions, in both the
+   modern (`trigrules`) and legacy (`trig`) trigger representations.
+3. Synthesizes `Scripts/main.lua` from `src/missions/<name>/main.lua`:
+   inlines `score.lua`, removes the dev-only `MY_SCRIPTS_ROOT` lookup,
+   replaces `os.time()` with `timer.getTime()*1000` for the LCG seed,
+   refuses to ship if any `TraceOn`/`os.*`/`io.open`/`lfs.*` reference
+   survives in non-comment lines.
+4. Copies `Scripts/Moose_.lua` from `src/lib/`.
+5. Re-zips into `out/duel-dynamic.miz` (only if `-Zip` is passed).
+
+What you must do before distributing the .miz:
+
+1. **Restore** `MissionScripting.lua` to stock on the target install
+   (it's the file with `sanitizeModule('os'/'io'/'lfs')` lines).
+   The installer keeps `MissionScripting.lua.orig` backups — just
+   `Copy-Item MissionScripting.lua.orig MissionScripting.lua -Force`.
+2. **Drop** the .miz into `Saved Games\DCS.server\Missions\` (or
+   `Saved Games\DCS\Missions\` for SP / non-dedicated host).
+3. **Start** the mission and watch the log:
+   - Dedicated: `Saved Games\DCS.server\Logs\dcs.log`
+   - SP / non-dedicated host: `Saved Games\DCS\Logs\dcs.log`
+4. Look for `*** MOOSE INCLUDE END ***` followed by
+   `[duel-dynamic] shipping build start`, `[duel-dynamic] MOOSE loaded`,
+   and (after a player joins) `[duel-dynamic] init done`. Any
+   `attempt to index nil` for `os`/`io`/`lfs` means the packager
+   missed something — fix the source and re-run.
 
 .miz trivia: it's a zip with required entries `mission`, `options`, `warehouses`,
 `l10n\DEFAULT\dictionary` (+ optional `mapResource` and payloads). Editor-saved zips
 have slightly non-standard headers — 7-Zip's "Headers Error" warning on extract is
 benign.
+
+### Lessons from building the shipping packager
+
+These are the gotchas I hit building `pack-shipping-miz.ps1`. Read them
+before you extend the packager, add a new trigger rewrite, or write
+your own .miz-mangling script.
+
+1. **Don't try to regex-match the dev's `a_do_script("...");` string
+   literal.** The inner script string contains `\"` (escaped quote),
+   `\\` (escaped backslash), and `\<LF>` (Lua line continuations —
+   real backslash + real newline). A regex that tries to match
+   `[^"]*` for the inner string will fail because `\"` contains a
+   literal `"` byte. The fix is the standard Lua-string-aware pattern
+   `"(?:[^"\\]|\\.)*"` (any char except `"` and `\`, OR a backslash
+   followed by any char) — but it needs `(?s)` so `.` matches newlines,
+   otherwise the `\<LF>` escape sequence breaks the match. For the
+   **legacy** trig block, the dev's `a_do_script("...")` string is
+   the cleanest anchor — find a unique tail like `end\");",` and
+   substring-splice. For the **modern** trigrules block, the
+   `["predicate"] = "a_do_script"` marker is the unique anchor; the
+   inner field is a Lua-string literal (same pattern).
+
+2. **The dev's `a_do_script` string ends with `end\");",`** — a
+   backslash-quote, then close-paren, then close-quote, then comma.
+   That's a useful unique anchor because nothing else in the file ends
+   with that exact sequence. If the dev's main.lua changes (e.g., the
+   bootstrap no longer ends with `end`), update the anchor.
+
+3. **PowerShell `param()` default values cannot use `$PSScriptRoot`
+   reliably on PowerShell 5.1** — the variable is empty when the
+   param block is evaluated. Compute the default in the script body:
+   ```powershell
+   param([string]$SrcRoot = "")
+   if (-not $SrcRoot) { $SrcRoot = (Join-Path $PSScriptRoot "..\src") }
+   ```
+   This works on PS 5.1 and 7+.
+
+4. **PowerShell 5.1 reads .ps1 files as ANSI, not UTF-8.** A literal
+   em-dash (U+2014) in your script is 3 bytes in UTF-8, which the
+   ANSI parser misreads as garbage, breaking the script with errors
+   like `Unexpected token 'inspect'` or `Missing expression after
+   unary operator '--'`. Stick to plain ASCII in the .ps1. If you
+   need a dash, use `--` (two hyphens) or `-`.
+
+5. **PowerShell here-strings (`@"..."@`) are weird in three ways:**
+   (a) The closing `"@` must be at the start of a line; any indent
+       on it becomes the "indent margin" and that many leading chars
+       are stripped from every content line. If you want zero
+       stripping, `"@` must be at column 0.
+   (b) The trailing newline BEFORE `"@` IS part of the string content.
+       So `@"foo`n"@` is 4 chars (`foo` + LF).
+   (c) Inside a double-quoted here-string, `\` is NOT an escape
+       character (unlike `"..."` strings). To get a literal `\`, write
+       `\`. To get a tab, write a literal tab character (not `\t`).
+       To get `"`, write `""` (double the quote, like in C# verbatim
+       strings).
+   When in doubt, use single-quoted here-strings (`@'...'@`) where
+   the content is fully literal — but then you can't use `$var`
+   interpolation.
+
+6. **The `""` vs `\"` Lua gotcha almost shipped a broken .miz.** When
+   a Lua string literal contains an embedded quote, you have to write
+   `\"` (backslash-quote). Writing `""` looks tempting but is the
+   adjacent-string-concat operator: `"a""b"` is `"a" .. "" .. "b"`,
+   which is `"ab"`. The ME's mission file format uses `\"` to escape
+   embedded quotes (e.g., the dev's `a_do_script(\"local ok, ...\")`).
+   When generating strings that go INTO a Lua source file (the
+   mission file), use `\"` for embedded quotes.
+
+7. **Forward slashes in DCS file paths are universally accepted.** If
+   you don't want to deal with `\\` vs `\` in Lua string escaping, just
+   use `/`. It works for `a_do_script_file("Scripts/Moose_.lua")` and
+   for `[[...]]` long-bracket literals alike.
+
+8. **Don't trust in-memory debugging across separate PowerShell
+   processes.** I lost an hour once where `Write-Host` showed the
+   in-memory `$mission` was patched correctly, but a separate
+   PowerShell session reading the file on disk still saw the unpatched
+   content — because the file write happened in a different process.
+   Always verify with `Get-Content -LiteralPath` in the SAME process
+   that did the write, or close and reopen your test process.
+
+9. **Test the Lua syntax of the produced .miz with `lua5.1 -e
+   "loadfile('mission.lua')"` BEFORE you load it in DCS.** The DCS
+   error `Cannot get theatre for miz: ... -> '}' expected (to close
+   '{' at line 51)` is opaque — it doesn't say which file or which
+   string. `lua5.1 -e "loadfile('mission.lua')"` gives a clear
+   line-and-column error. Available on this machine via
+   `C:\ProgramData\chocolatey\bin\lua5.1.exe`.
+
+10. **The dev `.miz` is never overwritten.** The packager reads
+    from `Saved Games\DCS.dcs_serverrelease\Missions\duel-dynamic.miz`
+    and writes the shipping `.miz` to `out/duel-dynamic.miz` plus the
+    staging dir at `out/duel-dynamic-build/`. If a step in the
+    packager fails, the dev `.miz` and your `src/` are untouched —
+    the failure only leaves a partially-built staging dir, which the
+    next packager run wipes.
 
 ---
 

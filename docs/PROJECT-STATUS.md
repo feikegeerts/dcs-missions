@@ -25,15 +25,15 @@ Both `.miz` files contain the same generic loader trigger; only the
 
 ## 2. Environment status
 
-> **DCS environment is currently de-sanitized.** Both the client install
-> and the dedicated server install have `MissionScripting.lua` patched
-> (the `sanitizeModule('os'/'io'/'lfs')` lines are commented out).
-> The hot-reload dev loop **requires** this. Re-apply after every DCS
-> update or repair (the updater restores the stock file).
+> **DCS environment is currently STOCK** (as of 2026-07-28). Both
+> installs (`C:\Program Files (x86)\Steam\steamapps\common\DCSWorld`
+> and `D:\DCS World Server`) have `MissionScripting.lua` restored from
+> the `.orig` backups — `os`/`io`/`lfs` are nilled. This is what
+> you need to verify the shipping `.miz` works.
 >
+> To re-enter dev mode: patch the file again per `docs/dev-setup.md §2`.
 > Before flying any untrusted mission or joining an unknown server,
-> restore the stock `MissionScripting.lua` (or run a DCS repair). See
-> `docs/dev-setup.md §2` and `§9` for the full safety discussion.
+> restore the stock file.
 
 Server config: `Saved Games\DCS.dcs_serverrelease\Config\autoexec.cfg`
 has the no-render / no-track / silent-crash settings. Don't lose it.
@@ -159,25 +159,37 @@ deleting is probably the right call. Verify with the user first.
 
 ### 6.3 Ship the mission (static mode)
 
-Currently the `.miz` is a dumb loader that does `loadfile` on
-`src/bootstrap.lua` from disk. This **requires the de-sanitized
-env** and the absolute path `C:\Projects\dcs-missions\src\`. Neither
-is true for a downloaded .miz.
+Status: **built** (2026-07-28). `build/pack-shipping-miz.ps1`
+assembles `out/duel-dynamic.miz` (~840 KB, self-contained) from the
+dev `.miz` and `src/`. Mission file parses as Lua 5.1, the inner
+shipping `main.lua` parses as Lua 5.1 (gets to `env.info` on line 20
+before failing on `env` being nil, which DCS injects at runtime).
 
-To ship, the mission must be **self-contained** — embed `Moose_.lua`
-+ `main.lua` + `score.lua` into the .miz via `DO SCRIPT FILE` triggers
-(in order), so it runs on a stock DCS install with no `lfs`/`io`/`os`
-dependencies in shipping code paths.
-
-Full checklist at `docs/shipping-duel-dynamic.md`. Tasks:
-
-- [ ] Build a self-contained `.miz` that loads via `DO SCRIPT FILE` (or
-      extend `build\pack-miz.ps1` to assemble it from `src/`).
-- [ ] Verify it runs on a stock (sanitized) DCS install.
-- [ ] Strip all `:TraceOn()` / `BASE:TraceOn()` calls.
+- [x] Build a self-contained `.miz` that loads via `DO SCRIPT FILE` —
+      `build/pack-shipping-miz.ps1` writes to `out/duel-dynamic.miz`
+      and `out/duel-dynamic-build/` (staging dir, left in place for
+      inspection when `-Zip` is not passed).
+- [x] Strip all `:TraceOn()` / `BASE:TraceOn()` calls. Sanity check
+      in the packager; current `src/` has none.
+- [x] `os.time()` → `math.floor(timer.getTime() * 1000)` for the LCG
+      seed (stock DCS nils `os`).
+- [x] `score.lua` inlined into `Scripts/main.lua` (no `dofile()` in
+      stock DCS — CWD is the DCS install dir, not the .miz).
+- [x] `MissionScripting.lua` restored to stock on both installs
+      (2026-07-28). `os`/`io`/`lfs` are nilled again. The `.orig`
+      backups were the source.
+- [x] Lua syntax of patched mission file validated with `lua5.1
+      -e "loadfile(...)"`.
+- [ ] Verify it runs on a stock (sanitized) DCS install. The user
+      (2026-07-28) hit one Lua parse error on first attempt — the
+      packager used `""` for inner quotes (Lua adjacent-string
+      concat) instead of `\"` (escaped quote), so the .miz wouldn't
+      load. **Fixed** in the packager; re-built .miz parses cleanly.
+      User to retry.
 - [ ] Final QA on a fresh dedicated server install.
-- [ ] Update `docs/dev-setup.md §8` to reflect the now-working
-      packager.
+
+See `docs/shipping-duel-dynamic.md` for what the packager does and
+how to verify, and `docs/dev-setup.md §8` for the build/QA loop.
 
 ### 6.4 Smaller polish
 
@@ -196,10 +208,13 @@ Full checklist at `docs/shipping-duel-dynamic.md`. Tasks:
 
 1. Pull / read the project, read this file and
    `docs/spec-duel-dynamic.md`.
-2. Verify the env: `MissionScripting.lua` is still de-sanitized in
-   both installs. If DCS was updated, re-apply (see §2).
+2. Verify the env: `MissionScripting.lua` is **stock** in both
+   installs (default state as of 2026-07-28; both have
+   `MissionScripting.lua.orig` backups for verification). If you
+   want to re-enter dev mode, patch it per `docs/dev-setup.md §2`.
 3. Start the dedicated server, WebGUI → Restart `duel-dynamic`.
 4. Sanity check: the log shows the init sequence from
    `spec-duel-dynamic.md §7`. The bandit spawns. F10 menu works.
-5. Pick up at §6.1, §6.2, or §6.3 depending on what you want to do
-   next.
+5. Pick up at §6.1, §6.2, or §6.4 depending on what you want to do
+   next. §6.3 is done (build produces a self-contained .miz; final
+   QA on a stock install is the only remaining step there).
