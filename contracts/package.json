@@ -1,0 +1,16 @@
+{
+  "name": "dcs-telemetry-contracts",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "npm run lint && npm test",
+    "lint": "eslint .",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1",
+    "eslint": "^10.9.1",
+    "vitest": "^3.2.4"
+  }
+}

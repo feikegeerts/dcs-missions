@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "event_id": "dcs-server-alpha:run-20260830T120000Z-a1b2c3:1",
+  "source": "moose-mission",
+  "producer_id": "dcs-server-alpha",
+  "source_version": "duel-dynamic-telemetry-v1",
+  "run_key": "run-20260830T120000Z-a1b2c3",
+  "event_sequence": 1,
+  "event_type": "mission.started",
+  "sim_time": 0,
+  "wall_time": "2026-08-30T12:00:00Z",
+  "initiator": null,
+  "target": null,
+  "participant": null,
+  "asset": null,
+  "weapon": null,
+  "coalition": null,
+  "location": null,
+  "payload": {
+    "mission_name": "duel-dynamic",
+    "mission_version": "1",
+    "map_name": "Caucasus",
+    "run_classification": "test"
+  }
+}

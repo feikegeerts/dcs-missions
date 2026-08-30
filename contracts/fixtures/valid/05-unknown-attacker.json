@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "event_id": "dcs-server-alpha:run-20260830T120000Z-a1b2c3:5",
+  "source": "moose-mission",
+  "producer_id": "dcs-server-alpha",
+  "source_version": "duel-dynamic-telemetry-v1",
+  "run_key": "run-20260830T120000Z-a1b2c3",
+  "event_sequence": 5,
+  "event_type": "asset.kill-reported",
+  "sim_time": 415.75,
+  "wall_time": "2026-08-30T12:06:55.750Z",
+  "initiator": {
+    "status": "unknown",
+    "kind": "unknown",
+    "reason": "not-reported",
+    "participant_id": null,
+    "asset_key": null,
+    "display_name": null,
+    "callsign": null,
+    "dcs_name": null,
+    "dcs_type": null,
+    "coalition": "unknown"
+  },
+  "target": {
+    "status": "known",
+    "kind": "aircraft",
+    "participant_id": null,
+    "asset_key": "bandit-2.1",
+    "display_name": null,
+    "callsign": "Enfield 2-1",
+    "dcs_name": "Bandit-2#001-1",
+    "dcs_type": "MiG-29A",
+    "coalition": "red"
+  },
+  "participant": null,
+  "asset": {
+    "status": "known",
+    "kind": "aircraft",
+    "asset_key": "bandit-2.1",
+    "dcs_name": "Bandit-2#001-1",
+    "dcs_type": "MiG-29A",
+    "coalition": "red"
+  },
+  "weapon": null,
+  "coalition": "unknown",
+  "location": {
+    "status": "known",
+    "coordinate_system": "dcs-local",
+    "x": 115500,
+    "y": 1500,
+    "z": -35200
+  },
+  "payload": {
+    "dcs_event_name": "kill"
+  }
+}

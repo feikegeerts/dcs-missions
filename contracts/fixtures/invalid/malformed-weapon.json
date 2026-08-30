@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "event_id": "dcs-server-alpha:run-invalid-a1:2",
+  "source": "moose-mission",
+  "producer_id": "dcs-server-alpha",
+  "source_version": "duel-dynamic-telemetry-v1",
+  "run_key": "run-invalid-a1",
+  "event_sequence": 2,
+  "event_type": "ordnance.fired",
+  "sim_time": 12.5,
+  "wall_time": null,
+  "initiator": {
+    "status": "known",
+    "kind": "aircraft",
+    "participant_id": null,
+    "asset_key": null,
+    "display_name": null,
+    "callsign": "Aerial 1-1",
+    "dcs_name": "Aerial-1-1",
+    "dcs_type": "FA-18C_hornet",
+    "coalition": "blue"
+  },
+  "target": null,
+  "participant": null,
+  "asset": {
+    "status": "unknown",
+    "kind": "aircraft",
+    "reason": "instance-identity-unavailable",
+    "asset_key": null,
+    "dcs_name": "Aerial-1-1",
+    "dcs_type": "FA-18C_hornet",
+    "coalition": "blue"
+  },
+  "weapon": {
+    "status": "known",
+    "display_name": "AIM-120C",
+    "category": "missile"
+  },
+  "coalition": "blue",
+  "location": {
+    "status": "unknown",
+    "reason": "not-reported"
+  },
+  "payload": {}
+}

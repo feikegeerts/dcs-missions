@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "event_id": "dcs-server-alpha:run-semantic-a1:99",
+  "source": "moose-mission",
+  "producer_id": "dcs-server-alpha",
+  "source_version": "duel-dynamic-telemetry-v1",
+  "run_key": "run-semantic-a1",
+  "event_sequence": 2,
+  "event_type": "mission.heartbeat",
+  "sim_time": 30,
+  "wall_time": null,
+  "initiator": null,
+  "target": null,
+  "participant": null,
+  "asset": null,
+  "weapon": null,
+  "coalition": null,
+  "location": null,
+  "payload": {}
+}

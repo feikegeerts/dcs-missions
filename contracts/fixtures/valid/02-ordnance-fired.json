@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "event_id": "dcs-server-alpha:run-20260830T120000Z-a1b2c3:2",
+  "source": "moose-mission",
+  "producer_id": "dcs-server-alpha",
+  "source_version": "duel-dynamic-telemetry-v1",
+  "run_key": "run-20260830T120000Z-a1b2c3",
+  "event_sequence": 2,
+  "event_type": "ordnance.fired",
+  "sim_time": 125.5,
+  "wall_time": "2026-08-30T12:02:05.500Z",
+  "initiator": {
+    "status": "known",
+    "kind": "aircraft",
+    "participant_id": "ucid-0123456789abcdef",
+    "asset_key": "aerial-1.1",
+    "display_name": "Viper",
+    "callsign": "Aerial 1-1",
+    "dcs_name": "Aerial-1-1",
+    "dcs_type": "FA-18C_hornet",
+    "coalition": "blue"
+  },
+  "target": null,
+  "participant": {
+    "status": "known",
+    "kind": "participant",
+    "participant_id": "ucid-0123456789abcdef",
+    "display_name": "Viper",
+    "callsign": "Aerial 1-1",
+    "coalition": "blue"
+  },
+  "asset": {
+    "status": "known",
+    "kind": "aircraft",
+    "asset_key": "aerial-1.1",
+    "dcs_name": "Aerial-1-1",
+    "dcs_type": "FA-18C_hornet",
+    "coalition": "blue"
+  },
+  "weapon": {
+    "status": "known",
+    "dcs_type": "weapons.missiles.AIM_120C",
+    "display_name": "AIM-120C",
+    "category": "missile"
+  },
+  "coalition": "blue",
+  "location": {
+    "status": "known",
+    "coordinate_system": "dcs-local",
+    "x": 125000.25,
+    "y": 7620.5,
+    "z": -44000.75
+  },
+  "payload": {
+    "dcs_event_name": "shot"
+  }
+}

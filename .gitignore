@@ -13,6 +13,9 @@ lib/dcs-world-schema/
 # opencode runtime
 .opencode/node_modules/
 
+# Contract test dependencies
+/contracts/node_modules/
+
 # OS
 Thumbs.db
 .DS_Store
