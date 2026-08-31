@@ -29,6 +29,58 @@ if not ROOT then
   return
 end
 local DIR = ROOT .. "missions/duel-dynamic/"
+
+local function initDevelopmentTelemetry()
+  if _G.TELEMETRY_DEVELOPMENT_ENABLED ~= true then
+    return
+  end
+
+  local ok, runtime, startError = pcall(function()
+    local eventId = dofile(DIR .. "telemetry/event_id.lua")
+    local envelope = dofile(DIR .. "telemetry/envelope.lua")
+    local json = dofile(DIR .. "telemetry/json.lua")
+    local ndjsonSink = dofile(DIR .. "telemetry/ndjson_sink.lua")
+    local lifecycle = dofile(DIR .. "telemetry/lifecycle.lua")
+    local development = dofile(DIR .. "telemetry/development.lua")
+
+    return development.start({
+      event_id = eventId,
+      envelope = envelope,
+      json = json,
+      ndjson_sink = ndjsonSink,
+      lifecycle = lifecycle,
+      io = io,
+      lfs = lfs,
+      os = os,
+      timer = timer,
+      env = env,
+      BASE = BASE,
+      SCHEDULER = SCHEDULER,
+      EVENTS = EVENTS,
+      state = _G,
+      heartbeat_interval = 30,
+      mission_name = "duel-dynamic",
+      mission_version = "1",
+      source_version = "duel-dynamic-telemetry-v1",
+      run_classification = "test",
+    })
+  end)
+
+  if not ok then
+    env.error("[duel-dynamic][telemetry] initialization raised: " .. tostring(runtime))
+    return
+  end
+  if not runtime then
+    env.error("[duel-dynamic][telemetry] initialization failed: " .. tostring(startError))
+    return
+  end
+
+  -- MOOSE event subscriptions use weak subscriber keys. Keep the complete
+  -- runtime strongly reachable for the life of this mission run.
+  _G.duel_telemetry_runtime = runtime
+end
+
+initDevelopmentTelemetry()
 dofile(DIR .. "score.lua")
 
 local Tracker = _G.duel_tracker
@@ -56,7 +108,11 @@ local RESPAWN_DELAY = 30
 local PLAYER_RESPAWN_DELAY = 30
 local INIT_DELAY = 1 -- first attempt delay (seconds) before the world-touching setup
 local INIT_POLL_INTERVAL = 1 -- how often to retry the init poll
-local INIT_TIMEOUT = 30 -- give up after this many seconds if the world never populates
+-- 0 = wait indefinitely (SCHEDULER Stop=0 repeats forever). A headless
+-- dedicated server can run for many minutes before the first player joins;
+-- init must keep polling so a late joiner still gets their paired bandit
+-- (doInit's catch pass spawns it the moment a player group becomes alive).
+local INIT_TIMEOUT = 0
 
 -- =====================================================================
 -- Bandit AI tasking (aggression knobs)
@@ -506,10 +562,12 @@ end
 -- world has finished populating.
 --
 -- Poll loop because the player-join race is unreliable: sometimes the
--- player has fully populated Aerial-1 by simResume, sometimes the
--- DATABASE.AddPlayer event fires 2-3 s *after* simResume. We retry
--- every INIT_POLL_INTERVAL until the first player group is findable,
--- up to INIT_TIMEOUT seconds.
+-- player has fully populated a slot by simResume, sometimes the
+-- DATABASE.AddPlayer event fires 2-3 s *after* simResume, and on a
+-- headless dedicated server the first join can be minutes away. We retry
+-- every INIT_POLL_INTERVAL until ANY player group becomes alive (no
+-- timeout) and then run doInit, whose catch pass spawns bandits for any
+-- already-occupied slot.
 -- =====================================================================
 local function doInit()
   -- Build bandit SPAWN objects.
@@ -565,17 +623,32 @@ local function doInit()
   env.info("[duel-dynamic] init done — player-enter events will now spawn bandits")
 end
 
-local initMaster, initScheduleID = SCHEDULER:New(nil, function()
-  if initDone then
-    return
+-- A player group becomes alive the moment a client occupies its slot. On a
+-- headless dedicated server that can be minutes after mission start, and the
+-- first joiner may pick any of the three slots — so poll until ANY player
+-- group is alive rather than only Aerial-1.
+local function anyPlayerGroupAlive()
+  for _, pname in ipairs(PLAYER_GROUP_NAMES) do
+    local pg = GROUP:FindByName(pname)
+    if pg and pg:IsAlive() then
+      return true
+    end
   end
-  local firstPlayerGroup = GROUP:FindByName(PLAYER_GROUP_NAMES[1])
-  if not firstPlayerGroup or not firstPlayerGroup:IsAlive() then
-    env.info("[duel-dynamic] init: world not ready, retrying...")
-    return
+  return false
+end
+
+SCHEDULER:New(nil, function()
+  if initDone then
+    return false
+  end
+  if not anyPlayerGroupAlive() then
+    env.info("[duel-dynamic] init: no player group alive yet, retrying...")
+    return nil -- keep polling
   end
   doInit()
-  initMaster:Stop(initScheduleID)
+  -- Returning false makes the SCHEDULEDISPATCHER stop the timer cleanly
+  -- instead of rescheduling; the initDone guard above is the safety net.
+  return false
 end, {}, INIT_DELAY, INIT_POLL_INTERVAL, 0, INIT_TIMEOUT)
 
 env.info("[duel-dynamic] main done (init pending)")

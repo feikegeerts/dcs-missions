@@ -31,6 +31,7 @@ end
 
 local ROOT = resolveRoot()
 _G.MY_SCRIPTS_ROOT = ROOT
+_G.TELEMETRY_DEVELOPMENT_ENABLED = true
 env.info("[bootstrap] root: " .. ROOT)
 
 -- Read active mission name from .current-mission.

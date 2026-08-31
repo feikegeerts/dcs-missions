@@ -636,6 +636,10 @@ supported path is proven.
 
 ### Slice 4: Mission-run lifecycle and development sink
 
+**Status:** Complete on 2026-08-31. See
+`docs/telemetry/slice-4-lifecycle-evidence.md` for automated, shipping, and
+dedicated-server evidence.
+
 **Recommended model:** GPT-5.6 SOL High.
 
 **Why:** Mission-start timing, clean shutdown, heartbeat behavior, run-key

@@ -1,7 +1,6 @@
-# Project status — pre-PTO snapshot
+# Project status
 
-**Last updated:** 2026-07-27 (pre-PTO handoff). Read this first when
-coming back.
+**Last updated:** 2026-08-31. Read this first when coming back.
 
 This is a snapshot of where the project is, what's known to work, what's
 known to be broken, and what still needs to happen before the mission
@@ -25,10 +24,10 @@ Both `.miz` files contain the same generic loader trigger; only the
 
 ## 2. Environment status
 
-> **DCS environment is currently STOCK** (as of 2026-07-28). Both
+> **DCS environment is currently STOCK** (verified 2026-08-31). Both
 > installs (`C:\Program Files (x86)\Steam\steamapps\common\DCSWorld`
 > and `D:\DCS World Server`) have `MissionScripting.lua` restored from
-> the `.orig` backups — `os`/`io`/`lfs` are nilled. This is what
+> the `.orig` backups with matching SHA-256 hashes — `os`/`io`/`lfs` are nilled. This is what
 > you need to verify the shipping `.miz` works.
 >
 > To re-enter dev mode: patch the file again per `docs/dev-setup.md §2`.
@@ -101,6 +100,13 @@ Verified end-to-end on the dedicated server (logs from 2026-07-26 session):
 - ✅ Round 1 heading randomization on player slot (visible in HSI).
 - ✅ `stylua --check` passes on both missions.
 - ✅ Dedicated server: WebGUI restart reloads from disk with no repack.
+- ✅ A headless dedicated server can wait indefinitely for its first player;
+  joining any Aerial slot initializes the mission and spawns the paired bandit.
+  This replaced the old 30-second init timeout.
+- ✅ Telemetry Slice 4: stable producer identity, fresh per-generation run
+  keys, `mission.started`, 30-second heartbeats, best-effort
+  `mission.ended`, and verified per-run NDJSON. Dedicated-server evidence is
+  in `docs/telemetry/slice-4-lifecycle-evidence.md`.
 
 ## 5. What's known to be broken / limited
 
@@ -202,6 +208,12 @@ how to verify, and `docs/dev-setup.md §8` for the build/QA loop.
 - [ ] Decide on the production aircraft. The current test uses
       FA-18C + Su-33. Pick the final pair and update the ME / spec.
 
+### 6.5 Telemetry
+
+Slices 1–4 are complete. Slice 4 was validated in real DCS and the development
+environment was restored to stock afterward. Continue with Slice 5, capture one
+filtered MOOSE ordnance event, using `docs/telemetry-implementation-plan.md`.
+
 ---
 
 ## 7. Re-entering the project
@@ -209,12 +221,12 @@ how to verify, and `docs/dev-setup.md §8` for the build/QA loop.
 1. Pull / read the project, read this file and
    `docs/spec-duel-dynamic.md`.
 2. Verify the env: `MissionScripting.lua` is **stock** in both
-   installs (default state as of 2026-07-28; both have
+   installs (verified 2026-08-31; both have
    `MissionScripting.lua.orig` backups for verification). If you
    want to re-enter dev mode, patch it per `docs/dev-setup.md §2`.
 3. Start the dedicated server, WebGUI → Restart `duel-dynamic`.
 4. Sanity check: the log shows the init sequence from
    `spec-duel-dynamic.md §7`. The bandit spawns. F10 menu works.
-5. Pick up at §6.1, §6.2, or §6.4 depending on what you want to do
-   next. §6.3 is done (build produces a self-contained .miz; final
-   QA on a stock install is the only remaining step there).
+5. For telemetry, continue at Slice 5 in the implementation plan. Other work
+   remains in §6.1, §6.2, and §6.4. §6.3 builds a self-contained `.miz`;
+   final QA on a stock install remains.

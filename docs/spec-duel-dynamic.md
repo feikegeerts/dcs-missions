@@ -136,16 +136,19 @@ at MISSION START, so it changes every run.
 ### 4.2 The init poll loop
 
 `SCHEDULER:New(nil, fn, {}, INIT_DELAY, INIT_POLL_INTERVAL, 0, INIT_TIMEOUT)`
-with `INIT_DELAY=1`, `INIT_POLL_INTERVAL=1`, `INIT_TIMEOUT=30`. Every second
-the function checks `GROUP:FindByName(PLAYER_GROUP_NAMES[1]):IsAlive()`.
-When the world is finally populated it runs `doInit()` (builds spawners,
-randomises headings, catches any already-occupied slot) and calls
-`initMaster:Stop(initScheduleID)` to cancel the poll.
+uses `INIT_DELAY=1`, `INIT_POLL_INTERVAL=1`, and `INIT_TIMEOUT=0`. MOOSE treats
+a stop value of zero as no timeout. Every second the function checks whether
+any group in `PLAYER_GROUP_NAMES` is alive. When one is, it runs `doInit()`
+(builds spawners, randomises headings, and catches every already-occupied
+slot) and returns `false` to stop the scheduler cleanly.
 
 **Why a poll instead of a one-shot delay?** On a busy MP server the
 `DATABASE.AddPlayer` event for the joining client can fire 2–3 s *after*
-`simResume`. A fixed 1 s delay would race. The poll guarantees the init only
-fires when `Aerial-1` is actually findable and alive.
+`simResume`. A fixed 1 s delay would race. A dedicated server can also run
+headless for minutes before its first player arrives. The poll therefore has
+no wall-clock timeout and accepts the first occupied Aerial slot, not only
+`Aerial-1`. The first-round catch pass then spawns the matching bandit even if
+the player-enter event happened before `initDone` became true.
 
 ### 4.3 Kill handler details
 
@@ -293,9 +296,10 @@ Then after the kill:
 [duel-dynamic] Bandit-1 spawned: Bandit-1#002 at …
 ```
 
-If a bandit does not appear within INIT_TIMEOUT (30 s), check that all
-three bandit groups are present in the ME and Late Activation is ✓. The
-first `SCRIPTING ERROR` line names the file and line.
+If a bandit does not appear within a few seconds after entering a slot, check
+for `init done`, `spawning Bandit-N`, and `tasked Bandit-N` in `dcs.log`. Also
+check that all three bandit groups are present in the ME and Late Activation
+is ✓. The first `SCRIPTING ERROR` line names the file and line.
 
 ---
 
