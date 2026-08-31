@@ -103,7 +103,7 @@ callback_sets[1].onSimulationStop()
 
 assert_contains("LOAD PASS callback_api=Sim")
 assert_contains("LIFECYCLE onSimulationStart mission=test-flight")
-assert_contains("CHECK full_client_host_mode PASS")
+assert_contains("CHECK multiplayer_server_mode PASS")
 assert_contains("CHECK nested_a_do_script_available PASS")
 assert_contains("CHECK return_mapping_known PASS")
 assert_contains("OBSERVE return_mapping=" .. return_mapping)

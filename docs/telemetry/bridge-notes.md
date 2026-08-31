@@ -1,23 +1,24 @@
 # Stock Bridge Feasibility Spike
 
-**Status:** Full Queue Exit Gate passed on stock DCS 2.9.29.27278. The transport
-is proven: `net.dostring_in("mission", ...)` with `a_do_script` inside, shifted
-return mapping (sentinel recovery required), NUL-truncating returns, and a
-byte-exact NUL-free 64 KiB frame round trip. The full queue probe passed two
-generations with `failures=0` on every `RESULT`/`STOP_RESULT`, including
-durable hook-local spool writes verified by reopen-and-byte-compare before
-bounded acknowledgement. Remaining Slice 3 gate: dedicated-server parity.
+**Status:** Slice 3 complete on stock DCS 2.9.29.27278. The full-client host and
+dedicated-server gates both passed. The transport is proven:
+`net.dostring_in("mission", ...)` with `a_do_script` inside, shifted return
+mapping (sentinel recovery required), NUL-truncating returns, and a byte-exact
+NUL-free 64 KiB frame round trip. Both environments passed two generations
+with `failures=0` on every `RESULT`/`STOP_RESULT`, including durable hook-local
+spool writes verified by reopen-and-byte-compare before bounded
+acknowledgement.
 
 ## Decision
 
-The current candidate is a project-owned GameGUI server hook that reaches the
+The selected approach is a project-owned GameGUI server hook that reaches the
 mission trigger state through `net.dostring_in("mission", ...)`, then invokes
 the mission scripting state's `a_do_script`. The direct hook-global
-`a_do_script` assumption was disproved on DCS 2.9.29.27278. Before adopting the
-nested route, a short discovery probe must characterize its availability,
-known return-stack bug, binary preservation, and size limit on this exact build.
+`a_do_script` assumption was disproved on DCS 2.9.29.27278. Discovery and full
+queue probes characterized the nested route's availability, return-stack bug,
+NUL truncation, and conservative size limit on this exact build.
 
-If proven, the hook will poll a mission-owned telemetry queue, durably spool
+The production hook will poll a mission-owned telemetry queue, durably spool
 complete frames outside the mission sandbox, and acknowledge only the highest
 sequence safely accepted into that spool.
 
@@ -26,10 +27,11 @@ tailing because it can preserve mission-normalized envelopes, use server-only
 multiplayer identity, and implement an application-level peek/acknowledge
 protocol without exposing `io`, `os`, or `lfs` to mission Lua.
 
-The local-host full-queue gate has passed with stock sanitization on the
-installed full DCS client in **Multiplayer → New Server** mode, as requested by
-the owner. The remaining Slice 3 gate is dedicated-server parity, which must be
-proven separately and is not inferred from the client test.
+The local-host full-queue gate passed with stock sanitization on the installed
+full DCS client in **Multiplayer → New Server** mode. Dedicated-server parity
+then passed separately on the matching dedicated release channel. The selected
+GameGUI bridge is therefore viable for downstream slices; this spike does not
+implement the production bridge, which remains deferred to Slice 17.
 
 ## Current Environment
 
@@ -38,16 +40,12 @@ Evidence collected on 2026-08-31:
 | Component | Observed state |
 |---|---|
 | Full DCS client | `2.9.29.27278` |
-| Dedicated server | `2.9.28.26283` |
-| Client `MissionScripting.lua` | De-sanitized: `os`, `io`, and `lfs` sanitizers are commented |
-| Server `MissionScripting.lua` | De-sanitized: `os`, `io`, and `lfs` sanitizers are commented |
+| Dedicated server | Updated from `2.9.28.26283` to `2.9.29.27278` before parity testing |
+| Client `MissionScripting.lua` | Stock; development version preserved as `.telemetry-dev-backup` |
+| Server `MissionScripting.lua` | Stock; development version preserved as `.telemetry-dev-backup` |
 | Stock backups | Present as `MissionScripting.lua.orig` in both installations |
-| Previous full-client host run | Confirmed in `dcs.log`; GameGUI lifecycle hooks ran together |
-| Full-client mission sandbox | Currently de-sanitized; must be restored to stock for the probe |
-
-The project status document says both installations were stock on 2026-07-28,
-but that statement is now stale. Runtime results from the current environment
-would not prove stock-sandbox compatibility.
+| Full-client host gate | Passed, two generations and clean stop |
+| Dedicated-server gate | Passed, two generations, clean stop, and remote identity correlation |
 
 ## Evidence
 
@@ -235,6 +233,41 @@ The final two-generation run (log
 `failures=0` on every `RESULT` and `STOP_RESULT`, confirming the spool byte
 verification works on real DCS and that the transport stays callable during
 `onSimulationStop`.
+
+### Dedicated-server parity
+
+The dedicated server was updated to the same `2.9.29.27278` release as the full
+client and its install-level `MissionScripting.lua` was verified byte-identical
+to `.orig`. The disposable probe and companion were installed under
+`Saved Games\DCS.dcs_serverrelease\Scripts\Hooks`, and the client connected to
+the local server as a real remote multiplayer client.
+
+The dedicated run (log
+`Saved Games\DCS.dcs_serverrelease\Logs\dcs.log.dedicated-telemetry-parity.*`)
+proved:
+
+- Two generations completed with `RESULT ... failures=0` and
+  `STOP_RESULT ... failures=0`, including the 64 KiB frame and both durable
+  spool/acknowledgement cycles.
+- `multiplayer=true` and `server=true`; zero probe checks failed.
+- The separately loaded companion received frames and clean stop callbacks in
+  both generations.
+- `onPlayerTryConnect` supplied a stable redacted UCID fingerprint; the later
+  connect and F/A-18 slot-change snapshots had `matches_connect=true`.
+- The nested transport remained callable during both simulation-stop callbacks.
+
+The server automatically loaded the development `duel-dynamic.miz` before the
+WebGUI switched to `test-flight.miz`. Under stock sanitization that development
+loader emitted one expected, unrelated error when `bootstrap.lua` accessed nil
+mission-side `io`. It was not emitted by the probe and does not weaken the
+bridge result; it is also not evidence about the separate self-contained
+shipping `.miz` issue. Generation 2 used the script-free `test-flight.miz`.
+
+For dedicated lifecycle fidelity, the probe now retains connection UCID
+fingerprints across mission reloads and clears them only on disconnect. The
+mock models a remote client surviving a mission restart and requires its later
+slot snapshot to remain correlated. The generic mode check is named
+`multiplayer_server_mode` rather than the full-client-specific earlier label.
 
 ### DCS-gRPC
 
@@ -637,10 +670,15 @@ distinct run key/fingerprint per generation, companion frames in both
 generations, `frame_65536 PASS`, `matches_connect=false` recorded as the
 documented limitation, and zero probe-attributable `SCRIPTING` errors/warnings.
 
-Once satisfied, no production hook should be implemented until Slice 4 begins.
-A successful full-client test does not prove dedicated-server parity; that gate
-remains required before the stock-sanitized shipping bridge is declared
-complete.
+**Satisfied (dedicated server):** the dedicated parity run met the same
+transport, framing, spool, acknowledgement, generation, lifecycle, and
+companion criteria. It additionally correlated a real remote client's
+connection UCID fingerprint with its F/A-18 slot transition. Both final
+`STOP_RESULT` lines reported `failures=0`; no probe check failed.
+
+Slice 3 is complete and Slice 4 may begin. Do not implement the production hook
+in Slice 4; production bridge implementation and stock-sanitized shipping
+integration remain explicitly deferred to Slice 17.
 
 ## Sources
 

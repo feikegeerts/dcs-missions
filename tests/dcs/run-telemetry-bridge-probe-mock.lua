@@ -172,6 +172,15 @@ local function count_contains(fragment)
   return count
 end
 
+local function contains_all(first, second)
+  for _, message in ipairs(messages) do
+    if string.find(message, first, 1, true) and string.find(message, second, 1, true) then
+      return true
+    end
+  end
+  return false
+end
+
 local baseline_frames = 0
 DCS.setUserCallbacks({
   onSimulationFrame = function()
@@ -204,20 +213,25 @@ local function dispatch(name, ...)
   return nil
 end
 
+local remote_connected = false
+
 local function run_generation(with_slot_change)
   dispatch("onMissionLoadBegin")
   dispatch("onMissionLoadEnd")
   dispatch("onSimulationStart")
-  dispatch("onPlayerTryConnect", "192.0.2.1", remote_player.name, remote_player.ucid, remote_player.id)
-  dispatch("onPlayerConnect", remote_player.id)
+  if not remote_connected then
+    dispatch("onPlayerTryConnect", "192.0.2.1", remote_player.name, remote_player.ucid, remote_player.id)
+    dispatch("onPlayerConnect", remote_player.id)
+    remote_connected = true
+  end
   for _ = 1, 20 do
     dispatch("onSimulationFrame")
   end
 
   if with_slot_change then
-    player.side = 2
-    player.slot = "101_1"
-    dispatch("onPlayerChangeSlot", 1)
+    remote_player.side = 2
+    remote_player.slot = "101_1"
+    dispatch("onPlayerChangeSlot", remote_player.id)
     for _ = 1, 10 do
       dispatch("onSimulationFrame")
     end
@@ -231,7 +245,7 @@ if not corrupt_spool then
 end
 
 assert_contains("LOAD PASS")
-assert_contains("CHECK full_client_host_mode PASS")
+assert_contains("CHECK multiplayer_server_mode PASS")
 assert_contains("CHECK returns_and_stock_sandbox PASS")
 assert_contains("CHECK binary_nul_truncation PASS")
 assert_contains("CHECK frame_65536 PASS")
@@ -260,6 +274,10 @@ else
   assert_contains("STOP_RESULT generation=1 failures=0")
   assert_contains("RESULT generation=2 failures=0")
   assert_contains("STOP_RESULT generation=2 failures=0")
+  assert(
+    contains_all("PLAYER source=change_slot side=2 slot_present=true", "matches_connect=true"),
+    "remote identity correlation was not retained across mission restart"
+  )
   assert(count_contains(" RESULT generation=") == 2, "expected exactly two generation results")
   assert(count_contains(" STOP_RESULT generation=") == 2, "expected exactly two stop results")
   assert(

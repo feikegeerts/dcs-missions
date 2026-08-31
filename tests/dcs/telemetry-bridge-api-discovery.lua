@@ -270,7 +270,7 @@ function callbacks.onSimulationStart()
     tostring(server)
   )
   check(
-    "full_client_host_mode",
+    "multiplayer_server_mode",
     multiplayer == true and server == true,
     "multiplayer=" .. tostring(multiplayer) .. " server=" .. tostring(server)
   )
