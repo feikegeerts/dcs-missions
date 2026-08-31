@@ -31,6 +31,29 @@ C:\Projects\dcs-missions\
   docs\                         # see "Documentation" below
 ```
 
+### Local DCS paths on this machine
+
+Use these observed paths instead of rediscovering or guessing the DCS channel
+names:
+
+| Purpose | Path |
+|---|---|
+| Full DCS client install | `C:\Program Files (x86)\Steam\steamapps\common\DCSWorld` |
+| Full-client write directory | `C:\Users\g_for\Saved Games\DCS` |
+| Full-client missions | `C:\Users\g_for\Saved Games\DCS\Missions` |
+| Full-client GameGUI hooks | `C:\Users\g_for\Saved Games\DCS\Scripts\Hooks` |
+| Full-client main log | `C:\Users\g_for\Saved Games\DCS\Logs\dcs.log` |
+| Active dedicated-server write directory | `C:\Users\g_for\Saved Games\DCS.dcs_serverrelease` |
+| Dedicated-server development missions | `C:\Users\g_for\Saved Games\DCS.dcs_serverrelease\Missions` |
+| Dedicated-server main log | `C:\Users\g_for\Saved Games\DCS.dcs_serverrelease\Logs\dcs.log` |
+| Repository shipping build | `C:\Projects\dcs-missions\out\duel-dynamic.miz` |
+
+`C:\Users\g_for\Saved Games\DCS.release_server` currently contains only a
+`Config` directory and is not the active mission write directory. The
+full-client `Missions\duel-dynamic.miz` is normally the small development
+loader; do not replace it with `out\duel-dynamic.miz` without preserving the
+loader first.
+
 **Documentation:**
 
 - `docs/dev-setup.md` — full env setup, dev loop, debugging, troubleshooting.
@@ -58,7 +81,9 @@ Mission bootstrap loads scripts from `Saved Games\DCS\MyMissions\scripts\` via `
 
 Use the modular **"DCS World Dedicated Server"** installer (no textures/sound, WebGUI-only). Facts:
 
-- Write dir: `Saved Games\DCS.server` → logs at `Saved Games\DCS.server\Logs\dcs.log`
+- On this machine the active write dir is
+  `C:\Users\g_for\Saved Games\DCS.dcs_serverrelease`; logs and missions are in
+  its `Logs` and `Missions` subdirectories.
 - Ports: 10308 TCP/UDP (game), 8088 TCP (local WebGUI)
 - **There is no console and no `loadmission` command.** Restart via WebGUI, or call `net.load_mission(path)` — a **server-environment** Lua function (2.5.0+), reachable from hook scripts in `Saved Games\DCS.server\Scripts\Hooks\` or via DCS-gRPC / DCSServerBot. Not available in the mission scripting env.
 - Single-player quick iteration: `LeftShift+R` restarts the mission. Reserve SP for final QA only if server loop is working. This project's dev `.miz` is on `Saved Games\DCS.dcs_serverrelease` (the channel name can vary — confirm with `Get-ChildItem $env:USERPROFILE\Saved Games -Directory`).
@@ -127,4 +152,6 @@ Repack with `build\pack-miz.ps1` — never re-zip manually in the editor mid-dev
 - awesome-dcs-world (tooling index): `github.com/DaKerboul/awesome-dcs-world`
 - pydcs: `github.com/pydcs/dcs` · VEAF-mission-converter: `github.com/VEAF/VEAF-mission-converter`
 - ED official SSE docs: digitalcombatsimulator.com → Support → FAQ → "DCS: World Scripting Engine" (old wiki.eagle.ru is dead)
+- Installed GameGUI/server-hook API: `C:\Program Files (x86)\Steam\steamapps\common\DCSWorld\API\Sim_ControlAPI.md`. Treat examples as version-sensitive and verify them in the installed build.
+- Hook bridge history: DCS 2.9.15.9408 changelog documents `net.dostring_in("mission", "a_do_script(...)")`; DCS 2.9.18.12722 changed return pass-through; 2.9.18.12899 reverted `dostring_in` behavior. The ED-reported `a_do_script` shifted/drop-last return bug is tracked at `https://forum.dcs.world/topic/376809-a_do_script-return-value-pass-thru-mangled-since-dcs-291812722/`.
 - Tacview docs: `raia-software-inc.gitbook.io/tacview`
