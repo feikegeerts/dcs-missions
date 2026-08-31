@@ -59,7 +59,6 @@ M.JSON_NULL = JSON_NULL
 M.null = JSON_NULL
 M.SCHEMA_VERSION = SCHEMA_VERSION
 M.SOURCE = SOURCE
-M.EVENT_TYPES = EVENT_TYPES
 
 local function is_null(value)
   return value == nil or value == JSON_NULL
@@ -73,7 +72,35 @@ local function is_finite_integer(value)
   return is_finite_number(value) and math.floor(value) == value
 end
 
-local MAX_WALL_TIME_LENGTH = 128
+local function decimal_sequence(sequence)
+  if not is_finite_integer(sequence) or sequence < 1 or sequence > MAX_SEQUENCE then
+    return nil, "event sequence must be in the range 1-9007199254740991"
+  end
+
+  local reversed_digits = {}
+  repeat
+    local digit = sequence % 10
+    reversed_digits[#reversed_digits + 1] = string.char(48 + digit)
+    sequence = math.floor(sequence / 10)
+  until sequence == 0
+
+  local digits = {}
+  for index = #reversed_digits, 1, -1 do
+    digits[#digits + 1] = reversed_digits[index]
+  end
+
+  return table.concat(digits)
+end
+
+local function expected_event_id(producer_id, run_key, sequence)
+  local sequence_digits, validation_error = decimal_sequence(sequence)
+  if not sequence_digits then
+    return nil, validation_error
+  end
+
+  return producer_id .. ":" .. run_key .. ":" .. sequence_digits
+end
+
 local DAYS_IN_MONTH = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 }
 
 local function read_digits(value, start, count)
@@ -98,7 +125,7 @@ local function is_wall_time(value)
   end
 
   local length = string.len(value)
-  if length < 20 or length > MAX_WALL_TIME_LENGTH then
+  if length < 20 then
     return false
   end
 
@@ -202,6 +229,22 @@ local function validate_basic_token(value, field_name)
   return true
 end
 
+local function validate_token(value, field_name, additive_validator)
+  local valid, validation_error = validate_basic_token(value, field_name)
+  if not valid then
+    return nil, validation_error
+  end
+
+  if additive_validator then
+    valid, validation_error = additive_validator(value, field_name)
+    if not valid then
+      return nil, validation_error or field_name .. " was rejected by the event_id validator"
+    end
+  end
+
+  return true
+end
+
 local function validate_source_version(value)
   if type(value) ~= "string" then
     return nil, "source_version must be a string"
@@ -237,16 +280,9 @@ local function validate_nullable_token(value, field_name, token_validator)
     return JSON_NULL
   end
 
-  if token_validator then
-    local valid, validation_error = token_validator(value, field_name)
-    if not valid then
-      return nil, validation_error
-    end
-  else
-    local valid, validation_error = validate_basic_token(value, field_name)
-    if not valid then
-      return nil, validation_error
-    end
+  local valid, validation_error = validate_token(value, field_name, token_validator)
+  if not valid then
+    return nil, validation_error
   end
 
   return value
@@ -488,8 +524,11 @@ local function normalize_participant(input, token_validator)
     return nil, "participant status must be known or unknown"
   end
 
-  local participant_id
-  local validation_error
+  local participant_id, validation_error =
+    validate_nullable_token(input.participant_id, "participant_id", token_validator)
+  if not participant_id then
+    return nil, validation_error
+  end
 
   local display_name
   display_name, validation_error = normalize_snapshot_string(input, "display_name", "player_name", "name")
@@ -520,11 +559,6 @@ local function normalize_participant(input, token_validator)
       callsign = callsign,
       coalition = map_coalition(input.coalition, false),
     }
-  end
-
-  participant_id, validation_error = validate_nullable_token(input.participant_id, "participant_id", token_validator)
-  if not participant_id then
-    return nil, validation_error
   end
 
   if is_null(participant_id) then
@@ -1014,28 +1048,24 @@ local function make_factory_options(first, second)
   end
 
   local options = shallow_copy(second)
-  if options.event_id == nil and options.event_id_module == nil and options.allocator == nil then
+  if options.event_id == nil and options.allocator == nil then
     options.event_id = first
   end
   return options
 end
 
 local function get_allocator(dependency, config, producer_id, run_key)
-  local token_validator
-  local identity_builder
-  local sequence_validator
   local allocator
 
-  if type(config.allocator) == "table" or type(config.allocator) == "function" then
+  if config.allocator ~= nil then
+    if type(config.allocator) ~= "table" then
+      return nil, "direct allocator must be a table"
+    end
     allocator = config.allocator
-  elseif
-    type(dependency) == "table"
-    and type(dependency.allocate) ~= "function"
-    and type(dependency.next) ~= "function"
-  then
-    local constructor = dependency.new_allocator or dependency.new
+  elseif type(dependency) == "table" then
+    local constructor = dependency.new
     if type(constructor) ~= "function" then
-      return nil, "event_id dependency must be an allocator or module with new"
+      return nil, "event_id dependency must provide new"
     end
 
     local ok, created_allocator, creation_error = pcall(constructor, {
@@ -1050,48 +1080,18 @@ local function get_allocator(dependency, config, producer_id, run_key)
     end
     allocator = created_allocator
   else
-    allocator = dependency
+    return nil, "event_id dependency must be a module table"
   end
 
-  if type(allocator) ~= "table" and type(allocator) ~= "function" then
-    return nil, "event_id dependency did not provide an allocator"
+  if type(allocator) ~= "table" or type(allocator.allocate) ~= "function" then
+    return nil, "event_id allocator must expose allocate"
   end
 
-  if type(dependency) == "table" then
-    token_validator = dependency.validate_token
-    identity_builder = dependency.build_event_id
-    sequence_validator = dependency.validate_sequence
-  end
-  if type(config.token_validator) == "function" then
-    token_validator = config.token_validator
-  end
-
-  if type(allocator) == "table" and type(allocator.allocate) ~= "function" and type(allocator.next) ~= "function" then
-    return nil, "event_id allocator must expose allocate or next"
-  end
-
-  return allocator, token_validator, identity_builder, sequence_validator
+  return allocator
 end
 
 local function allocate(allocator, event_type)
-  local method
-  local receiver
-  if type(allocator) == "function" then
-    method = allocator
-  elseif type(allocator.allocate) == "function" then
-    method = allocator.allocate
-    receiver = allocator
-  else
-    method = allocator.next
-    receiver = allocator
-  end
-
-  local ok, sequence, event_id
-  if receiver then
-    ok, sequence, event_id = pcall(method, receiver, event_type)
-  else
-    ok, sequence, event_id = pcall(method, event_type)
-  end
+  local ok, sequence, event_id = pcall(allocator.allocate, allocator, event_type)
   if not ok then
     return nil, "event_id allocator failed: " .. tostring(sequence)
   end
@@ -1117,33 +1117,24 @@ function M.new(first, second)
   local producer_id = config.producer_id
   local run_key = config.run_key
   local source_version = config.source_version
-  local dependency = config.event_id or config.event_id_module
+  local dependency = config.event_id
 
   if not dependency and not config.allocator then
     return nil, "producer requires an injected event_id module or allocator"
   end
 
-  local allocator, token_validator, identity_builder, sequence_validator =
-    get_allocator(dependency, config, producer_id, run_key)
-  if not allocator then
-    return nil, token_validator
+  local token_validator
+  if type(dependency) == "table" and type(dependency.validate_token) == "function" then
+    token_validator = dependency.validate_token
   end
 
   local valid, validation_error
-  if token_validator then
-    valid, validation_error = token_validator(producer_id, "producer_id")
-  else
-    valid, validation_error = validate_basic_token(producer_id, "producer_id")
-  end
+  valid, validation_error = validate_token(producer_id, "producer_id", token_validator)
   if not valid then
     return nil, validation_error
   end
 
-  if token_validator then
-    valid, validation_error = token_validator(run_key, "run_key")
-  else
-    valid, validation_error = validate_basic_token(run_key, "run_key")
-  end
+  valid, validation_error = validate_token(run_key, "run_key", token_validator)
   if not valid then
     return nil, validation_error
   end
@@ -1153,11 +1144,17 @@ function M.new(first, second)
     return nil, validation_error
   end
 
+  local allocator, allocator_error = get_allocator(dependency, config, producer_id, run_key)
+  if not allocator then
+    return nil, allocator_error
+  end
+
   local producer = {
     producer_id = producer_id,
     run_key = run_key,
     source_version = source_version,
   }
+  local expected_sequence = 1
 
   local function build(input)
     if type(input) ~= "table" then
@@ -1167,6 +1164,16 @@ function M.new(first, second)
     local event_type = input.event_type
     if type(event_type) ~= "string" or not EVENT_TYPES[event_type] then
       return nil, "event_type must be a supported telemetry event"
+    end
+
+    if expected_sequence > MAX_SEQUENCE then
+      return nil, "event sequence limit 9007199254740991 has been exhausted"
+    end
+    if expected_sequence == 1 and event_type ~= "mission.started" then
+      return nil, "sequence 1 must be mission.started"
+    end
+    if expected_sequence ~= 1 and event_type == "mission.started" then
+      return nil, "mission.started can only use sequence 1"
     end
 
     local sim_time = input.sim_time
@@ -1244,28 +1251,18 @@ function M.new(first, second)
       return nil, event_id
     end
 
-    if sequence_validator then
-      valid, validation_error = sequence_validator(event_sequence)
-    else
-      valid = is_finite_integer(event_sequence) and event_sequence >= 1 and event_sequence <= MAX_SEQUENCE
-      validation_error = "allocator returned an invalid event sequence"
+    if event_sequence ~= expected_sequence then
+      return nil, "allocator returned an unexpected event sequence"
     end
-    if not valid then
-      return nil, validation_error
+    local expected_id, identity_error = expected_event_id(producer_id, run_key, event_sequence)
+    if not expected_id then
+      return nil, identity_error
     end
-    if type(event_id) ~= "string" or string.len(event_id) == 0 then
-      return nil, "allocator returned an invalid event_id"
+    if type(event_id) ~= "string" or event_id ~= expected_id then
+      return nil, "allocator event_id must equal configured producer_id:run_key:decimal_sequence"
     end
 
-    if identity_builder then
-      local expected_event_id, identity_error = identity_builder(producer_id, run_key, event_sequence)
-      if not expected_event_id then
-        return nil, identity_error
-      end
-      if event_id ~= expected_event_id then
-        return nil, "allocator event_id does not match producer, run, and sequence"
-      end
-    end
+    expected_sequence = expected_sequence + 1
 
     return {
       schema_version = SCHEMA_VERSION,

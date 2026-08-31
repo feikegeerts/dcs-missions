@@ -45,6 +45,42 @@ local function new_producer(producer_id, run_key)
   return producer
 end
 
+local function fixed_allocator(sequence, returned_id)
+  return {
+    allocate = function()
+      return sequence, returned_id
+    end,
+  }
+end
+
+local function scripted_allocator(outputs)
+  local output_index = 0
+  local allocator = {
+    allocate = function()
+      output_index = output_index + 1
+      local output = outputs[output_index]
+      if not output then
+        return nil, "scripted allocator ran out of outputs"
+      end
+      return output[1], output[2]
+    end,
+  }
+  return allocator, function()
+    return output_index
+  end
+end
+
+local function new_direct_producer(allocator)
+  local producer, creation_error = envelope.new({
+    allocator = allocator,
+    producer_id = "direct-producer",
+    run_key = "direct-run",
+    source_version = "duel-dynamic-telemetry-v1",
+  })
+  check(producer ~= nil, creation_error)
+  return producer
+end
+
 local function started_input()
   return {
     event_type = "mission.started",
@@ -107,12 +143,34 @@ local function shot_input(coalition, participant)
   }
 end
 
+local function taxonomy_input(event_type, sim_time, fields, payload)
+  local input = {
+    event_type = event_type,
+    sim_time = sim_time,
+    payload = payload or {},
+  }
+  for field_name, value in pairs(fields or {}) do
+    input[field_name] = value
+  end
+  return input
+end
+
 succeeds("production modules return tables without creating globals", function()
   check(type(event_id) == "table", "event_id module did not return a table")
   check(type(envelope) == "table", "envelope module did not return a table")
   check(_G.telemetry_event_id == nil, "event_id module created a global")
   check(_G.telemetry_envelope == nil, "envelope module created a global")
   check(envelope.JSON_NULL ~= nil, "JSON null sentinel is missing")
+end)
+
+succeeds("event taxonomy cannot be mutated through the public module table", function()
+  local producer = new_producer()
+  check(envelope.EVENT_TYPES == nil, "internal event taxonomy is publicly exposed")
+  envelope.EVENT_TYPES = { ["invented.event"] = true }
+  fails(function()
+    return producer:build({ event_type = "invented.event", sim_time = 0, payload = {} })
+  end, "supported telemetry event")
+  envelope.EVENT_TYPES = nil
 end)
 
 succeeds("token and sequence boundaries are exact", function()
@@ -146,7 +204,7 @@ succeeds("sequence one is mission.started and invalid input leaves no gap", func
   local producer = new_producer()
   fails(function()
     return producer:build({ event_type = "ordnance.fired", sim_time = 1 })
-  end, "requires initiator")
+  end, "sequence 1")
 
   local started, started_error = producer:build(started_input())
   check(started ~= nil, started_error)
@@ -183,6 +241,61 @@ succeeds("two identical same-time shots receive consecutive identities", functio
   equal(first.sim_time, second.sim_time)
 end)
 
+succeeds("every event role taxonomy branch builds successfully", function()
+  local producer = new_producer("producer-taxonomy", "run-taxonomy")
+  local started, started_error = producer:build(started_input())
+  check(started ~= nil, started_error)
+
+  local shot = shot_input(2)
+  local reference_fields = {
+    participant = shot.participant,
+    asset = shot.asset,
+    coalition = 2,
+    location = shot.location,
+  }
+  local asset_fields = {
+    asset = shot.asset,
+    coalition = 2,
+    location = shot.location,
+  }
+  local combat_fields = {
+    initiator = shot.initiator,
+    target = shot.initiator,
+    asset = shot.asset,
+    coalition = 2,
+    location = shot.location,
+  }
+  local ordnance_fields = {
+    initiator = shot.initiator,
+    asset = shot.asset,
+    weapon = shot.weapon,
+    coalition = 2,
+    location = shot.location,
+  }
+  local inputs = {
+    taxonomy_input("mission.ended", 1, {}, { reason = "mission-end-observed" }),
+    taxonomy_input("mission.heartbeat", 2, {}, {}),
+    taxonomy_input("participant.entered", 3, reference_fields, {}),
+    taxonomy_input("participant.left", 4, reference_fields, {}),
+    taxonomy_input("asset.spawned", 5, asset_fields, {}),
+    taxonomy_input("asset.despawned", 6, asset_fields, { reason = "intentional" }),
+    taxonomy_input("ordnance.fired", 7, ordnance_fields, {}),
+    taxonomy_input("asset.hit", 8, combat_fields, {}),
+    taxonomy_input("asset.kill-reported", 9, combat_fields, {}),
+    taxonomy_input("asset.dead", 10, asset_fields, {}),
+    taxonomy_input("asset.crashed", 11, asset_fields, {}),
+    taxonomy_input("pilot.dead", 12, asset_fields, {}),
+    taxonomy_input("pilot.ejected", 13, asset_fields, {}),
+  }
+
+  for index, input in ipairs(inputs) do
+    local event, event_error = producer:build(input)
+    check(event ~= nil, input.event_type .. ": " .. tostring(event_error))
+    equal(event.event_type, input.event_type)
+    equal(event.event_sequence, index + 1)
+  end
+end)
+
 succeeds("retry returns the already-built envelope and does not allocate", function()
   local producer = new_producer()
   local started, started_error = producer:build(started_input())
@@ -215,6 +328,142 @@ succeeds("producer accepts an injected allocator without loading dependencies", 
   check(started ~= nil, started_error)
   equal(started.event_sequence, 1)
   equal(started.event_id, "allocator-producer:allocator-run:1")
+end)
+
+succeeds("direct allocators must return the exact configured event identity", function()
+  local producer = new_direct_producer(fixed_allocator(1, "direct-producer:direct-run:1"))
+  local started, started_error = producer:build(started_input())
+  check(started ~= nil, started_error)
+  equal(started.event_id, "direct-producer:direct-run:1")
+
+  local mismatched_producer = new_direct_producer(fixed_allocator(1, "other-producer:direct-run:1"))
+  fails(function()
+    return mismatched_producer:build(started_input())
+  end, "must equal")
+
+  local mismatched_run = new_direct_producer(fixed_allocator(1, "direct-producer:other-run:1"))
+  fails(function()
+    return mismatched_run:build(started_input())
+  end, "must equal")
+
+  local mismatched_sequence = new_direct_producer(fixed_allocator(1, "direct-producer:direct-run:2"))
+  fails(function()
+    return mismatched_sequence:build(started_input())
+  end, "must equal")
+
+  local malformed = new_direct_producer(fixed_allocator(1, "direct-producer:direct-run:not-a-sequence"))
+  fails(function()
+    return malformed:build(started_input())
+  end, "must equal")
+
+  local retryable_allocator = scripted_allocator({
+    { 1, "wrong-producer:direct-run:1" },
+    { 1, "direct-producer:direct-run:1" },
+  })
+  local retryable = new_direct_producer(retryable_allocator)
+  fails(function()
+    return retryable:build(started_input())
+  end, "must equal")
+  local recovered, recovery_error = retryable:build(started_input())
+  check(recovered ~= nil, recovery_error)
+  equal(recovered.event_sequence, 1)
+end)
+
+succeeds("producer enforces direct allocator sequence invariants", function()
+  local sequence_one_ordinance_allocator, sequence_one_calls = scripted_allocator({
+    { 1, "direct-producer:direct-run:1" },
+  })
+  local sequence_one_ordinance = new_direct_producer(sequence_one_ordinance_allocator)
+  fails(function()
+    return sequence_one_ordinance:build(shot_input(2))
+  end, "sequence 1")
+  equal(sequence_one_calls(), 0)
+
+  local started_then_started_allocator, started_then_started_calls = scripted_allocator({
+    { 1, "direct-producer:direct-run:1" },
+    { 2, "direct-producer:direct-run:2" },
+  })
+  local started_then_started = new_direct_producer(started_then_started_allocator)
+  local started, started_error = started_then_started:build(started_input())
+  check(started ~= nil, started_error)
+  fails(function()
+    return started_then_started:build(started_input())
+  end, "only use sequence 1")
+  equal(started_then_started_calls(), 1)
+
+  local skipped = new_direct_producer(scripted_allocator({
+    { 2, "direct-producer:direct-run:2" },
+  }))
+  fails(function()
+    return skipped:build(started_input())
+  end, "unexpected event sequence")
+
+  local duplicate = new_direct_producer(scripted_allocator({
+    { 1, "direct-producer:direct-run:1" },
+    { 1, "direct-producer:direct-run:1" },
+    { 2, "direct-producer:direct-run:2" },
+  }))
+  local duplicate_started, duplicate_started_error = duplicate:build(started_input())
+  check(duplicate_started ~= nil, duplicate_started_error)
+  fails(function()
+    return duplicate:build({ event_type = "mission.heartbeat", sim_time = 1 })
+  end, "unexpected event sequence")
+  local duplicate_recovered, duplicate_recovery_error = duplicate:build({
+    event_type = "mission.heartbeat",
+    sim_time = 1,
+  })
+  check(duplicate_recovered ~= nil, duplicate_recovery_error)
+  equal(duplicate_recovered.event_sequence, 2)
+end)
+
+succeeds("permissive token validators cannot weaken the wire grammar", function()
+  local permissive_event_id = {
+    validate_token = function()
+      return true
+    end,
+    new = function(config)
+      return event_id.new(config)
+    end,
+  }
+
+  fails(function()
+    return envelope.new(permissive_event_id, {
+      producer_id = "bad:id",
+      run_key = "safe-run",
+      source_version = "duel-dynamic-telemetry-v1",
+      token_validator = function()
+        return true
+      end,
+    })
+  end, "invalid character")
+
+  local producer, producer_error = envelope.new({
+    event_id = permissive_event_id,
+    producer_id = "safe-producer",
+    run_key = "safe-run",
+    source_version = "duel-dynamic-telemetry-v1",
+  })
+  check(producer ~= nil, producer_error)
+
+  local started, started_error = producer:build(started_input())
+  check(started ~= nil, started_error)
+  equal(started.event_sequence, 1)
+
+  local bad_participant = shot_input(2)
+  bad_participant.participant.participant_id = "bad:id"
+  fails(function()
+    return producer:build(bad_participant)
+  end, "invalid character")
+
+  local bad_asset = shot_input(2)
+  bad_asset.asset.asset_key = "bad:id"
+  fails(function()
+    return producer:build(bad_asset)
+  end, "invalid character")
+
+  local next_event, next_error = producer:build({ event_type = "mission.heartbeat", sim_time = 1 })
+  check(next_event ~= nil, next_error)
+  equal(next_event.event_sequence, 2)
 end)
 
 succeeds("coalition IDs and canonical values normalize exactly", function()
@@ -409,6 +658,13 @@ succeeds("wall time validates RFC 3339 values before allocation", function()
   equal(offset_event.wall_time, offset_input.wall_time)
   equal(offset_event.event_sequence, 2)
 
+  local long_fraction_input = shot_input(2)
+  long_fraction_input.wall_time = "2026-08-30T12:02:05." .. string.rep("1", 1024) .. "Z"
+  local long_fraction_event, long_fraction_error = producer:build(long_fraction_input)
+  check(long_fraction_event ~= nil, long_fraction_error)
+  equal(long_fraction_event.wall_time, long_fraction_input.wall_time)
+  equal(long_fraction_event.event_sequence, 3)
+
   local invalid_wall_times = {
     "2026-02-29T12:02:05Z",
     "2026-13-01T12:02:05Z",
@@ -416,7 +672,6 @@ succeeds("wall time validates RFC 3339 values before allocation", function()
     "2026-08-30T12:02:05",
     "2026-08-30T12:02:05.+00:00",
     "2026-08-30T12:02:05+24:00",
-    "2026-08-30T12:02:05." .. string.rep("1", 129) .. "Z",
   }
   for _, wall_time in ipairs(invalid_wall_times) do
     local invalid = shot_input(2)
@@ -428,7 +683,7 @@ succeeds("wall time validates RFC 3339 values before allocation", function()
 
   local next_event, next_error = producer:build(shot_input(2))
   check(next_event ~= nil, next_error)
-  equal(next_event.event_sequence, 3)
+  equal(next_event.event_sequence, 4)
 end)
 
 succeeds("payloads enforce JSON object and array shapes", function()
