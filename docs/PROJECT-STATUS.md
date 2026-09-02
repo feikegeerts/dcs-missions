@@ -276,7 +276,9 @@ dedicated-server tail (two live runs, four collector passes, no player).
 Evidence: `docs/telemetry/slice-6-collector-evidence.md`. The unattended
 test loop itself (hook-driven mission load, no player/WebGUI) is documented
 in `docs/telemetry/unattended-test-loop.md`; unattended ordnance testing
-(blue AI engagement) is designed in that doc but not yet implemented.
+(blue AI engagement) is implemented and live-verified in that doc (run
+`run-20260902T181007Z-7b3ea067`), with the design and evidence in
+`docs/test-combat-plan.md`.
 Telemetry now has priority over the optional MIST respawn work. The next
 planned telemetry work is Slice 7, the web shell and raw event persistence;
 record explicit Gate E approval before implementation starts.

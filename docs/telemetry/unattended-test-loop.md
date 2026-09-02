@@ -255,90 +255,89 @@ Copy-Item "D:\DCS World Server\Scripts\MissionScripting.lua.orig" "D:\DCS World 
 # 4. remove the state dir if the run is not needed as evidence
 ```
 
-## Unattended ordnance testing (known gap + design)
+## Unattended ordnance testing (implemented + verified)
 
 Goal: produce `ordnance.fired` events with no human, so Slice 5-style
 capture checks (and later Slice 8 end-to-end) can run unattended.
 
-**Why it does not work today** (verified in `main.lua` on 2026-09-02):
+**Status:** implemented and verified 2026-09-02 in
+`run-20260902T181007Z-7b3ea067`. An empty dedicated server spawned a blue AI
++ a bandit wave that fought and produced a captured `ordnance.fired`
+(sequence 2: initiator `Bandit-1#001-01`, weapon `AIM_120C`), with a gapless
+sequence `1 → 16` ending in `mission.ended` and `duplicates: 0`.
 
-- `ordnance.fired` capture accepts initiators from the `Aerial-1..4`
-  player roster or `Bandit-*#NNN` SPAWN groups. AI-vs-AI shots would be
-  captured **if** the groups are right.
-- But bandit waves only spawn after a **human** `EVENTS.PlayerEnterUnit`
-  marks a slot occupied (`occupiedPlayerSlots`), and `spawnWave` refuses to
-  run without an occupied, alive player group. A blue AI parked in
-  `Aerial-1` makes the group *alive* (so deferred init completes) but never
-  marks the slot *occupied*, so no wave spawns and nothing fights.
-- Even with a wave, the default bandit tasking is CAP around the blue
-  centroid; CAP does not guarantee a weapons engagement.
+**The real blocker** (corrects the earlier hypothesis): it was *not*
+`occupiedPlayerSlots`. `Aerial-1..4` are **player/client slots**
+(`skill = "Player"` / `"Client"` in the ME), and DCS refuses to materialize
+a client group via `coalition.addGroup` — cloning the blue ME template and
+calling `_DATABASE:Spawn` raises a table error. The 4 `skill = "Excellent"`
+groups are the spawnable AI bandits. So the blue AI is built from the
+**spawnable `Bandit-1` AI template** (an F/A-18C with real A/A weapons:
+AIM-120C, AIM-9) and **recolored to blue**, not from the blue ME template.
 
-**What a "test combat" path needs:**
+**How it works** (the implemented design, in `main.lua`):
 
-1. A dev-only blue AI aircraft with air-to-air weapons and an engage/Fight
-   tasking (or a dedicated blue test group, if we keep it out of the
-   player slot).
-2. A way for the wave logic to accept it (mark the slot occupied, or a
-   separate test spawn path that bypasses the player-join requirement).
-3. Bandit tasking switched to INTERCEPT/attack on the blue group so a
-   weapons engagement actually happens (CAP is insufficient).
-4. A dev-only gate **and** a shipping-packager strip:
-   `build\pack-shipping-miz.ps1` synthesizes the shipping `main.lua` by
-   stripping dev blocks; anything test-combat must be added to that strip
-   list so end users never see the test command/AI.
+1. `_G.TEST_COMBAT_ENABLED` gate (set by `bootstrap.lua`; never set in
+   shipping; the packager strips it). Same pattern as
+   `_G.TELEMETRY_DEVELOPMENT_ENABLED`.
+2. The init `SCHEDULER` skips the `anyPlayerGroupAlive()` wait when the flag
+   is set, so `doInit` runs unattended (the shipping build keeps the wait —
+   the packager reverts that clause).
+3. A dev-only one-shot `SCHEDULER` at T+5 s (polling every 1 s until
+   `initDone`) that:
+   - Spawns the **blue AI** from the `Bandit-1` template via the proven
+     MOOSE path: `SPAWN:NewFromTemplate(blueTemplate, "TestCombat-Blue")`
+     + `InitCoalition(coalition.side.BLUE)` +
+     `InitCountry(<blue country id>)` + `InitGrouping(1)`, positioned at the
+     Aerial-1 slot location and headed toward the bandit. The custom
+     `TestCombat-Blue` prefix keeps its name distinct from the real bandit
+     (no `Bandit-1#NNN` collision); `_Prepare` reassigns the STN so there is
+     no datalink clash.
+   - Spawns a **1-ship bandit wave** 15 nm away via the existing
+     `waveSpawner` (`SPAWN:New("Bandit-1")`), headed toward the blue.
+   - Tasks **both** `INTERCEPT` + `WEAPON_FREE` + RED alarm.
 
-**How it triggers unattended (the key design point):** not an F10 command
-(an F10 command needs a click, and unattended mode has no one to click).
-Mission-internal `SCHEDULER`s fire unattended once model time runs — this is
-already proven: the 30 s telemetry heartbeat fired in
-`run-20260902T172154Z-3169883c` with zero players, purely because the hook's
-`setPause(false)` resumed model time. So the trigger is a dev-gated
-`SCHEDULER:New(...)` in `main.lua` that calls a dev-only `startTestCombat()`
-at T+N model-time seconds when a dev flag is set (same gate pattern as
-`_G.TELEMETRY_DEVELOPMENT_ENABLED` set by `bootstrap.lua`; the shipping
-`main.lua` never runs with the flag). The hook then does exactly what it
-already does: load the mission, `setPause(false)`, stop after the budget —
-no new hook capability and no `net.dostring_in`/`a_do_script` bridge (that
-path is obsolete/unsafe with version-specific return-value bugs per
-AGENTS.md).
+**Why the bandit is the accepted initiator:** the telemetry roster accepts
+`Aerial-1..4` (player) or `Bandit-*#NNN` (bandit). The blue AI is named
+`TestCombat-Blue#NNN` (not in the roster), so only the **bandit's** shots
+are captured as `ordnance.fired`. That is fine — the acceptance bar is
+≥1, and the bandit reliably fires (it is the `Bandit-1#001` the normal wave
+pipeline already tracks).
 
-**Design options (decision needed before implementation):**
+**Key gotchas discovered:**
 
-- **A. Dev-gated test-combat block in `duel-dynamic`**: a
-  `_G.TEST_COMBAT_ENABLED`-guarded block that (1) spawns a blue AI aircraft
-  with air-to-air weapons and an engage tasking, (2) sets
-  `occupiedPlayerSlots[idx] = true` directly (bypassing the human
-  `PlayerEnterUnit` requirement — the actual blocker), and (3) spawns one
-  INTERCEPT-tasked wave; armed automatically by the `SCHEDULER` at T+N.
-  An F10 command calling the same `startTestCombat()` is an *optional
-  interactive* convenience only — it is not the unattended path. Pros: one
-  mission, exercises the real wave pipeline end to end. Cons: touches
-  shipping-mission code; packager must strip the whole block; AI death can
-  interact with player-death/respawn logic and needs checking.
-- **B. Separate test mission** (e.g. `ordnance-test`): blue AI group +
-  red bandits with a dedicated shot-capture roster; `.current-mission`
-  switched for the test. Same scheduler self-arming pattern, no shipping
-  risk. Cons: a second mission to maintain; less end-to-end (bypasses the
-  wave pipeline).
+- `Aerial-1..4` are client slots → cannot be spawned via `addGroup`. Build
+  the blue AI from the `Bandit-1` template and flip the coalition.
+- `coalition.addGroup`'s first argument is the **country ID**, not the side:
+  in this mission blue = `80` (CJTF Blue), red = `81` (CJTF Red). The blue
+  country id is read from the Aerial-1 template's `CountryID` rather than
+  hardcoded.
+- 15 nm is short enough to merge + launch within the hook's 400 s auto-stop
+  budget; the normal 60+ nm wave distance would take many minutes.
 
-**Open questions to verify in whichever option is chosen:**
+**How it triggers unattended (the key design point, confirmed):** not an
+F10 command (no one clicks in unattended mode). Mission-internal
+`SCHEDULER`s fire once model time runs — proven by the 30 s telemetry
+heartbeat firing with zero players because the hook's `setPause(false)`
+resumes model time. The test-combat `SCHEDULER` self-arms at T+5 s under the
+dev flag. The hook does exactly what it already does (load the mission,
+`setPause(false)`, stop after the budget) — no new hook capability and no
+`net.dostring_in`/`a_do_script` bridge (obsolete/unsafe with version-specific
+return-value bugs per AGENTS.md).
 
-- Does AI-vs-AI air combat reliably produce shots in this theatre (AI
-  weapons employment, engagement ranges, time to first shot)?
-- Time bound: the hook auto-stop caps the run; an unattended dogfight can
-  run many minutes before the first shot. Budget for it or task both sides
-  tightly (INTERCEPT on a fixed corridor).
-- Does a blue AI death trigger any player-death/respawn behavior that
-  mutates mission state we don't want in the evidence?
-- Wave size counting: if the test aircraft counts as a "player", waves
-  spawn at size 1 — fine, but verify `InitGrouping(1)` + INTERCEPT on it.
+**Kept out of the shipping build:** the block is delimited by a header and a
+`-- <<TEST_COMBAT_BLOCK_END>>` marker. `build\pack-shipping-miz.ps1` strips
+the whole block, reverts the init `SCHEDULER`'s player-wait clause, strips
+the `-- [TEST_COMBAT]` comment line, and asserts no `TEST_COMBAT` string
+survives in the synthesized shipping `main.lua`.
 
-**Acceptance criteria (unattended ordnance run):**
+**Acceptance criteria (unattended ordnance run) — all met 2026-09-02:**
 
-- No player connected; mission + telemetry start via the hook, and the
-  test combat starts on its own from the mission-internal `SCHEDULER` at
-  T+N (no F10, no WebGUI, no `dostring_in`).
-- ≥1 `ordnance.fired` event from an accepted initiator with a valid
-  envelope (distinct `event_id`s, gapless sequences, correct weapon).
-- Collector pass spools them with `duplicates: 0`; sequence stays gapless
-  through the whole run including `mission.ended`.
+- No player connected; mission + telemetry start via the hook, and the test
+  combat starts on its own from the mission-internal `SCHEDULER` at T+N
+  (no F10, no WebGUI, no `dostring_in`).
+- ≥1 `ordnance.fired` event from an accepted initiator with a valid envelope
+  (distinct `event_id`, gapless sequence, correct weapon) — captured at
+  sequence 2 (`Bandit-1#001-01`, `AIM_120C`).
+- Collector pass spools it with `duplicates: 0`; sequence stays gapless
+  through the whole run including `mission.ended` (1 → 16).
