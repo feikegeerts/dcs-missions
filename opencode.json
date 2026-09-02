@@ -1,0 +1,17 @@
+﻿{
+  "$schema": "https://opencode.ai/config.json",
+  "permission": {
+    "external_directory": {
+      "C:\\Program Files (x86)\\Steam\\steamapps\\common\\DCSWorld": "allow",
+      "C:\\Program Files (x86)\\Steam\\steamapps\\common\\DCSWorld\\**": "allow",
+      "C:\\Users\\g_for\\Saved Games\\DCS": "allow",
+      "C:\\Users\\g_for\\Saved Games\\DCS\\**": "allow",
+      "C:\\Users\\g_for\\Saved Games\\DCS.dcs_serverrelease": "allow",
+      "C:\\Users\\g_for\\Saved Games\\DCS.dcs_serverrelease\\**": "allow",
+      "C:\\Users\\g_for\\Saved Games\\DCS.release_server": "allow",
+      "C:\\Users\\g_for\\Saved Games\\DCS.release_server\\**": "allow",
+      "D:\\DCS World Server": "allow",
+      "D:\\DCS World Server\\**": "allow"
+    }
+  }
+}
