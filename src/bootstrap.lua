@@ -32,6 +32,10 @@ end
 local ROOT = resolveRoot()
 _G.MY_SCRIPTS_ROOT = ROOT
 _G.TELEMETRY_DEVELOPMENT_ENABLED = true
+-- Dev-only unattended test combat (ordnance evidence). The packager strips
+-- the gated block in main.lua and reverts the init bypass for shipping;
+-- comment this out to run a normal dev session without test combat.
+_G.TEST_COMBAT_ENABLED = true
 env.info("[bootstrap] root: " .. ROOT)
 
 -- Read active mission name from .current-mission.

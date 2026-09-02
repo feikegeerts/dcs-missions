@@ -692,7 +692,8 @@ SCHEDULER:New(nil, function()
   if initDone then
     return false
   end
-  if not anyPlayerGroupAlive() then
+  -- [TEST_COMBAT] dev-only: skip the player wait for unattended runs (packager strips this comment + the clause below for shipping).
+  if not anyPlayerGroupAlive() and not _G.TEST_COMBAT_ENABLED then
     env.info("[duel-dynamic] init: no player group alive yet, retrying...")
     return nil -- keep polling
   end
@@ -701,5 +702,121 @@ SCHEDULER:New(nil, function()
   -- instead of rescheduling; the initDone guard above is the safety net.
   return false
 end, {}, INIT_DELAY, INIT_POLL_INTERVAL, 0, INIT_TIMEOUT)
+
+-- =====================================================================
+-- Dev-only unattended test combat (ordnance evidence). Gated by
+-- _G.TEST_COMBAT_ENABLED (set by bootstrap). The packager strips this
+-- entire block (from this header to the matching end marker) and asserts
+-- no TEST_COMBAT strings survive in the shipping build.
+-- =====================================================================
+if _G.TEST_COMBAT_ENABLED then
+  SCHEDULER:New(nil, function()
+    if not initDone then
+      return nil -- wait for doInit (runs early when TEST_COMBAT skips the player-wait)
+    end
+    if currentWaveGroup and currentWaveAlive > 0 then
+      return false -- a wave is already active; do not double-spawn
+    end
+
+    -- 1. Blue AI reference position: the Aerial-1 player-slot location (a
+    --    sensible blue-side coordinate). Aerial-1..4 are player/client slots,
+    --    which DCS refuses to materialize via coalition.addGroup, so the blue
+    --    ME template cannot be spawned directly. We only need its position +
+    --    blue country id here (both are registered in the _DATABASE).
+    local aerialTemplate = _DATABASE
+      and _DATABASE.Templates
+      and _DATABASE.Templates.Groups
+      and _DATABASE.Templates.Groups["Aerial-1"]
+      and _DATABASE.Templates.Groups["Aerial-1"].Template
+    local blueX = aerialTemplate and aerialTemplate.x
+    local blueY = aerialTemplate and aerialTemplate.y
+    local blueCountryID = aerialTemplate and aerialTemplate.CountryID
+    if not blueX or not blueY or not blueCountryID then
+      env.error("[duel-dynamic][test-combat] Aerial-1 template position/country unavailable")
+      return false
+    end
+    local blueRefCoord = COORDINATE:New(blueX, SPAWN_ALTITUDE_M, blueY)
+
+    -- 2. Blue AI fighter: reuse the Bandit-1 template (a spawnable AI F/A-18C
+    --    with real A/A weapons: AIM-120C, AIM-9) and recolor it blue via the
+    --    proven MOOSE SPAWN path (InitCoalition + InitCountry). The custom
+    --    "TestCombat-Blue" prefix keeps its name distinct from the real bandit
+    --    so the two do not collide in MOOSE bookkeeping or the telemetry
+    --    roster; _Prepare reassigns the STN so there is no datalink clash.
+    local blueTemplate = _DATABASE
+      and _DATABASE.Templates
+      and _DATABASE.Templates.Groups
+      and _DATABASE.Templates.Groups["Bandit-1"]
+      and _DATABASE.Templates.Groups["Bandit-1"].Template
+    if not blueTemplate then
+      env.error("[duel-dynamic][test-combat] Bandit-1 template not found in _DATABASE")
+      return false
+    end
+    local blueSpawner
+    local okNew, newErr = pcall(function()
+      blueSpawner = SPAWN:NewFromTemplate(blueTemplate, "TestCombat-Blue")
+    end)
+    if not okNew or not blueSpawner then
+      env.error("[duel-dynamic][test-combat] failed to create blue SPAWN: " .. tostring(newErr))
+      return false
+    end
+    blueSpawner:InitCoalition(coalition.side.BLUE)
+    blueSpawner:InitCountry(blueCountryID) -- blue country (CJTF Blue) from the Aerial-1 template
+    blueSpawner:InitGrouping(1)
+
+    -- 3. Spawn a 1-ship bandit wave a SHORT distance from the blue AI. The
+    --    normal wave distance (60+ nm) would take many minutes to close, far
+    --    beyond the unattended hook's auto-stop budget; 15 nm lets the two
+    --    INTERCEPT-tasked, WEAPON_FREE aircraft merge and launch within the
+    --    run window.
+    local tcDistM = 15 * 1609.344 -- 15 nm test-combat engagement distance
+    local banditCoord, bearing = randomOffsetCoord(blueRefCoord, tcDistM, tcDistM)
+    local banditHeading = (bearing + 180) % 360 -- bandit heads toward the blue
+    local blueHeading = bearing % 360 -- blue heads toward the bandit
+    blueSpawner:InitHeading(blueHeading)
+    waveSpawner:InitGrouping(1)
+    waveSpawner:InitSetUnitRelativePositions(formationPositions(1, banditHeading))
+    waveSpawner:InitHeading(banditHeading)
+    local banditGrp = waveSpawner:SpawnFromCoordinate(banditCoord)
+    if not banditGrp then
+      env.error("[duel-dynamic][test-combat] failed to spawn bandit wave")
+      return false
+    end
+    waveNumber = waveNumber + 1
+    currentWaveGroup = banditGrp
+    currentWaveGroupName = banditGrp:GetName()
+    currentWaveAlive = 1
+    env.info(string.format("[duel-dynamic][test-combat] bandit wave %d spawned at %s", waveNumber, coordStr(banditCoord)))
+
+    -- 4. Spawn the blue AI at the reference position, headed toward the bandit.
+    local okSpawn, blueGrp = pcall(function()
+      return blueSpawner:SpawnFromCoordinate(blueRefCoord)
+    end)
+    if not okSpawn or not blueGrp then
+      env.error("[duel-dynamic][test-combat] failed to spawn blue AI: " .. tostring(blueGrp))
+      return false
+    end
+    env.info("[duel-dynamic][test-combat] blue AI spawned: " .. blueGrp:GetName())
+
+    -- 5. Task both sides: INTERCEPT + WEAPON_FREE + RED alarm.
+    local function taskIntercept(grp, targetGrp, label)
+      if not grp or not targetGrp then return end
+      pcall(function() grp:OptionROEOpenFireWeaponFree() end)
+      pcall(function() grp:OptionAlarmStateRed() end)
+      local fg = FLIGHTGROUP:New(grp)
+      local mission = AUFTRAG:NewINTERCEPT(targetGrp)
+      mission.optionROE = ENUMS.ROE.OpenFireWeaponFree
+      mission.optionAlarm = ENUMS.AlarmState.Red
+      fg:AddMission(mission)
+      env.info(string.format("[duel-dynamic][test-combat] %s tasked INTERCEPT -> %s", label, targetGrp:GetName()))
+    end
+    taskIntercept(banditGrp, blueGrp, "bandit")
+    taskIntercept(blueGrp, banditGrp, "blue AI")
+
+    -- 6. Stop the SCHEDULER (one-shot).
+    return false
+  end, {}, 5, 1) -- wait for initDone, then poll every 1 s
+end
+-- <<TEST_COMBAT_BLOCK_END>>
 
 env.info("[duel-dynamic] main done (init pending)")

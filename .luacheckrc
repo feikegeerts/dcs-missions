@@ -40,6 +40,9 @@ read_globals = {
   "FLIGHTGROUP",
   "ARMYGROUP",
   "SCORING",
+  "UTILS",
+  "COORDINATE",
+  "ENUMS",
   "_DATABASE",
   "_SETTINGS",
 }
