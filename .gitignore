@@ -12,6 +12,12 @@ lib/dcs-world-schema/
 
 # opencode runtime
 .opencode/node_modules/
+.opencode/opencode-loop/
+
+# Environment / secrets (never commit)
+.env
+.env.*
+!.env.example
 
 # Contract test dependencies
 /contracts/node_modules/
