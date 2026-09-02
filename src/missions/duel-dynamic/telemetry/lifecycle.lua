@@ -1,5 +1,11 @@
 local M = {}
 
+local LIFECYCLE_EVENT_TYPES = {
+  ["mission.started"] = true,
+  ["mission.heartbeat"] = true,
+  ["mission.ended"] = true,
+}
+
 local function call_method(receiver, method_name, ...)
   local method = receiver and receiver[method_name]
   if type(method) ~= "function" then
@@ -68,39 +74,44 @@ function M.new(config)
     return nil, fault_error
   end
 
-  local function build_input(event_type, payload)
-    local sim_time, sim_error = call_provider(config.sim_time, "sim_time", false)
-    if sim_time == nil then
-      return nil, sim_error
+  local function prepare_input(input)
+    if type(input) ~= "table" then
+      return nil, "event input must be a table"
     end
 
-    local wall_time
-    if config.wall_time then
-      wall_time = call_provider(config.wall_time, "wall_time", true)
+    local prepared = {}
+    for key, value in pairs(input) do
+      prepared[key] = value
     end
 
-    return {
-      event_type = event_type,
-      sim_time = sim_time,
-      wall_time = wall_time,
-      payload = payload,
-    }
+    if prepared.sim_time == nil then
+      local sim_time, sim_error = call_provider(config.sim_time, "sim_time", false)
+      if sim_time == nil then
+        return nil, sim_error
+      end
+      prepared.sim_time = sim_time
+    end
+
+    if prepared.wall_time == nil and config.wall_time then
+      prepared.wall_time = call_provider(config.wall_time, "wall_time", true)
+    end
+
+    return prepared
   end
 
-  local function build_and_persist(event_type, payload, success_state)
-    local input, input_error = build_input(event_type, payload)
-    if not input then
-      return fault(input_error)
-    end
-
+  local function persist_input(input, success_state)
     local event, build_error = call_method(producer, "build", input)
     if not event then
-      return fault("building " .. event_type .. " failed: " .. tostring(build_error))
+      return fault("building " .. tostring(input.event_type) .. " failed: " .. tostring(build_error))
     end
 
     local written, write_error = call_method(sink, "write", event)
     if not written then
-      return fault("persisting " .. event_type .. " failed: " .. tostring(write_error), event, success_state)
+      return fault(
+        "persisting " .. tostring(input.event_type) .. " failed: " .. tostring(write_error),
+        event,
+        success_state
+      )
     end
 
     state = success_state
@@ -109,6 +120,18 @@ function M.new(config)
       ended_event = event
     end
     return event
+  end
+
+  local function build_and_persist(event_type, payload, success_state)
+    local input, input_error = prepare_input({
+      event_type = event_type,
+      payload = payload,
+    })
+    if not input then
+      return fault(input_error)
+    end
+
+    return persist_input(input, success_state)
   end
 
   function controller:start()
@@ -123,6 +146,26 @@ function M.new(config)
       return nil, "mission heartbeat requires an active lifecycle"
     end
     return build_and_persist("mission.heartbeat", {}, "active")
+  end
+
+  -- Persist an already-normalized source-event input while the run is active.
+  -- The producer is still the only allocator: a failed sink write therefore
+  -- retains the exact envelope in pending_event and closes the lifecycle until
+  -- retry_pending succeeds.
+  function controller:record(input)
+    if type(input) == "table" and LIFECYCLE_EVENT_TYPES[input.event_type] then
+      return nil, "lifecycle event types must use start, heartbeat, or finish"
+    end
+    if state ~= "active" then
+      return nil, "active lifecycle is required to record an event"
+    end
+
+    local prepared, preparation_error = prepare_input(input)
+    if not prepared then
+      return fault(preparation_error)
+    end
+
+    return persist_input(prepared, "active")
   end
 
   function controller:finish()

@@ -1,6 +1,7 @@
 # DCS Telemetry Implementation Plan
 
-**Status:** Planning only. No implementation is authorized by this document.
+**Status:** Implementation in progress. Slices 1–5 are complete; every later
+slice still requires its own Gate E approval.
 
 This plan turns the duel-dynamic mission into a telemetry producer and adds a
 public read-only dashboard backed by a protected ingestion API. Work is split
@@ -20,8 +21,8 @@ reinterpret:
 - The initial historical unit is a `mission run`, one DCS mission load.
 - A DCS restart creates a new mission run with fresh state and a new history
   entry.
-- Version one tracks the configured blue player aircraft, the paired red AI
-  bandits spawned by `duel-dynamic`, and every discrete ordnance item fired by
+- Version one tracks the configured blue player aircraft, the red AI package
+  aircraft spawned by `duel-dynamic`, and every discrete ordnance item fired by
   those aircraft.
 - Ground units, ships, statics, scenery, environmental effects, and unrelated
   mission entities are outside version-one scope.
@@ -209,8 +210,10 @@ The mission script's pairing configuration is the version-one asset boundary:
 
 - Blue aircraft belong to `PLAYER_GROUP_NAMES`: `Aerial-1`, `Aerial-2`, and
   `Aerial-3`.
-- Red aircraft belong to `BANDIT_GROUP_NAMES`: `Bandit-1`, `Bandit-2`, and
-  `Bandit-3`, including MOOSE's spawned-name suffixes.
+- Red aircraft belong to the `BANDIT_GROUP_NAMES` allow-list: `Bandit-1`,
+  `Bandit-2`, and `Bandit-3`, including MOOSE's spawned-name suffixes. The
+  current package-wave lifecycle clones `Bandit-1` into a multi-unit group;
+  `Bandit-2` and `Bandit-3` remain accepted for historical runs.
 - An asset instance represents an individual aircraft incarnation, even though
   the current configured groups contain one aircraft each.
 - A discrete weapon event is in scope only when its initiator resolves to one
@@ -670,6 +673,10 @@ development sink contains contract-valid lifecycle records.
 
 ### Slice 5: Capture one MOOSE ordnance event
 
+**Status:** Complete on 2026-09-01. See
+`docs/telemetry/slice-5-ordnance-evidence.md` for automated, controlled-shot,
+and two-player dedicated-server evidence.
+
 **Recommended model:** GPT-5.6 Luna Xhigh.
 
 **Why:** After run context and the sink exist, this is one bounded MOOSE event
@@ -678,7 +685,7 @@ adapter with explicit DCS acceptance steps.
 **Purpose:** Prove mission-side combat capture with one discrete weapon.
 
 **Scope:** Register `EVENTS.Shot`, accept only initiators belonging to the
-configured blue player aircraft or paired red bandits, normalize the event, and
+configured blue player aircraft or allowed red bandit groups, normalize the event, and
 write it through the Slice 4 sink. Do not capture machine-gun start/end events.
 
 **DCS validation:** Fire two discrete weapons. Verify exactly two
@@ -794,7 +801,8 @@ replacement, scripted despawn, and combat loss are core domain semantics.
 - Treat each tracked aircraft incarnation as one asset instance.
 - Register configured blue player aircraft when mission initialization or a
   confirmed lifecycle event first observes the incarnation.
-- Register each paired red bandit through its `SPAWN` callback.
+- Register every aircraft unit in each red package through the package
+  `SPAWN` callback; one callback can now contain 1–3 unit incarnations.
 - Increment instance identity when a slot or bandit name is reused for a new
   incarnation; never use the DCS name alone as the asset key.
 - Emit `asset.despawned` before an intentional scripted bandit removal so it is
@@ -1146,7 +1154,7 @@ replayable when related writes cannot be atomic.
 
 ### Scope creep
 
-Version one covers only the configured blue player aircraft, paired red
+Version one covers only the configured blue player aircraft, package-wave red
 bandits, and their discrete ordnance. Do not add generic world scanning or new
 asset categories merely because DCS exposes them. Broader coverage requires an
 explicit post-version-one use case and validation scenario.
@@ -1179,7 +1187,7 @@ Version one is ready when all of the following are true:
 - The local collector recovers from network/API interruption.
 - The dashboard works on desktop and mobile.
 - Existing duel-dynamic behavior remains intact.
-- Only the configured player aircraft, paired bandits, and their discrete
+- Only the configured player aircraft, package-wave bandits, and their discrete
   ordnance are required to appear in the version-one ledger.
 - Stock-sanitized shipping behavior and telemetry are validated through the
   bridge proven in Slice 3.

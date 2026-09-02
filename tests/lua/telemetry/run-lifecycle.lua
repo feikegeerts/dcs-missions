@@ -4,6 +4,7 @@ local json = dofile("src/missions/duel-dynamic/telemetry/json.lua")
 local ndjson_sink = dofile("src/missions/duel-dynamic/telemetry/ndjson_sink.lua")
 local lifecycle = dofile("src/missions/duel-dynamic/telemetry/lifecycle.lua")
 local development = dofile("src/missions/duel-dynamic/telemetry/development.lua")
+local shot = dofile("src/missions/duel-dynamic/telemetry/shot.lua")
 
 local tests_run = 0
 local failures = {}
@@ -97,6 +98,34 @@ local function new_controller(label, sink, options)
   return controller, function(value)
     sim_time = value
   end
+end
+
+local function asset_spawned_input(sim_time)
+  return {
+    event_type = "asset.spawned",
+    sim_time = sim_time,
+    initiator = envelope.JSON_NULL,
+    target = envelope.JSON_NULL,
+    participant = envelope.JSON_NULL,
+    asset = {
+      status = "known",
+      kind = "aircraft",
+      asset_key = "aerial-1.1",
+      dcs_name = "Aerial-1-1",
+      dcs_type = "FA-18C_hornet",
+      coalition = 2,
+    },
+    weapon = envelope.JSON_NULL,
+    coalition = 2,
+    location = {
+      status = "known",
+      coordinate_system = "dcs-local",
+      x = 1,
+      y = 2,
+      z = 3,
+    },
+    payload = {},
+  }
 end
 
 local function read_all(path)
@@ -196,6 +225,34 @@ succeeds("pending heartbeat retry prevents sequence gaps", function()
   check(ended ~= nil, end_error)
   equal(ended.event_sequence, 3)
   equal(#events, 3)
+end)
+
+succeeds("generic active-run persistence uses the existing producer and sink", function()
+  local sink, events, calls = new_memory_sink()
+  local controller = new_controller("generic-record", sink)
+  check(controller:start())
+
+  local calls_before_rejection = calls()
+  for _, event_type in ipairs({ "mission.started", "mission.heartbeat", "mission.ended" }) do
+    local rejected, rejection_error = controller:record({ event_type = event_type, sim_time = 12.5 })
+    equal(rejected, nil, "lifecycle event was accepted by generic record: " .. event_type)
+    check(
+      string.find(rejection_error, "lifecycle event types", 1, true) ~= nil,
+      "unexpected rejection: " .. tostring(rejection_error)
+    )
+  end
+  equal(calls(), calls_before_rejection)
+  equal(#events, 1)
+  equal(controller:state(), "active")
+
+  local recorded, record_error = controller:record(asset_spawned_input(12.5))
+  check(recorded ~= nil, record_error)
+  equal(recorded.event_sequence, 2)
+  equal(recorded.event_type, "asset.spawned")
+  equal(recorded.sim_time, 12.5)
+  equal(recorded.asset.asset_key, "aerial-1.1")
+  equal(#events, 2)
+  equal(calls(), 2)
 end)
 
 succeeds("lifecycle faults closed without breaking callers", function()
@@ -332,7 +389,12 @@ succeeds("development adapter writes lifecycle NDJSON and creates fresh runs", f
     env = fake_env,
     BASE = fake_base,
     SCHEDULER = fake_scheduler,
-    EVENTS = { MissionEnd = 12 },
+    EVENTS = { MissionEnd = 12, Shot = 13 },
+    shot = shot,
+    player_group_names = { "Aerial-1", "Aerial-2", "Aerial-3" },
+    bandit_group_names = { "Bandit-1", "Bandit-2", "Bandit-3" },
+    player_coalition = 2,
+    bandit_coalition = 1,
     state = state,
     telemetry_directory = temporary_directory,
     heartbeat_interval = 30,
@@ -349,6 +411,9 @@ succeeds("development adapter writes lifecycle NDJSON and creates fresh runs", f
   equal(schedules[1].start_after, 30)
   equal(schedules[1].repeat_after, 30)
   equal(count_lines(read_all(first.path)), 1)
+  check(first.shot ~= nil, "development runtime did not retain the Shot adapter")
+  check(first.shot_watcher == watchers[2], "development runtime did not retain the Shot watcher")
+  equal(watchers[2].handled, 13)
 
   model_time = 30
   check(schedules[1].callback(), "heartbeat callback stopped unexpectedly")
@@ -356,6 +421,8 @@ succeeds("development adapter writes lifecycle NDJSON and creates fresh runs", f
   model_time = 60
   watchers[1]:OnEventMissionEnd()
   equal(first.controller:state(), "ended")
+  equal(watchers[2].unhandled, 13)
+  check(first.shot.watcher == nil, "mission end did not stop the Shot adapter")
   equal(schedules[1].removed, 1)
   local first_content = read_all(first.path)
   equal(count_lines(first_content), 3)
@@ -375,7 +442,9 @@ succeeds("development adapter writes lifecycle NDJSON and creates fresh runs", f
   equal(first.producer_id, second.producer_id)
   check(string.find(first.producer_id, "dcs-dev-", 1, true) == 1, "development producer ID has wrong prefix")
   equal(count_lines(read_all(second.path)), 1)
-  watchers[2]:OnEventMissionEnd()
+  check(second.shot_watcher == watchers[4], "second runtime did not retain its Shot watcher")
+  watchers[3]:OnEventMissionEnd()
+  equal(watchers[4].unhandled, 13)
 
   for _, path in ipairs(created_paths) do
     os.remove(path)

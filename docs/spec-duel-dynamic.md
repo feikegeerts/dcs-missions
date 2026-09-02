@@ -1,10 +1,10 @@
 # Mission spec: duel-dynamic
 
 Current active mission (`.current-mission = duel-dynamic`). **1–3 player slots vs
-1–3 AI bandits**, paired 1:1 by index. Each blue player slot has a matching
-red bandit SPAWN template; a player entering spawns their paired bandit 60+ mi
-away in a random direction; a player leaving despawns it. Bandits engage the
-player via MOOSE `AUFTRAG:NewINTERCEPT`.
+matching 1–3 aircraft AI package waves**. Each wave is one multi-aircraft DCS
+group spawned in close formation 60+ statute miles from the blue-player
+centroid. It receives a shared MOOSE CAP task so multiplayer produces one
+package fight rather than unrelated paired duels.
 
 This is a test bed for the dynamic-spawn pipeline. It supersedes `duel-1v1`
 (see §10).
@@ -30,21 +30,23 @@ Switch active mission by editing `.current-mission` and restarting.
 
 ---
 
-## 2. Pairing model
+## 2. Roster and template model
 
-| Index | Blue slot (player, ME) | Red bandit (SPAWN template, ME) |
-|------:|---|---|
-| 1 | `Aerial-1` | `Bandit-1` |
-| 2 | `Aerial-2` | `Bandit-2` |
-| 3 | `Aerial-3` | `Bandit-3` |
+| Role | Mission Editor groups |
+|---|---|
+| Blue player roster | `Aerial-1`, `Aerial-2`, `Aerial-3` |
+| Active red wave template | `Bandit-1` (one aircraft, Late Activation) |
+| Retained legacy templates | `Bandit-2`, `Bandit-3` (not spawned by the package-wave lifecycle) |
 
-Only the bandit groups must be **Late Activation ✓** in the ME (they're SPAWN
-templates). The player slots are normal client slots — they spawn at mission
-start and persist.
+The player slots are normal client slots. The red groups are **Late Activation
+✓**. `SPAWN:InitGrouping(1|2|3)` clones the `Bandit-1` aircraft into one true
+multi-unit DCS group, while `InitSetUnitRelativePositions` lays out the group in
+a compact wedge.
 
-The code uses `BANDIT_GROUP_NAMES[i]` and `PLAYER_GROUP_NAMES[i]` as parallel
-arrays. If you add or rename a pair, update both arrays at the top of
-`missions/duel-dynamic/main.lua` (search for `-- Pairing config`).
+`PLAYER_GROUP_NAMES` defines the available blue roster. `BANDIT_GROUP_NAMES`
+remains the telemetry allow-list; `BANDIT_GROUP_NAMES[1]` is the active wave
+template. Update the mission archive, source arrays, telemetry tests, and this
+spec together if these names change.
 
 ---
 
@@ -52,22 +54,26 @@ arrays. If you add or rename a pair, update both arrays at the top of
 
 ### 3.1 Spawn rules
 
-- **Initial spawn.** The first-round `init` runs in a poll loop (see §4.2).
-  When the world is ready, it builds the bandit `SPAWN` objects and randomises
-  each player slot's **heading** (the position part is a no-op on a
-  client-controlled player slot in MP; see §6). The player stays at the ME
-  position for round 1.
-- **Player enters a slot.** A `PlayerEnterUnit` event spawns the paired
-  bandit 60+ mi from the live player position, in a random heading.
-  The bandit is given an `INTERCEPT` task on the player's group and immediate
-  aggressive options (`WEAPON_FREE` ROE, `RED` alarm, `EVADE_FIRE` ROT).
-- **Player leaves.** A `PlayerLeaveUnit` event despawns the paired bandit.
-- **Bandit is killed.** A 30 s respawn timer fires; on fire, the bandit is
-  re-spawned 60+ mi from the live player in a fresh random direction.
-- **Player is killed.** A 30 s respawn timer fires; on fire, the *old* bandit
-  is despawned and a *fresh* bandit is spawned 60+ mi from the player's
-  current group position. **The player group itself is not teleported** (see
-  §6.1). The player rejoins the same slot at the death location.
+- **Initial spawn.** The init poll catches all occupied slots, then waits a
+  three-second assembly window. One red DCS group is spawned with one aircraft
+  per live blue aircraft.
+- **Placement.** The red lead spawns 60–72 statute miles from the arithmetic
+  blue centroid. Wingmen are about 1.5 NM laterally and 0.5 NM in trail, all
+  facing back toward blue.
+- **Tasking.** The package receives one `AUFTRAG:NewCAP` over a 150 km zone
+  centered on the blue package, plus immediate `WEAPON_FREE`, `RED` alarm, and
+  `EVADE_FIRE` options.
+- **Player enters during a live wave.** The current DCS group is not mutated or
+  reset. The joiner is included in the next wave. DCS cannot add an aircraft to
+  an already spawned group.
+- **Player leaves or dies.** The current red package remains available to the
+  other players. If every blue slot becomes empty, a one-second delayed cleanup
+  destroys the package and cancels pending wave work.
+- **Bandit is killed.** The individual loss is counted, but no replacement
+  spawns while any aircraft from that wave remains alive.
+- **Whole wave is killed.** The 30-second timer begins after the final red loss.
+  The next wave is spawned as one package sized from the live blue aircraft at
+  callback time.
 
 ### 3.2 Distance rule
 
@@ -78,8 +84,8 @@ RANDOM_DIST_MAX_M   = MIN_SEPARATION_M + 20000  # 60–72 sm
 SPAWN_ALTITUDE_M    = 15000 * 0.3048  # 15 000 ft
 ```
 
-Statute miles, not nautical. `60 sm ≈ 52 nm`. Logging reports in nm
-(`"spawning Bandit-1 59.5 nm from Aerial-1"`).
+Statute miles, not nautical. `60 sm ≈ 52 nm`. Logging reports the lead's
+distance from the blue centroid in nautical miles.
 
 ### 3.3 Aggression knobs
 
@@ -88,13 +94,13 @@ editing (mission restart; no repack needed).
 
 | Setting | Default | Effect |
 |---|---|---|
-| `BANDIT_TASK` | `"INTERCEPT"` | `"INTERCEPT"` chases the player directly. `"CAP"` orbits a zone; uses `BANDIT_CAP_RADIUS_M`. |
+| `BANDIT_TASK` | `"CAP"` | `"CAP"` gives the complete package a shared engagement area. `"INTERCEPT"` focuses the package on the first live player and is retained for testing. |
 | `BANDIT_ROE` | `"WEAPON_FREE"` | `"WEAPON_FREE"` = fire on any detected. `"OPEN_FIRE"` = hostile-only. `"HOLD"` = never. |
 | `BANDIT_ROT` | `"EVADE_FIRE"` | Defensive break when fired on. |
 | `BANDIT_ALARM` | `"RED"` | `"RED"` = engage on detection. `"AUTO"` = smart. `"GREEN"` = manual. |
 | `BANDIT_ALT_FT` | `25000` | Working altitude in feet. |
 | `BANDIT_SPEED_KT` | `450` | Cruise speed in knots. |
-| `BANDIT_CAP_RADIUS_M` | `100000` | CAP zone radius in metres (CAP mode only). |
+| `BANDIT_CAP_RADIUS_M` | `150000` | CAP zone radius in metres (CAP mode only). Contains the complete red spawn ring. |
 
 The aggression settings are applied *directly* to the live DCS group first
 (`OptionROEOpenFireWeaponFree`, `OptionAlarmStateRed`, `OptionROTEvadeFire`)
@@ -109,9 +115,8 @@ Coalition-scoped (blue-only). Available from MISSION START.
 
 - **Show kills** — `MESSAGE:New(Tracker:format(), 10):ToCoalition(BLUE)`
 - **Reset kills** — `Tracker:reset()`
-- **Respawn all bandits** — spawns a fresh bandit for every pair (one per
-  bandit index), regardless of whether a player is in the slot. Useful for
-  shake-downs.
+- **Respawn bandit wave** — explicitly destroys the current package and
+  immediately spawns one replacement package sized to the live blue aircraft.
 
 ---
 
@@ -147,34 +152,22 @@ slot) and returns `false` to stop the scheduler cleanly.
 `simResume`. A fixed 1 s delay would race. A dedicated server can also run
 headless for minutes before its first player arrives. The poll therefore has
 no wall-clock timeout and accepts the first occupied Aerial slot, not only
-`Aerial-1`. The first-round catch pass then spawns the matching bandit even if
-the player-enter event happened before `initDone` became true.
+`Aerial-1`. The catch pass records every live slot, and the three-second
+assembly callback creates one package from the resulting roster.
 
 ### 4.3 Kill handler details
 
-`banditWatcher` listens on `EVENTS.Dead` and `EVENTS.Crash`. It filters by
-`EventData.IniCoalition == coalition.side.RED` (more reliable than
-`victim:GetCoalition()` on dead wrappers) and by `^Bandit-N` group name
-prefix. A `countedGroups[gname]` table dedupes — each bandit group only
-counts once per death, so duplicate Dead/Crash events for the same kill
-don't double-count. The kill fires a `SCHEDULER` for `RESPAWN_DELAY` (30 s)
-that re-spawns the bandit only if the paired player slot is still occupied.
+`banditWatcher` listens on `EVENTS.Dead` and `EVENTS.Crash`. It filters by red
+coalition and the exact current wave group name. `countedBanditUnits` dedupes
+on `IniDCSUnitName`/`IniUnitName`, so separate aircraft in the same DCS group
+score separately while duplicate Dead/Crash reports do not. The 30-second
+schedule is created only when `currentWaveAlive` reaches zero.
 
-### 4.4 Death handler details
+### 4.4 Wave scheduling and cancellation
 
-`playerDeathWatcher` listens on `EVENTS.Dead`, `EVENTS.Crash`,
-`EVENTS.PilotDead`. Same coalition + name + dedup pattern. The death
-fires a `SCHEDULER` for `PLAYER_RESPAWN_DELAY` (30 s) that:
-1. Reads the player's current group position (`GROUP:FindByName(pname)`)
-   — this is the *slot* position (where the player died), not the dying
-   group, because the dying group may be destroyed by the time the
-   scheduler fires.
-2. Despawns the old bandit.
-3. Spawns a fresh bandit 60+ mi from the player-anchor via
-   `spawnBanditAt(idx, playerAnchor)`.
-
-The player is not teleported (see §6.1). They rejoin the same slot at
-the death position.
+Only one wave spawn can be pending. A monotonically increasing token makes
+stale scheduler callbacks harmless after an F10 reset or empty-server cleanup.
+Player deaths have no mission-specific watcher and do not reset red aircraft.
 
 ---
 
@@ -193,11 +186,11 @@ exactly** `Aerial-1`, `Aerial-2`, `Aerial-3`.
 
 ### 5.3 Bandit SPAWN templates
 
-Three red AI groups, skill = Good (or Client for the dumbest bandits),
-country = any red country. Names **must be exactly** `Bandit-1`, `Bandit-2`,
-`Bandit-3`. **Late Activation ✓ on each** — this is critical; the bandit
-must not auto-spawn at mission start, otherwise you get static enemies
-alongside the SPAWNed ones.
+Three one-aircraft red AI groups currently exist, named `Bandit-1`, `Bandit-2`,
+and `Bandit-3`, with **Late Activation ✓**. The current wave spawner uses
+`Bandit-1` and MOOSE `InitGrouping` to create a 1–3 aircraft group. `Bandit-2`
+and `Bandit-3` are retained for compatibility with historical telemetry and
+older builds, but the package-wave lifecycle does not spawn them.
 
 ### 5.4 Trigger
 
@@ -228,9 +221,8 @@ the ME slot position. Confirmed on ED forums: "Player slots can't be made
 or moved after mission start" (Kanelbolle, 2022; corroborated by Grimes, ED
 Beta Tester).
 
-Implication: round 1 always starts at the ME position. Round N+1 randomises
-the **bandit's** position (visible) but the **player's** slot stays where
-they last died (also visible — they rejoin into the existing slot).
+Implication: player aircraft remain tied to their ME slots. Every red wave gets
+a fresh random package position, but the mission does not move human aircraft.
 
 ### 6.2 `GROUP:Teleport` on a dead group ignores the new zone
 
@@ -238,10 +230,9 @@ MOOSE's `GROUP:Teleport(coord)` calls `Respawn(nil, false)`. The
 `Respawn` source has an `if self:IsAlive() then … end` guard around the
 position-update logic — when the group is dead, the guard fails and the
 new group is spawned at the **ME template position**, not at `coord`.
-Symptom: a "ghost" blue group at the original airbase plus the intended
-new group at the target position. The current `handlePlayerDeath` does
-*not* call `Teleport` for this reason — it only respawns the bandit.
-The player rejoins into the existing (death-position) slot.
+Symptom: a "ghost" blue group at the original airbase plus the intended new
+group at the target position. The package-wave lifecycle has no player-death
+reset handler and does not call `Teleport`.
 
 The proper way to respawn a player at a new coord is
 `mist.teleportToPoint({ groupName, point, action = "respawn" })`. MIST is
@@ -262,6 +253,14 @@ simulation frame. Inside the callback the group is alive but the
 `OnSpawnGroup` registration itself works fine; just don't rely on
 `grp:GetName()` returning a specific format until after one frame.
 
+### 6.5 Multiplayer messages and attribution
+
+The obsolete coalition-wide “You died” and player-respawn messages were
+removed with the player-death reset handler. Bandit kill popups explicitly say
+`Team kills` and show the remaining red-package count. The victim-side event
+still cannot authoritatively identify the killer; individual attribution is
+deferred to telemetry Slice 14.
+
 ---
 
 ## 7. What success looks like
@@ -277,40 +276,45 @@ start with a player in `Aerial-1`:
 [duel-dynamic] score module loaded
 [duel-dynamic] main done (init pending)
 [bootstrap] done
--- (1–30 s of init poll retries; the very last batch should be: )
-[duel-dynamic] init: world not ready, retrying...
+-- (init poll retries until at least one player aircraft is alive)
+[duel-dynamic] init: no player group alive yet, retrying...
 [duel-dynamic] Aerial-1 heading randomized to 080 (pos kept at ME)
-[duel-dynamic] Aerial-1 already occupied at init — spawning paired bandit now
-[duel-dynamic] spawning Bandit-1 59.5 nm from Aerial-1
-[duel-dynamic] tasked Bandit-1#001 → INTERCEPT on Aerial-1 (ROE=WEAPON_FREE, ROT=EVADE_FIRE, alarm=RED)
-[duel-dynamic] init done — player-enter events will now spawn bandits
-[duel-dynamic] Bandit-1 spawned: Bandit-1#001 at x=-141498 z=165369 alt=4569m
+[duel-dynamic] Aerial-1 already occupied at init — adding to first package roster
+[duel-dynamic] package wave scheduled in 3s (initial player package assembled)
+[duel-dynamic] init done — package-wave lifecycle active
+[duel-dynamic] spawning 1-ship package 59.5 nm from blue centroid, heading 080 (...)
+[duel-dynamic] package spawned: Bandit-1#001 at x=-141498 z=165369 alt=4569m
+[duel-dynamic] tasked Bandit-1#001 → CAP on blue package centroid (1 players) (...)
 ```
 
 Then after the kill:
 
 ```
-[duel-dynamic] Bandit-1 killed — respawn scheduled in 30s after Bandit-1#001
+[duel-dynamic] wave 1 defeated — next package in 30s
 -- 30 s later:
-[duel-dynamic] spawning Bandit-1 58.3 nm from Aerial-1
-[duel-dynamic] Bandit-1 spawned: Bandit-1#002 at …
+[duel-dynamic] spawning 1-ship package 58.3 nm from blue centroid, heading ...
+[duel-dynamic] package spawned: Bandit-1#002 at …
 ```
 
-If a bandit does not appear within a few seconds after entering a slot, check
-for `init done`, `spawning Bandit-N`, and `tasked Bandit-N` in `dcs.log`. Also
-check that all three bandit groups are present in the ME and Late Activation
-is ✓. The first `SCRIPTING ERROR` line names the file and line.
+If a package does not appear within a few seconds after entering a slot, check
+for `init done`, `package wave scheduled`, and `spawning N-ship package` in
+`dcs.log`. Also check that `Bandit-1` exists in the ME with Late Activation ✓.
+The first `SCRIPTING ERROR` line names the file and line.
 
 ---
 
 ## 8. Testing the count-matching (1 / 2 / 3 players)
 
-- **1 player** in `Aerial-1`: only `Bandit-1` spawns.
-- **2 players** in `Aerial-1` and `Aerial-2`: `Bandit-1` and `Bandit-2` both
-  spawn, each 60+ mi from their respective player.
-- **3 players**: all three bandits.
-- **Player in `Aerial-1` then `Aerial-2`**: leaving `Aerial-1` despawns
-  `Bandit-1`; entering `Aerial-2` spawns `Bandit-2`.
+- **1 live player:** one `Bandit-1#NNN` group containing one aircraft.
+- **2 live players during assembly:** one group containing two aircraft in
+  close formation.
+- **3 live players during assembly:** one group containing three aircraft.
+- **Join during combat:** no immediate reset or second group; the next wave
+  uses the new live-player count.
+- **First red loss in a multi-ship wave:** no respawn timer yet.
+- **Final red loss:** one 30-second timer, followed by one complete new group.
+- **All players leave:** the current group is destroyed after the one-second
+  slot-switch grace period.
 
 To test mid-mission, use the WebGUI "force slot" / "kick to slot"
 controls, or have the player eject and switch slots in the in-mission
@@ -324,12 +328,13 @@ Recommended. Records spawn positions/timing, routes, weapon events. The
 Caucasus missions generate ~1 MB of `.acmi` per minute.
 
 - **Default location:** `%USERPROFILE%\Documents\Tacview\`
-- **Dedicated server:** enable via `Saved Games\DCS.server\Config\options.lua`
-  → `["Tacview"]` block (see `dev-setup.md §7.5`).
-- **What to look for:** the bandit should be 60+ sm from the player at
-  spawn, then turn toward the player and close. Heading should change
-  between rounds. The player slot should stay at the death position
-  across rounds (see §6.1).
+- **Dedicated server:** install/enable it for the active
+  `Saved Games\DCS.dcs_serverrelease` profile and verify that profile's
+  `Config\options.lua`/export settings (see `dev-setup.md §7.5`).
+- **What to look for:** the red lead should be 60+ sm from the blue centroid;
+  red wingmen should be within a few NM in one formation and maneuver as one
+  DCS group. No replacement should appear after a partial red loss. The next
+  complete group should appear 30 seconds after the final red loss.
 
 ---
 

@@ -105,6 +105,11 @@ function M.start(config)
   if not lifecycle then
     return nil, dependency_error
   end
+  local shot
+  shot, dependency_error = require_dependency(config, "shot", "new")
+  if not shot then
+    return nil, dependency_error
+  end
   local lfs_api
   lfs_api, dependency_error = require_dependency(config, "lfs", "writedir")
   if not lfs_api or type(lfs_api.attributes) ~= "function" or type(lfs_api.mkdir) ~= "function" then
@@ -210,6 +215,33 @@ function M.start(config)
     return nil, lifecycle_error
   end
 
+  -- Constructing the adapter does not subscribe it. Registration is delayed
+  -- until after mission.started has been persisted below.
+  local shot_adapter, shot_creation_error
+  local shot_created, shot_result, shot_error = pcall(function()
+    return shot.new({
+      controller = controller,
+      envelope = envelope,
+      BASE = config.BASE,
+      EVENTS = config.EVENTS,
+      player_group_names = config.player_group_names,
+      bandit_group_names = config.bandit_group_names,
+      player_coalition = config.player_coalition,
+      bandit_coalition = config.bandit_coalition,
+      log = function(level, message)
+        log(config.env, level, message)
+      end,
+    })
+  end)
+  if not shot_created then
+    return nil, "creating Shot adapter failed: " .. tostring(shot_result)
+  end
+  shot_adapter = shot_result
+  shot_creation_error = shot_error
+  if not shot_adapter then
+    return nil, "creating Shot adapter failed: " .. tostring(shot_creation_error)
+  end
+
   local runtime = {
     controller = controller,
     path = path,
@@ -233,8 +265,20 @@ function M.start(config)
     end
   end
 
+  local function stop_shot()
+    local stopped, stop_result, stop_error = pcall(function()
+      return shot_adapter:stop()
+    end)
+    if not stopped then
+      log(config.env, "error", "Shot subscription removal raised: " .. tostring(stop_result))
+    elseif not stop_result then
+      log(config.env, "error", "Shot subscription removal failed: " .. tostring(stop_error))
+    end
+  end
+
   local function finish()
     stop_heartbeat()
+    stop_shot()
     local event, finish_error = controller:finish()
     if not event then
       log(config.env, "error", "mission end persistence failed: " .. tostring(finish_error))
@@ -294,8 +338,24 @@ function M.start(config)
     return nil, start_error
   end
 
+  local shot_started, shot_start_result, shot_start_error = pcall(function()
+    return shot_adapter:start()
+  end)
+  if not shot_started or not shot_start_result then
+    stop_heartbeat()
+    pcall(function()
+      watcher:UnHandleEvent(config.EVENTS.MissionEnd)
+    end)
+    pcall(function()
+      shot_adapter:stop()
+    end)
+    return nil, "registering Shot adapter failed: " .. tostring(shot_start_error or shot_start_result)
+  end
+
   runtime.scheduler = scheduler
   runtime.watcher = watcher
+  runtime.shot = shot_adapter
+  runtime.shot_watcher = shot_adapter.watcher
   runtime.finish = finish
   log(
     config.env,

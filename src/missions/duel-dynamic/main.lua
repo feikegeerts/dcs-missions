@@ -1,9 +1,12 @@
 -- src/missions/duel-dynamic/main.lua — 1–3 vs 1–3 dynamic spawn.
--- Player slots: Aerial-1, Aerial-2, Aerial-3 (paired 1:1 with bandits).
--- Bandit groups: Bandit-1, Bandit-2, Bandit-3 (Late Activation in the ME).
--- Event-driven: a player entering spawns their paired bandit 60+ mi away;
--- a player leaving despawns it. Bandit / player respawns keep the 60+ mi
--- rule using a tiny custom LCG (DCS sandbox disables math.randomseed).
+-- Player slots: Aerial-1, Aerial-2, Aerial-3.
+-- Red template: Bandit-1 (one late-activated aircraft, cloned to wave size).
+-- Event-driven package waves: one red aircraft per live blue player, cloned
+-- into a single DCS group so the AI fights as a package rather than as isolated
+-- duels. A wave spawns in close formation 60+ mi from the blue centroid. Losses
+-- do not respawn individually; the next complete package launches only after
+-- every aircraft in the current wave is dead. Bandits are cleaned up when every
+-- player leaves.
 --
 -- The whole "world-touching" setup (find player groups, create bandit
 -- SPAWN objects, first-round scatter of player planes) is deferred by 1 s
@@ -21,6 +24,14 @@ if not _G.BASE then
 end
 
 env.info("[duel-dynamic] MOOSE loaded")
+
+-- =====================================================================
+-- Player roster and red template allow-list
+-- =====================================================================
+-- ME player-slot names are normal player slots. Red names remain the telemetry
+-- allow-list; Bandit-1 is the active one-aircraft template and must be late activated.
+local PLAYER_GROUP_NAMES = { "Aerial-1", "Aerial-2", "Aerial-3" }
+local BANDIT_GROUP_NAMES = { "Bandit-1", "Bandit-2", "Bandit-3" }
 
 -- Load siblings. Bootstrap set _G.MY_SCRIPTS_ROOT to the project src/ path.
 local ROOT = _G.MY_SCRIPTS_ROOT
@@ -42,6 +53,7 @@ local function initDevelopmentTelemetry()
     local ndjsonSink = dofile(DIR .. "telemetry/ndjson_sink.lua")
     local lifecycle = dofile(DIR .. "telemetry/lifecycle.lua")
     local development = dofile(DIR .. "telemetry/development.lua")
+    local shot = dofile(DIR .. "telemetry/shot.lua")
 
     return development.start({
       event_id = eventId,
@@ -49,6 +61,7 @@ local function initDevelopmentTelemetry()
       json = json,
       ndjson_sink = ndjsonSink,
       lifecycle = lifecycle,
+      shot = shot,
       io = io,
       lfs = lfs,
       os = os,
@@ -57,6 +70,10 @@ local function initDevelopmentTelemetry()
       BASE = BASE,
       SCHEDULER = SCHEDULER,
       EVENTS = EVENTS,
+      player_group_names = PLAYER_GROUP_NAMES,
+      bandit_group_names = BANDIT_GROUP_NAMES,
+      player_coalition = coalition.side.BLUE,
+      bandit_coalition = coalition.side.RED,
       state = _G,
       heartbeat_interval = 30,
       mission_name = "duel-dynamic",
@@ -90,14 +107,6 @@ if not Tracker then
 end
 
 -- =====================================================================
--- Pairing config
--- =====================================================================
--- ME player-slot names (normal player slots, NOT late-activated). ME
--- bandit names must match and have Late Activation ✓.
-local PLAYER_GROUP_NAMES = { "Aerial-1", "Aerial-2", "Aerial-3" }
-local BANDIT_GROUP_NAMES = { "Bandit-1", "Bandit-2", "Bandit-3" }
-
--- =====================================================================
 -- Spawn / distance config
 -- =====================================================================
 local MIN_SEPARATION_M = 60 * 1609.344
@@ -105,7 +114,10 @@ local RANDOM_DIST_MIN_M = MIN_SEPARATION_M
 local RANDOM_DIST_MAX_M = MIN_SEPARATION_M + 20000
 local SPAWN_ALTITUDE_M = 15000 * 0.3048
 local RESPAWN_DELAY = 30
-local PLAYER_RESPAWN_DELAY = 30
+local WAVE_ASSEMBLY_DELAY = 3
+local EMPTY_SERVER_CLEANUP_DELAY = 1
+local FORMATION_LATERAL_M = 1.5 * 1852
+local FORMATION_TRAIL_M = 0.5 * 1852
 local INIT_DELAY = 1 -- first attempt delay (seconds) before the world-touching setup
 local INIT_POLL_INTERVAL = 1 -- how often to retry the init poll
 -- 0 = wait indefinitely (SCHEDULER Stop=0 repeats forever). A headless
@@ -117,11 +129,11 @@ local INIT_TIMEOUT = 0
 -- =====================================================================
 -- Bandit AI tasking (aggression knobs)
 -- =====================================================================
--- BANDIT_TASK    : "INTERCEPT" → bandit flies straight at the player and
---                  engages as soon as in range. Best for 1v1 duels.
+-- BANDIT_TASK    : "INTERCEPT" → package flies straight at the first live
+--                  player group. Useful for focused testing.
 --                  "CAP"       → bandit orbits a zone and engages
---                  detected targets inside it. Use BANDIT_CAP_RADIUS_M
---                  to size the engage zone.
+--                  all detected air targets inside it. This is the default
+--                  for package-vs-package fights.
 -- BANDIT_ROE     : "WEAPON_FREE" → fire on any detected (most aggressive).
 --                  "OPEN_FIRE"   → fire only on identified hostiles.
 --                  "HOLD"        → hold fire unless fired upon.
@@ -133,13 +145,13 @@ local INIT_TIMEOUT = 0
 -- BANDIT_ALT_FT  : working altitude in feet (energy advantage).
 -- BANDIT_SPEED_KT: cruise speed in knots.
 -- BANDIT_CAP_RADIUS_M: CAP zone radius in metres (only used by "CAP").
-local BANDIT_TASK = "INTERCEPT"
+local BANDIT_TASK = "CAP"
 local BANDIT_ROE = "WEAPON_FREE"
 local BANDIT_ROT = "EVADE_FIRE"
 local BANDIT_ALARM = "RED"
 local BANDIT_ALT_FT = 25000
 local BANDIT_SPEED_KT = 450
-local BANDIT_CAP_RADIUS_M = 100000 -- 100 km — large enough to cover the 60+ mi player gap
+local BANDIT_CAP_RADIUS_M = 150000 -- 150 km — contains the complete spawn ring around the blue centroid
 
 -- =====================================================================
 -- Custom RNG (DCS sandbox disables math.randomseed).
@@ -211,44 +223,94 @@ local function getPlayerCoord(pname)
 end
 
 -- =====================================================================
--- State (filled in by the deferred init below).
+-- Package-wave state (filled in by the deferred init below).
 -- =====================================================================
-local banditSpawners = {}
-local latestBanditGroups = {}
+local WAVE_TEMPLATE_NAME = BANDIT_GROUP_NAMES[1]
+local waveSpawner = nil
+local currentWaveGroup = nil
+local currentWaveGroupName = nil
+local currentWaveAlive = 0
+local waveNumber = 0
+local waveSpawnPending = false
+local waveScheduleToken = 0
+local occupiedPlayerSlots = {}
+local countedBanditUnits = {}
 local initDone = false
 
--- =====================================================================
--- F10 menu (commands can fire before init — they handle nil state).
--- =====================================================================
-local menu = MENU_COALITION:New(coalition.side.BLUE, "Duel Dynamic")
+local spawnWave
+local scheduleWave
 
-MENU_COALITION_COMMAND:New(coalition.side.BLUE, "Show kills", menu, function()
-  MESSAGE:New(Tracker:format(), 10):ToCoalition(coalition.side.BLUE)
-end)
+local function anyPlayerSlotOccupied()
+  return next(occupiedPlayerSlots) ~= nil
+end
 
-MENU_COALITION_COMMAND:New(coalition.side.BLUE, "Reset kills", menu, function()
-  Tracker:reset()
-  MESSAGE:New("Kill counter reset", 5):ToCoalition(coalition.side.BLUE)
-end)
+local function livePlayerPackage()
+  local players = {}
+  local sumX, sumY, sumZ = 0, 0, 0
+  for idx, pname in ipairs(PLAYER_GROUP_NAMES) do
+    if occupiedPlayerSlots[idx] then
+      local coord = getPlayerCoord(pname)
+      if coord then
+        players[#players + 1] = { name = pname, group = GROUP:FindByName(pname), coord = coord }
+        sumX = sumX + coord.x
+        sumY = sumY + coord.y
+        sumZ = sumZ + coord.z
+      end
+    end
+  end
+  if #players == 0 then
+    return players, nil
+  end
+  return players, COORDINATE:New(sumX / #players, sumY / #players, sumZ / #players)
+end
 
-MENU_COALITION_COMMAND:New(coalition.side.BLUE, "Respawn all bandits", menu, function()
-  if not initDone then
-    MESSAGE:New("Init not done yet — try again in a second", 5):ToCoalition(coalition.side.BLUE)
+local function formationPositions(size, headingDeg)
+  local positions = {}
+  local headingRad = headingDeg * math.pi / 180
+  local forwardX = math.sin(headingRad)
+  local forwardY = math.cos(headingRad)
+  local rightX = math.cos(headingRad)
+  local rightY = -math.sin(headingRad)
+
+  positions[1] = { x = 0, y = 0, heading = headingDeg }
+  for i = 2, size do
+    local side = (i % 2 == 0) and 1 or -1
+    local rank = math.floor(i / 2)
+    local lateral = side * FORMATION_LATERAL_M * rank
+    local trail = FORMATION_TRAIL_M * rank
+    positions[i] = {
+      x = rightX * lateral - forwardX * trail,
+      y = rightY * lateral - forwardY * trail,
+      heading = headingDeg,
+    }
+  end
+  return positions
+end
+
+local function cancelScheduledWave()
+  waveScheduleToken = waveScheduleToken + 1
+  waveSpawnPending = false
+end
+
+local function despawnCurrentWave()
+  local grp = currentWaveGroup
+  local name = currentWaveGroupName
+  currentWaveGroup = nil
+  currentWaveGroupName = nil
+  currentWaveAlive = 0
+  if grp then
+    pcall(function()
+      grp:Destroy(false)
+    end)
+    env.info(string.format("[duel-dynamic] wave group %s despawned", tostring(name)))
+  end
+end
+
+local function taskBanditPackage(bgrp, players, playerCentroid)
+  if not bgrp or #players == 0 then
     return
   end
-  for i = 1, #BANDIT_GROUP_NAMES do
-    spawnBanditFor(i)
-  end
-  MESSAGE:New("All bandits respawned", 5):ToCoalition(coalition.side.BLUE)
-end)
 
--- Forward declaration so the F10 menu can call it (defined further down).
-local function taskBandit(bgrp, pname)
-  if not bgrp then
-    return
-  end
-  -- Aggression knobs applied directly to the DCS group first — these
-  -- take effect immediately, before the AUFTRAG task is even built.
   if BANDIT_ROE == "WEAPON_FREE" then
     pcall(function()
       bgrp:OptionROEOpenFireWeaponFree()
@@ -268,25 +330,20 @@ local function taskBandit(bgrp, pname)
       bgrp:OptionROTEvadeFire()
     end)
   end
-  -- Task: INTERCEPT on the player, or CAP over a zone around the player.
-  local playerGroup = GROUP:FindByName(pname)
-  if not playerGroup then
-    env.error(string.format("[duel-dynamic] taskBandit: player group %s not found", pname))
-    return
-  end
+
   local fg = FLIGHTGROUP:New(bgrp)
   local mission
+  local targetDescription
   if BANDIT_TASK == "CAP" then
     local capZone =
-      ZONE_RADIUS:New(string.format("CapZone-%s", pname), playerGroup:GetCoordinate(), BANDIT_CAP_RADIUS_M)
+      ZONE_RADIUS:New(string.format("BanditWaveCap-%d", waveNumber), playerCentroid:GetVec2(), BANDIT_CAP_RADIUS_M)
     mission = AUFTRAG:NewCAP(capZone, BANDIT_ALT_FT, BANDIT_SPEED_KT)
+    targetDescription = string.format("blue package centroid (%d players)", #players)
   else
-    mission = AUFTRAG:NewINTERCEPT(playerGroup)
-    -- INTERCEPT defaults to OpenFire/EvadeFire; bump to weapon-free
-    -- and Red alarm on the AUFTRAG too so the mission task matches
-    -- what we set on the live group above.
+    mission = AUFTRAG:NewINTERCEPT(players[1].group)
     mission.optionROE = ENUMS.ROE.OpenFireWeaponFree
     mission.optionAlarm = ENUMS.AlarmState.Red
+    targetDescription = players[1].name
   end
   fg:AddMission(mission)
   env.info(
@@ -294,7 +351,7 @@ local function taskBandit(bgrp, pname)
       "[duel-dynamic] tasked %s → %s on %s (ROE=%s, ROT=%s, alarm=%s)",
       bgrp:GetName(),
       BANDIT_TASK,
-      pname,
+      targetDescription,
       BANDIT_ROE,
       BANDIT_ROT,
       BANDIT_ALARM
@@ -302,54 +359,115 @@ local function taskBandit(bgrp, pname)
   )
 end
 
-local function spawnBanditAt(banditIdx, refCoord)
-  local bname = BANDIT_GROUP_NAMES[banditIdx]
-  local pname = PLAYER_GROUP_NAMES[banditIdx]
-  local spawner = banditSpawners[bname]
-  if not spawner then
+spawnWave = function(reason)
+  if currentWaveGroup and currentWaveAlive > 0 then
+    env.info(string.format("[duel-dynamic] wave %d still active — spawn request ignored", waveNumber))
+    return currentWaveGroup
+  end
+  if not waveSpawner then
+    env.error("[duel-dynamic] cannot spawn wave: SPAWN template is not initialized")
     return nil
   end
-  local newPos, _ = randomOffsetCoord(refCoord, RANDOM_DIST_MIN_M, RANDOM_DIST_MAX_M)
-  local distNm = refCoord:Get2DDistance(newPos) / 1852
-  env.info(string.format("[duel-dynamic] spawning %s %.1f nm from %s", bname, distNm, pname))
-  local grp = spawner:SpawnFromCoordinate(newPos)
+
+  local players, playerCentroid = livePlayerPackage()
+  if #players == 0 or not playerCentroid then
+    env.info("[duel-dynamic] cannot spawn wave yet: no occupied player aircraft is alive")
+    return nil
+  end
+
+  local spawnCoord, bearing = randomOffsetCoord(playerCentroid, RANDOM_DIST_MIN_M, RANDOM_DIST_MAX_M)
+  local heading = (bearing + 180) % 360
+  local distNm = playerCentroid:Get2DDistance(spawnCoord) / 1852
+  local size = #players
+
+  waveSpawner:InitGrouping(size)
+  waveSpawner:InitSetUnitRelativePositions(formationPositions(size, heading))
+  waveSpawner:InitHeading(heading)
+
+  env.info(
+    string.format(
+      "[duel-dynamic] spawning %d-ship package %.1f nm from blue centroid, heading %03d (%s)",
+      size,
+      distNm,
+      heading,
+      tostring(reason or "requested")
+    )
+  )
+  local grp = waveSpawner:SpawnFromCoordinate(spawnCoord)
   if not grp then
-    env.error(string.format("[duel-dynamic] %s spawn FAILED", bname))
+    env.error("[duel-dynamic] package wave spawn FAILED")
     return nil
   end
-  taskBandit(grp, pname)
+
+  waveNumber = waveNumber + 1
+  currentWaveGroup = grp
+  currentWaveGroupName = grp:GetName()
+  currentWaveAlive = size
+  taskBanditPackage(grp, players, playerCentroid)
+  MESSAGE:New(string.format("Wave %d: %d bandit%s inbound", waveNumber, size, size == 1 and "" or "s"), 8)
+    :ToCoalition(coalition.side.BLUE)
   return grp
 end
 
-local function spawnBanditFor(banditIdx)
-  local pname = PLAYER_GROUP_NAMES[banditIdx]
-  local playerCoord = getPlayerCoord(pname)
-  if not playerCoord then
-    env.error(
-      string.format("[duel-dynamic] cannot spawn %s: no alive player in %s", BANDIT_GROUP_NAMES[banditIdx], pname)
+scheduleWave = function(delay, reason)
+  if waveSpawnPending then
+    env.info(
+      string.format("[duel-dynamic] wave spawn already pending — keeping existing timer (%s)", tostring(reason))
     )
-    return nil
-  end
-  return spawnBanditAt(banditIdx, playerCoord)
-end
-
-local function despawnBandit(banditIdx)
-  local bname = BANDIT_GROUP_NAMES[banditIdx]
-  local grp = latestBanditGroups[bname]
-  if not grp then
     return
   end
-  pcall(function()
-    grp:Destroy(false)
-  end)
-  latestBanditGroups[bname] = nil
-  env.info(string.format("[duel-dynamic] %s despawned", bname))
+  waveScheduleToken = waveScheduleToken + 1
+  local token = waveScheduleToken
+  waveSpawnPending = true
+  env.info(string.format("[duel-dynamic] package wave scheduled in %ds (%s)", delay, tostring(reason)))
+  SCHEDULER:New(nil, function()
+    if token ~= waveScheduleToken then
+      return
+    end
+    waveSpawnPending = false
+    if not initDone or not anyPlayerSlotOccupied() then
+      return
+    end
+    local ok, result = pcall(spawnWave, reason)
+    if not ok then
+      env.error("[duel-dynamic] scheduled wave spawn raised: " .. tostring(result))
+    end
+  end, {}, delay)
 end
 
 -- =====================================================================
--- Player enter / leave — drives bandit spawn / despawn.
--- Safe to register at mission start; the handlers check `initDone`
--- and queue a retry if the world isn't ready yet.
+-- F10 menu (commands can fire before init — they handle nil state).
+-- =====================================================================
+local menu = MENU_COALITION:New(coalition.side.BLUE, "Duel Dynamic")
+
+MENU_COALITION_COMMAND:New(coalition.side.BLUE, "Show kills", menu, function()
+  MESSAGE:New(Tracker:format(), 10):ToCoalition(coalition.side.BLUE)
+end)
+
+MENU_COALITION_COMMAND:New(coalition.side.BLUE, "Reset kills", menu, function()
+  Tracker:reset()
+  MESSAGE:New("Kill counter reset", 5):ToCoalition(coalition.side.BLUE)
+end)
+
+MENU_COALITION_COMMAND:New(coalition.side.BLUE, "Respawn bandit wave", menu, function()
+  if not initDone then
+    MESSAGE:New("Init not done yet — try again in a second", 5):ToCoalition(coalition.side.BLUE)
+    return
+  end
+  cancelScheduledWave()
+  despawnCurrentWave()
+  local grp = spawnWave("F10 forced reset")
+  if grp then
+    MESSAGE:New("Bandit wave force-reset", 5):ToCoalition(coalition.side.BLUE)
+  else
+    MESSAGE:New("No live player aircraft — wave not spawned", 5):ToCoalition(coalition.side.BLUE)
+  end
+end)
+
+-- =====================================================================
+-- Player enter / leave. The assembly delay groups near-simultaneous slot
+-- joins into one multi-aircraft DCS group. A join during combat is included
+-- in the next wave; DCS cannot add a unit to an already spawned group.
 -- =====================================================================
 local playerWatcher = BASE:New()
 playerWatcher:HandleEvent(EVENTS.PlayerEnterUnit)
@@ -360,23 +478,22 @@ local function onPlayerEnter(EventData)
     return
   end
   local gname = EventData.IniGroup:GetName()
-  if not gname then
-    return
-  end
-  local idx = findIdxByName(gname, PLAYER_GROUP_NAMES)
+  local idx = gname and findIdxByName(gname, PLAYER_GROUP_NAMES) or nil
   if not idx then
     return
   end
-  local pname = PLAYER_GROUP_NAMES[idx]
-  local playerName = EventData.IniPlayerName or "Player"
-  env.info(string.format("[duel-dynamic] player '%s' entered %s", playerName, pname))
+  occupiedPlayerSlots[idx] = true
+  env.info(
+    string.format("[duel-dynamic] player '%s' entered %s", EventData.IniPlayerName or "Player", PLAYER_GROUP_NAMES[idx])
+  )
   if not initDone then
-    env.info(
-      "[duel-dynamic] init not done yet; player-enter spawn will happen via the deferred init's first-round pass"
-    )
     return
   end
-  spawnBanditFor(idx)
+  if currentWaveGroup and currentWaveAlive > 0 then
+    env.info("[duel-dynamic] active package unchanged; joining player will be matched in the next wave")
+    return
+  end
+  scheduleWave(WAVE_ASSEMBLY_DELAY, "player package assembled")
 end
 
 local function onPlayerLeave(EventData)
@@ -384,19 +501,23 @@ local function onPlayerLeave(EventData)
     return
   end
   local gname = EventData.IniGroup:GetName()
-  if not gname then
-    return
-  end
-  local idx = findIdxByName(gname, PLAYER_GROUP_NAMES)
+  local idx = gname and findIdxByName(gname, PLAYER_GROUP_NAMES) or nil
   if not idx then
     return
   end
-  local pname = PLAYER_GROUP_NAMES[idx]
-  env.info(string.format("[duel-dynamic] player left %s — despawning paired bandit", pname))
-  if not initDone then
-    return
-  end
-  despawnBandit(idx)
+  occupiedPlayerSlots[idx] = nil
+  env.info(
+    string.format("[duel-dynamic] player left %s — current red package remains active", PLAYER_GROUP_NAMES[idx])
+  )
+
+  SCHEDULER:New(nil, function()
+    if anyPlayerSlotOccupied() then
+      return
+    end
+    env.info("[duel-dynamic] no player slots occupied — cleaning up the bandit wave")
+    cancelScheduledWave()
+    despawnCurrentWave()
+  end, {}, EMPTY_SERVER_CLEANUP_DELAY)
 end
 
 function playerWatcher:OnEventPlayerEnterUnit(EventData)
@@ -407,52 +528,71 @@ function playerWatcher:OnEventPlayerLeaveUnit(EventData)
 end
 
 -- =====================================================================
--- Bandit kill handler — counts and respawns after RESPAWN_DELAY.
--- Only respawns if the paired player slot is still occupied.
+-- Bandit kill handler. Count each unit in the multi-aircraft group, but do
+-- not launch replacements until the complete current wave has been killed.
 -- =====================================================================
-local countedGroups = {}
 local banditWatcher = BASE:New()
 banditWatcher:HandleEvent(EVENTS.Dead)
 banditWatcher:HandleEvent(EVENTS.Crash)
 
+local function eventUnitName(EventData)
+  if EventData.IniDCSUnitName then
+    return EventData.IniDCSUnitName
+  end
+  if EventData.IniUnitName then
+    return EventData.IniUnitName
+  end
+  if EventData.IniUnit then
+    local ok, name = pcall(function()
+      return EventData.IniUnit:GetName()
+    end)
+    if ok then
+      return name
+    end
+  end
+  return nil
+end
+
 local function handleBanditKill(EventData)
-  if not EventData or not EventData.IniGroup then
+  if not EventData or not EventData.IniGroup or EventData.IniCoalition ~= coalition.side.RED then
     return
   end
   local gname = EventData.IniGroup:GetName()
-  if not gname then
+  if not gname or gname ~= currentWaveGroupName or currentWaveAlive <= 0 then
     return
   end
-  if EventData.IniCoalition ~= coalition.side.RED then
+  local unitName = eventUnitName(EventData)
+  if not unitName then
+    env.warning("[duel-dynamic] bandit death had no unit name — ignoring ambiguous duplicate-prone event")
     return
   end
-  if countedGroups[gname] then
+  if countedBanditUnits[unitName] then
     return
   end
-  local idx = findIdxByName(gname, BANDIT_GROUP_NAMES)
-  if not idx then
-    return
-  end
-  countedGroups[gname] = true
+  countedBanditUnits[unitName] = true
 
-  local playerName = EventData.IniPlayerName or "Player"
-  local bname = BANDIT_GROUP_NAMES[idx]
-  Tracker:record(playerName)
-  MESSAGE:New(string.format("%s down! Kills: %d", playerName, Tracker.total), 8):ToCoalition(coalition.side.BLUE)
-  env.info(string.format("[duel-dynamic] %s killed — respawn scheduled in %ds after %s", bname, RESPAWN_DELAY, gname))
+  currentWaveAlive = math.max(0, currentWaveAlive - 1)
+  Tracker:record("Team")
+  MESSAGE
+    :New(string.format("Bandit down! Team kills: %d — red package remaining: %d", Tracker.total, currentWaveAlive), 8)
+    :ToCoalition(coalition.side.BLUE)
 
-  SCHEDULER:New(nil, function()
-    if not initDone then
-      return
-    end
-    local pname = PLAYER_GROUP_NAMES[idx]
-    local playerCoord = getPlayerCoord(pname)
-    if not playerCoord then
-      env.info(string.format("[duel-dynamic] paired player %s gone — skipping %s respawn", pname, bname))
-      return
-    end
-    spawnBanditFor(idx)
-  end, {}, RESPAWN_DELAY)
+  if currentWaveAlive > 0 then
+    env.info(
+      string.format(
+        "[duel-dynamic] %s killed — holding respawn until the remaining %d of wave %d are down",
+        unitName,
+        currentWaveAlive,
+        waveNumber
+      )
+    )
+    return
+  end
+
+  env.info(string.format("[duel-dynamic] wave %d defeated — next package in %ds", waveNumber, RESPAWN_DELAY))
+  currentWaveGroup = nil
+  currentWaveGroupName = nil
+  scheduleWave(RESPAWN_DELAY, "previous package defeated")
 end
 
 function banditWatcher:OnEventDead(EventData)
@@ -460,100 +600,6 @@ function banditWatcher:OnEventDead(EventData)
 end
 function banditWatcher:OnEventCrash(EventData)
   handleBanditKill(EventData)
-end
-
--- =====================================================================
--- Player death handler — after PLAYER_RESPAWN_DELAY, despawn the old
--- bandit and spawn a fresh one 60+ mi from the player's position, so
--- each round has a new bandit location. We do NOT Teleport the player
--- group (see the comment in handlePlayerDeath for why). Player rejoin
--- of the same slot puts them back where they died.
--- =====================================================================
-local playerDeathWatcher = BASE:New()
-playerDeathWatcher:HandleEvent(EVENTS.Dead)
-playerDeathWatcher:HandleEvent(EVENTS.Crash)
-playerDeathWatcher:HandleEvent(EVENTS.PilotDead)
-
-local function handlePlayerDeath(EventData)
-  if not EventData or not EventData.IniGroup then
-    return
-  end
-  local gname = EventData.IniGroup:GetName()
-  if not gname then
-    return
-  end
-  if EventData.IniCoalition ~= coalition.side.BLUE then
-    return
-  end
-  if countedGroups[gname] then
-    return
-  end
-  local idx = findIdxByName(gname, PLAYER_GROUP_NAMES)
-  if not idx then
-    return
-  end
-  countedGroups[gname] = true
-
-  local pname = PLAYER_GROUP_NAMES[idx]
-  local bname = BANDIT_GROUP_NAMES[idx]
-  local dyingGroup = EventData.IniGroup
-
-  MESSAGE:New(string.format("You died! Respawning in %ds — rejoin your slot", PLAYER_RESPAWN_DELAY), 10)
-    :ToCoalition(coalition.side.BLUE)
-  env.info(string.format("[duel-dynamic] %s died — respawn in %ds", pname, PLAYER_RESPAWN_DELAY))
-
-  SCHEDULER:New(nil, function()
-    if not initDone then
-      return
-    end
-    -- Compute a player-relative anchor for the new bandit. We use the
-    -- last known *player* position (not the dying group) so the bandit
-    -- distance holds even after the player group has been destroyed.
-    local playerAnchor = nil
-    local pg = GROUP:FindByName(pname)
-    if pg and pg:IsAlive() then
-      playerAnchor = pg:GetCoordinate()
-    end
-    if not playerAnchor then
-      -- Player group gone too (e.g. early death). Fall back to the
-      -- dying group wrapper, or to the last known bandit position.
-      local bgrp = latestBanditGroups[bname]
-      if bgrp then
-        local ok, pos = pcall(function()
-          return bgrp:GetCoordinate()
-        end)
-        if ok then
-          playerAnchor = pos
-        end
-      end
-    end
-    if not playerAnchor then
-      env.error(string.format("[duel-dynamic] no anchor for %s respawn — aborting", bname))
-      MESSAGE:New("Respawn failed: no position reference — restart mission", 10):ToCoalition(coalition.side.BLUE)
-      return
-    end
-    -- NOTE: we deliberately do NOT Teleport the player group. MOOSE's
-    -- GROUP:Teleport on a dead group ignores the new zone and respawns
-    -- at the ME template position (see Wrapper/Group.lua Respawn
-    -- `if self:IsAlive() then` guard), which leaves the player at the
-    -- original airbase with a "ghost" new group elsewhere. Player
-    -- rejoin of the same slot already puts the player back at the
-    -- death location, so we leave the slot alone.
-    MESSAGE:New("Respawn ready — rejoin your slot", 10):ToCoalition(coalition.side.BLUE)
-    despawnBandit(idx)
-    env.info(string.format("[duel-dynamic] resetting %s for new round", bname))
-    spawnBanditAt(idx, playerAnchor)
-  end, {}, PLAYER_RESPAWN_DELAY)
-end
-
-function playerDeathWatcher:OnEventDead(EventData)
-  handlePlayerDeath(EventData)
-end
-function playerDeathWatcher:OnEventCrash(EventData)
-  handlePlayerDeath(EventData)
-end
-function playerDeathWatcher:OnEventPilotDead(EventData)
-  handlePlayerDeath(EventData)
 end
 
 -- =====================================================================
@@ -570,31 +616,28 @@ end
 -- already-occupied slot.
 -- =====================================================================
 local function doInit()
-  -- Build bandit SPAWN objects.
-  for _, bname in ipairs(BANDIT_GROUP_NAMES) do
-    local spawner = SPAWN:New(bname)
-    if not spawner then
-      env.error(
-        string.format("[duel-dynamic] SPAWN:New('%s') returned nil — check ME group + Late Activation ON", bname)
+  -- Bandit-1 is a one-aircraft ME template. InitGrouping clones it into a
+  -- true 1/2/3-aircraft DCS group for each package wave.
+  waveSpawner = SPAWN:New(WAVE_TEMPLATE_NAME)
+  if not waveSpawner then
+    env.error(
+      string.format(
+        "[duel-dynamic] SPAWN:New('%s') returned nil — check ME group + Late Activation ON",
+        WAVE_TEMPLATE_NAME
       )
-    else
-      spawner:OnSpawnGroup(function(grp)
-        latestBanditGroups[bname] = grp
-        env.info(
-          string.format("[duel-dynamic] %s spawned: %s at %s", bname, grp:GetName(), coordStr(grp:GetCoordinate()))
-        )
-      end)
-      banditSpawners[bname] = spawner
-    end
+    )
+    return
   end
+  waveSpawner:OnSpawnGroup(function(grp)
+    env.info(string.format("[duel-dynamic] package spawned: %s at %s", grp:GetName(), coordStr(grp:GetCoordinate())))
+  end)
 
   -- First-round: randomize the player-slot heading. setPosition with
   -- a heading arg *does* take effect on the client. The position
   -- arg is a no-op for client-controlled player slots in MP (DCS
   -- limitation — confirmed by ED forums) so we pass the current
-  -- coord to leave the ME position alone. Round 1 always starts at
-  -- the ME position; round N+1 randomizes position via the death
-  -- respawn (GROUP:Teleport), which forces the client to refresh.
+  -- coord to leave the ME position alone. Player positions remain controlled
+  -- by their fixed MP slots; only red package positions change between waves.
   for _, pname in ipairs(PLAYER_GROUP_NAMES) do
     local pg = GROUP:FindByName(pname)
     if pg then
@@ -608,19 +651,18 @@ local function doInit()
     end
   end
 
-  -- Catch any player already in a slot at init time. Their
-  -- PlayerEnterUnit event may have fired before initDone and was
-  -- dropped, so we spawn the paired bandit here if the slot is
-  -- currently occupied.
+  -- Catch every player already in a slot. Their PlayerEnterUnit events may
+  -- have fired before initDone. One delayed spawn then uses the full roster.
   for i, pname in ipairs(PLAYER_GROUP_NAMES) do
     if getPlayerCoord(pname) then
-      env.info(string.format("[duel-dynamic] %s already occupied at init — spawning paired bandit now", pname))
-      spawnBanditFor(i)
+      occupiedPlayerSlots[i] = true
+      env.info(string.format("[duel-dynamic] %s already occupied at init — adding to first package roster", pname))
     end
   end
 
   initDone = true
-  env.info("[duel-dynamic] init done — player-enter events will now spawn bandits")
+  scheduleWave(WAVE_ASSEMBLY_DELAY, "initial player package assembled")
+  env.info("[duel-dynamic] init done — package-wave lifecycle active")
 end
 
 -- A player group becomes alive the moment a client occupies its slot. On a

@@ -1,6 +1,6 @@
 # Project status
 
-**Last updated:** 2026-08-31. Read this first when coming back.
+**Last updated:** 2026-09-01. Read this first when coming back.
 
 This is a snapshot of where the project is, what's known to work, what's
 known to be broken, and what still needs to happen before the mission
@@ -85,28 +85,36 @@ Verified end-to-end on the dedicated server (logs from 2026-07-26 session):
   load without errors.
 - ✅ Init poll loop: world not ready → retry → world ready → init.
   Verified by both successful and "init done" log lines.
-- ✅ `SPAWN:New("Bandit-N")` succeeds for all three bandit groups (the
-  earlier "no group declared" error was caused by the .miz only
-  containing `Bandit-1`; this is now fixed in the .miz in the server
-  Missions folder).
-- ✅ Player-enter spawns the paired bandit 60+ sm away, in a random
-  direction, with INTERCEPT task and aggressive options.
-- ✅ Bandit kill → 30 s timer → fresh bandit 60+ sm from live player.
-- ✅ Player leave → despawn paired bandit.
-- ✅ Player kill → 30 s timer → despawn old bandit + spawn fresh bandit
-  60+ sm from the player's slot position.
-- ✅ F10 menu (Show kills / Reset kills / Respawn all bandits) works.
+- ✅ Historical per-pair spawn/kill/leave behavior was dedicated-server
+  validated in the July and Slice 5 runs. It was superseded on 2026-09-01 by
+  the package-wave model below.
+- 🧪 Package waves are implemented and plain-Lua tested: one multi-aircraft
+  DCS group sized to the live blue roster, compact formation 60+ sm from the
+  blue centroid, shared CAP task, no partial-wave respawn, and one complete
+  replacement 30 seconds after the final red loss. Real-DCS validation is
+  still required.
+- 🧪 Player death/leave no longer resets an engaged red aircraft. Partial
+  player leave preserves the current package; all-blue-empty cleanup removes
+  it. Mid-wave joiners are included in the next package because DCS cannot add
+  units to an already spawned group.
+- 🧪 F10 menu now uses **Respawn bandit wave** as an explicit forced package
+  reset. Kill messages label the total as `Team kills`.
 - ✅ Score counter increments, displays via F10 message, resets.
 - ✅ Round 1 heading randomization on player slot (visible in HSI).
 - ✅ `stylua --check` passes on both missions.
 - ✅ Dedicated server: WebGUI restart reloads from disk with no repack.
 - ✅ A headless dedicated server can wait indefinitely for its first player;
-  joining any Aerial slot initializes the mission and spawns the paired bandit.
-  This replaced the old 30-second init timeout.
+  joining any Aerial slot reaches mission initialization. This replaced the old
+  30-second init timeout. The new package spawn after that init still needs its
+  first real-DCS validation.
 - ✅ Telemetry Slice 4: stable producer identity, fresh per-generation run
   keys, `mission.started`, 30-second heartbeats, best-effort
   `mission.ended`, and verified per-run NDJSON. Dedicated-server evidence is
   in `docs/telemetry/slice-4-lifecycle-evidence.md`.
+- ✅ Telemetry Slice 5: roster-filtered MOOSE `EVENTS.Shot` capture produces
+  contract-valid `ordnance.fired` records for players and paired AI bandits.
+  Controlled two-shot and two-player dedicated-server evidence is in
+  `docs/telemetry/slice-5-ordnance-evidence.md`.
 
 ## 5. What's known to be broken / limited
 
@@ -121,12 +129,16 @@ These are DCS-imposed limitations, not bugs in the Lua. Documented in
 - ❌ **Player is not teleported to a new position on respawn.** MOOSE's
   `GROUP:Teleport` on a dead group spawns at the ME template position
   (because of an `if self:IsAlive()` guard in `Respawn`), not at the
-  new coord. The current `handlePlayerDeath` does *not* call `Teleport`
-  for this reason. Workaround: load MIST and use
+  new coord. The current package-wave lifecycle has no player-death handler and
+  does not call `Teleport`. Workaround: load MIST and use
   `mist.teleportToPoint({action="respawn"})` — see §6.
 - ⚠️ **`duel-1v1` is in a broken intermediate state.** Has duplicate
   top-level code from a half-done edit. Do not switch
   `.current-mission` back to it without cleanup. See spec §10.
+- ⚠️ **Package-wave behavior is not yet real-DCS validated.** The plain-Lua
+  regression test verifies the lifecycle and MOOSE calls, but Tacview must
+  confirm that `SPAWN:InitGrouping` produces the intended 2/3-ship formation
+  and that the shared CAP task yields the desired 2v2/3v3 behavior.
 
 ## 6. What's still to do (post-PTO)
 
@@ -139,12 +151,11 @@ To get the player teleporting to a new position on death, we need
 2. Drop it into `src/lib/`.
 3. In `bootstrap.lua`, `dofile` it after Moose_ but before the mission
    main, so `_G.mist` is available.
-4. Replace the death handler's "despawnBandit + spawnBanditAt" with:
+4. Add a separate player-respawn handler without changing the package-wave
+   roster or red-wave state. A possible MIST call is:
    ```lua
    local newPos, _ = randomOffsetCoord(playerAnchor, RANDOM_DIST_MIN_M, RANDOM_DIST_MAX_M)
    mist.teleportToPoint({ groupName = pname, point = newPos, action = "respawn" })
-   despawnBandit(idx)
-   spawnBanditAt(idx, newPos)
    ```
 5. Test that the player rejoins into the respawned group at the new
    position, not the ME position.
@@ -175,6 +186,8 @@ before failing on `env` being nil, which DCS injects at runtime).
       `build/pack-shipping-miz.ps1` writes to `out/duel-dynamic.miz`
       and `out/duel-dynamic-build/` (staging dir, left in place for
       inspection when `-Zip` is not passed).
+- [x] `-Zip` packaging and entry listing re-verified 2026-09-01. The
+      PowerShell case-insensitive `$Zip`/`$zip` variable collision was fixed.
 - [x] Strip all `:TraceOn()` / `BASE:TraceOn()` calls. Sanity check
       in the packager; current `src/` has none.
 - [x] `os.time()` → `math.floor(timer.getTime() * 1000)` for the LCG
@@ -199,9 +212,21 @@ how to verify, and `docs/dev-setup.md §8` for the build/QA loop.
 
 ### 6.4 Smaller polish
 
-- [ ] `missions/duel-dynamic/score.lua` rename — `Tracker:format()` is
-      a stub. Implement a per-player breakdown ("James V: 3, Bob: 1")
-      or a kill list. Not blocking, but useful.
+- [x] Remove coalition-wide player death/respawn notices and label bandit kill
+      totals honestly as team totals. Individual attribution remains planned
+      for telemetry Slice 14.
+- [x] Replace per-player bandit resets with whole-package waves. Partial red
+      losses are held; the 30-second timer starts after the final red loss.
+- [ ] Validate 1v1, 2v2, and 3v3 package geometry/tasking on the dedicated
+      server and inspect the result in Tacview.
+- [ ] Install/configure Tacview for
+      `Saved Games\DCS.dcs_serverrelease` before that validation run.
+      Inspection on 2026-09-01 found Tacview `1.9.4.200` installed only under
+      the full-client `Saved Games\DCS` profile. The server profile currently
+      has no `Mods\tech\Tacview`, `Scripts\TacviewGameExport.lua`,
+      `Scripts\Hooks\TacviewGameGUI.lua`, `Scripts\Export.lua`, or Tacview
+      plugin options. Preserve/merge any future `Export.lua`; do not overwrite
+      unrelated export integrations.
 - [ ] Pick a real map / theatre. Caucasus is the test default. Decide
       if the production mission uses a different map and update both
       the ME and the spec.
@@ -210,9 +235,10 @@ how to verify, and `docs/dev-setup.md §8` for the build/QA loop.
 
 ### 6.5 Telemetry
 
-Slices 1–4 are complete. Slice 4 was validated in real DCS and the development
-environment was restored to stock afterward. Continue with Slice 5, capture one
-filtered MOOSE ordnance event, using `docs/telemetry-implementation-plan.md`.
+Slices 1–5 are complete. Slice 5 was validated with controlled and two-player
+dedicated-server runs, and the development environment was restored to stock
+afterward. The next planned telemetry work is Slice 6, the local collector
+parser and durable spool, but Gate E approval is required before it starts.
 
 ---
 
@@ -227,6 +253,7 @@ filtered MOOSE ordnance event, using `docs/telemetry-implementation-plan.md`.
 3. Start the dedicated server, WebGUI → Restart `duel-dynamic`.
 4. Sanity check: the log shows the init sequence from
    `spec-duel-dynamic.md §7`. The bandit spawns. F10 menu works.
-5. For telemetry, continue at Slice 5 in the implementation plan. Other work
+5. For telemetry, review Slice 5 evidence and approve Slice 6 explicitly before
+   implementation. Other work
    remains in §6.1, §6.2, and §6.4. §6.3 builds a self-contained `.miz`;
    final QA on a stock install remains.

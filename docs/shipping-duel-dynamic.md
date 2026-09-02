@@ -104,19 +104,21 @@ This is the real test. Without it, you don't know if it works.
 
 1. **Restore** `MissionScripting.lua` (or use a fresh DCS install in
    a different folder). Confirm `os`/`io`/`lfs` are nilled.
-2. Drop the shipping `.miz` into a stock
-   `Saved Games\DCS.server\Missions\` (or `Saved Games\DCS\Missions\`
-   for SP).
+2. Test the shipping `.miz` from a stock profile. On this machine the active
+   dedicated-server profile is `Saved Games\DCS.dcs_serverrelease`. Preserve
+   the small development loader before replacing or renaming anything.
 3. Start the mission via WebGUI (or from the editor on SP).
 4. Watch `Saved Games\DCS.server\Logs\dcs.log`:
    - Should NOT see any `os`/`io`/`lfs` "attempt to index nil" errors.
    - Should see `*** MOOSE INCLUDE END ***` followed by
      `[duel-dynamic] shipping build start`, `[duel-dynamic] MOOSE loaded`,
      and `[duel-dynamic] init done` (once a player joins).
-   - Bandit should spawn, F10 menu should work.
-5. Spawn 2-3 player slots, fly a few rounds, confirm kill and death
-   cycles still work.
-6. Tacview-check: bandits engage player, no AI wandering.
+    - One package-sized bandit group should spawn and the F10 menu should work.
+5. Spawn 2-3 player slots. Confirm one close 2/3-ship red group appears, a
+   partial red loss does not respawn, and one complete replacement appears 30
+   seconds after the final red loss.
+6. Tacview-check: red aircraft remain a package and engage the blue package;
+   no split-map spawns or AI wandering.
 
 The dev `.miz` is NEVER overwritten. To re-enter dev mode, restore
 the de-sanitized `MissionScripting.lua` and continue editing `src/`.

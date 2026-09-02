@@ -331,13 +331,15 @@ end
 
         Write-Host ""
         Write-Host "Entries in ${outPath}:" -ForegroundColor Cyan
-        $zip = [System.IO.Compression.ZipFile]::OpenRead($outPath)
+        # PowerShell variable names are case-insensitive. Do not call this
+        # `$zip`: that would overwrite the [switch]$Zip parameter above.
+        $zipArchive = [System.IO.Compression.ZipFile]::OpenRead($outPath)
         try {
-            $zip.Entries | Sort-Object FullName | ForEach-Object {
+            $zipArchive.Entries | Sort-Object FullName | ForEach-Object {
                 Write-Host ("  {0,-40} {1,12} bytes" -f $_.FullName, $_.Length)
             }
         } finally {
-            $zip.Dispose()
+            $zipArchive.Dispose()
         }
 
         Write-Host ""
