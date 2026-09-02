@@ -312,15 +312,30 @@ $newTrigAction = @"
     $rootLookupPattern = '(?ms)^\s*--\s*Load siblings[\s\S]*?^end\s*\r?\n'
     $devMainText = [regex]::Replace($devMainText, $rootLookupPattern, '')
 
+    # Strip the dev-only unattended test-combat block (gated by
+    # _G.TEST_COMBAT_ENABLED). Anchored on the section header (the "-- ===="
+    # line followed by the "Dev-only unattended test combat" line) through the
+    # unique end marker, so it matches the whole block unambiguously.
+    $testCombatPattern = '(?ms)^-- =+\r?\n-- Dev-only unattended test combat[\s\S]*?^-- <<TEST_COMBAT_BLOCK_END>>\r?\n'
+    $devMainText = [regex]::Replace($devMainText, $testCombatPattern, '')
+
+    # Revert the dev-only init bypass: the dev main.lua skips the player-wait
+    # when TEST_COMBAT_ENABLED; shipping must keep the original player wait.
+    # Strip the dev-only comment line and the appended clause.
+    $devMainText = $devMainText -replace '(?m)^  -- \[TEST_COMBAT\].*\r?\n', ''
+    $devMainText = $devMainText -replace ' and not _G\.TEST_COMBAT_ENABLED', ''
+
     # Replace os.time() (nilled in stock DCS) with timer.getTime()*1000.
     $devMainText = $devMainText -replace 'os\.time\(\)\s*%\s*2147483648', 'math.floor(timer.getTime() * 1000) % 2147483648'
 
     # Strip the dev `main start` breadcrumb; shipping has its own.
     $devMainText = $devMainText -replace '(?m)^env\.info\("\[duel-dynamic\] main start"\)\r?\n', ''
 
-    # Sanity check: no TraceOn / os.* / io.* / lfs.* in shipping code (outside
-    # comments). Fails the build with a clear error if any are present.
-    $banned = @('TraceOn', 'TraceLevel', 'os\.', 'io\.open', 'lfs\.')
+    # Sanity check: no TraceOn / os.* / io.* / lfs.* / TEST_COMBAT in shipping
+    # code (outside comments). Fails the build with a clear error if any are
+    # present. TEST_COMBAT guards the dev-only test-combat strip + init-bypass
+    # revert above (both contain that string).
+    $banned = @('TraceOn', 'TraceLevel', 'os\.', 'io\.open', 'lfs\.', 'TEST_COMBAT')
     foreach ($b in $banned) {
         $hits = [regex]::Matches($devMainText, "^.*$b.*$", 'Multiline') |
             Where-Object { $_.Value -notmatch '^\s*--' } |
