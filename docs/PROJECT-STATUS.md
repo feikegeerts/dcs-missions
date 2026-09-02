@@ -137,8 +137,8 @@ These are DCS-imposed limitations, not bugs in the Lua. Documented in
   `.current-mission` back to it without cleanup. See spec §10.
 - ⚠️ **Package-wave behavior is not yet real-DCS validated.** The plain-Lua
   regression test verifies the lifecycle and MOOSE calls, but Tacview must
-  confirm that `SPAWN:InitGrouping` produces the intended 2/3-ship formation
-  and that the shared CAP task yields the desired 2v2/3v3 behavior.
+  confirm that `SPAWN:InitGrouping` produces the intended 2/3/4-ship formation
+  and that the shared CAP task yields the desired 2v2/3v3/4v4 behavior.
 
 ## 6. What's still to do (post-PTO)
 
@@ -217,7 +217,7 @@ how to verify, and `docs/dev-setup.md §8` for the build/QA loop.
       for telemetry Slice 14.
 - [x] Replace per-player bandit resets with whole-package waves. Partial red
       losses are held; the 30-second timer starts after the final red loss.
-- [ ] Validate 1v1, 2v2, and 3v3 package geometry/tasking on the dedicated
+- [ ] Validate 1v1, 2v2, 3v3, and 4v4 package geometry/tasking on the dedicated
       server and inspect the result in Tacview.
 - [ ] Install/configure Tacview for
       `Saved Games\DCS.dcs_serverrelease` before that validation run.

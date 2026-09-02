@@ -1,5 +1,5 @@
--- src/missions/duel-dynamic/main.lua — 1–3 vs 1–3 dynamic spawn.
--- Player slots: Aerial-1, Aerial-2, Aerial-3.
+-- src/missions/duel-dynamic/main.lua — 1–4 vs 1–4 dynamic spawn.
+-- Player slots: Aerial-1, Aerial-2, Aerial-3, Aerial-4.
 -- Red template: Bandit-1 (one late-activated aircraft, cloned to wave size).
 -- Event-driven package waves: one red aircraft per live blue player, cloned
 -- into a single DCS group so the AI fights as a package rather than as isolated
@@ -30,7 +30,7 @@ env.info("[duel-dynamic] MOOSE loaded")
 -- =====================================================================
 -- ME player-slot names are normal player slots. Red names remain the telemetry
 -- allow-list; Bandit-1 is the active one-aircraft template and must be late activated.
-local PLAYER_GROUP_NAMES = { "Aerial-1", "Aerial-2", "Aerial-3" }
+local PLAYER_GROUP_NAMES = { "Aerial-1", "Aerial-2", "Aerial-3", "Aerial-4" }
 local BANDIT_GROUP_NAMES = { "Bandit-1", "Bandit-2", "Bandit-3" }
 
 -- Load siblings. Bootstrap set _G.MY_SCRIPTS_ROOT to the project src/ path.
@@ -274,10 +274,19 @@ local function formationPositions(size, headingDeg)
 
   positions[1] = { x = 0, y = 0, heading = headingDeg }
   for i = 2, size do
-    local side = (i % 2 == 0) and 1 or -1
-    local rank = math.floor(i / 2)
-    local lateral = side * FORMATION_LATERAL_M * rank
-    local trail = FORMATION_TRAIL_M * rank
+    local lateral
+    local trail
+    if i == 4 then
+      -- Complete the four-ship as a compact diamond instead of placing the
+      -- fourth aircraft on a second, widely separated lateral rank.
+      lateral = 0
+      trail = FORMATION_TRAIL_M * 2
+    else
+      local side = (i % 2 == 0) and 1 or -1
+      local rank = math.floor(i / 2)
+      lateral = side * FORMATION_LATERAL_M * rank
+      trail = FORMATION_TRAIL_M * rank
+    end
     positions[i] = {
       x = rightX * lateral - forwardX * trail,
       y = rightY * lateral - forwardY * trail,
@@ -617,7 +626,7 @@ end
 -- =====================================================================
 local function doInit()
   -- Bandit-1 is a one-aircraft ME template. InitGrouping clones it into a
-  -- true 1/2/3-aircraft DCS group for each package wave.
+  -- true 1/2/3/4-aircraft DCS group for each package wave.
   waveSpawner = SPAWN:New(WAVE_TEMPLATE_NAME)
   if not waveSpawner then
     env.error(
@@ -667,7 +676,7 @@ end
 
 -- A player group becomes alive the moment a client occupies its slot. On a
 -- headless dedicated server that can be minutes after mission start, and the
--- first joiner may pick any of the three slots — so poll until ANY player
+-- first joiner may pick any of the four slots — so poll until ANY player
 -- group is alive rather than only Aerial-1.
 local function anyPlayerGroupAlive()
   for _, pname in ipairs(PLAYER_GROUP_NAMES) do

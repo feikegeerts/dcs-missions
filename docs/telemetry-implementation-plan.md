@@ -208,8 +208,8 @@ second event system.
 
 The mission script's pairing configuration is the version-one asset boundary:
 
-- Blue aircraft belong to `PLAYER_GROUP_NAMES`: `Aerial-1`, `Aerial-2`, and
-  `Aerial-3`.
+- Blue aircraft belong to `PLAYER_GROUP_NAMES`: `Aerial-1`, `Aerial-2`,
+  `Aerial-3`, and `Aerial-4`.
 - Red aircraft belong to the `BANDIT_GROUP_NAMES` allow-list: `Bandit-1`,
   `Bandit-2`, and `Bandit-3`, including MOOSE's spawned-name suffixes. The
   current package-wave lifecycle clones `Bandit-1` into a multi-unit group;
@@ -802,7 +802,7 @@ replacement, scripted despawn, and combat loss are core domain semantics.
 - Register configured blue player aircraft when mission initialization or a
   confirmed lifecycle event first observes the incarnation.
 - Register every aircraft unit in each red package through the package
-  `SPAWN` callback; one callback can now contain 1–3 unit incarnations.
+  `SPAWN` callback; one callback can now contain 1–4 unit incarnations.
 - Increment instance identity when a slot or bandit name is reused for a new
   incarnation; never use the DCS name alone as the asset key.
 - Emit `asset.despawned` before an intentional scripted bandit removal so it is

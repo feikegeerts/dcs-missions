@@ -37,7 +37,7 @@ local MIN_SEPARATION_M = 60 * 1609.344
 local MAX_SEPARATION_M = MIN_SEPARATION_M + 20000
 local FOUR_NM_M = 4 * 1852
 
-local PLAYER_GROUP_NAMES = { "Aerial-1", "Aerial-2", "Aerial-3" }
+local PLAYER_GROUP_NAMES = { "Aerial-1", "Aerial-2", "Aerial-3", "Aerial-4" }
 
 -- =====================================================================
 -- Bounded DCS/MOOSE mocks
@@ -86,12 +86,14 @@ local playerAlive = {
   ["Aerial-1"] = true,
   ["Aerial-2"] = false,
   ["Aerial-3"] = true,
+  ["Aerial-4"] = false,
 }
 
 local playerCoords = {
   ["Aerial-1"] = newCoordinate(200000, 0, 100000),
   ["Aerial-2"] = newCoordinate(250000, 0, 150000),
   ["Aerial-3"] = newCoordinate(150000, 0, 50000),
+  ["Aerial-4"] = newCoordinate(175000, 0, 125000),
 }
 
 local playerGroups = {}
@@ -799,13 +801,14 @@ succeeds("8. empty-server cleanup destroys the package and a later single join a
   currentPackage = spawn.wrapper
 end)
 
-succeeds("9. mid-wave joins are included together in the next three-ship package", function()
+succeeds("9. mid-wave joins are included together in the next four-ship package", function()
   local playerWatcher = findWatcher(EVENTS.PlayerEnterUnit)
   local deadWatcher = findWatcher(EVENTS.Dead)
   local spawnsBefore = #spawnRecords
 
   firePlayerEvent(playerWatcher, "OnEventPlayerEnterUnit", "Aerial-1", "PilotOne")
   firePlayerEvent(playerWatcher, "OnEventPlayerEnterUnit", "Aerial-3", "PilotThree")
+  firePlayerEvent(playerWatcher, "OnEventPlayerEnterUnit", "Aerial-4", "PilotFour")
   equal(#spawnRecords, spawnsBefore, "mid-wave joins changed the active one-ship package")
 
   fireBanditEvent(deadWatcher, "OnEventDead", currentPackage, currentPackage.units[1].name)
@@ -813,14 +816,15 @@ succeeds("9. mid-wave joins are included together in the next three-ship package
   check(respawnSchedule ~= nil, "one-ship package defeat did not schedule the next wave")
   runSchedule(respawnSchedule)
 
-  equal(#spawnRecords, spawnsBefore + 1, "three-player roster did not produce exactly one package")
+  equal(#spawnRecords, spawnsBefore + 1, "four-player roster did not produce exactly one package")
   local spawn = latestSpawn()
-  equal(spawn.grouping, 3, "next package did not include all three live players")
-  equal(#spawn.wrapper.units, 3, "three-player package does not contain three units")
+  equal(spawn.grouping, 4, "next package did not include all four live players")
+  equal(#spawn.wrapper.units, 4, "four-player package does not contain four units")
   for i, unit in ipairs(spawn.wrapper.units) do
+    check(spawn.coordinate:Get2DDistance(unit.coordinate) <= FOUR_NM_M, "four-ship unit is too far from the lead")
     for j = i + 1, #spawn.wrapper.units do
       local separation = unit.coordinate:Get2DDistance(spawn.wrapper.units[j].coordinate)
-      check(separation > 0 and separation <= FOUR_NM_M, "three-ship formation spacing is invalid")
+      check(separation > 0 and separation <= FOUR_NM_M, "four-ship formation spacing is invalid")
     end
   end
   currentPackage = spawn.wrapper

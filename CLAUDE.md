@@ -58,7 +58,7 @@ loader first.
 
 - `docs/dev-setup.md` — full env setup, dev loop, debugging, troubleshooting.
 - `docs/mission-loader.md` — the dev loader pattern (why the .miz is a dumb loader).
-- `docs/spec-duel-dynamic.md` — **active mission spec** (1–3 vs 1–3 dynamic spawn). Read this for the current state of the code.
+- `docs/spec-duel-dynamic.md` — **active mission spec** (1–4 vs 1–4 dynamic spawn). Read this for the current state of the code.
 - `docs/PROJECT-STATUS.md` — pre-PTO snapshot: what's done, what's broken, what's left to ship. Read this first when coming back.
 - `docs/shipping-duel-dynamic.md` — checklist for packaging the mission for distribution (self-contained .miz, sanitized DCS).
 - `docs/spec-duel-1v1.md` — **superseded** (do not switch to this mission without cleanup).

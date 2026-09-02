@@ -1,7 +1,7 @@
 # Mission spec: duel-dynamic
 
-Current active mission (`.current-mission = duel-dynamic`). **1–3 player slots vs
-matching 1–3 aircraft AI package waves**. Each wave is one multi-aircraft DCS
+Current active mission (`.current-mission = duel-dynamic`). **1–4 player slots vs
+matching 1–4 aircraft AI package waves**. Each wave is one multi-aircraft DCS
 group spawned in close formation 60+ statute miles from the blue-player
 centroid. It receives a shared MOOSE CAP task so multiplayer produces one
 package fight rather than unrelated paired duels.
@@ -34,12 +34,12 @@ Switch active mission by editing `.current-mission` and restarting.
 
 | Role | Mission Editor groups |
 |---|---|
-| Blue player roster | `Aerial-1`, `Aerial-2`, `Aerial-3` |
+| Blue player roster | `Aerial-1`, `Aerial-2`, `Aerial-3`, `Aerial-4` |
 | Active red wave template | `Bandit-1` (one aircraft, Late Activation) |
 | Retained legacy templates | `Bandit-2`, `Bandit-3` (not spawned by the package-wave lifecycle) |
 
 The player slots are normal client slots. The red groups are **Late Activation
-✓**. `SPAWN:InitGrouping(1|2|3)` clones the `Bandit-1` aircraft into one true
+✓**. `SPAWN:InitGrouping(1|2|3|4)` clones the `Bandit-1` aircraft into one true
 multi-unit DCS group, while `InitSetUnitRelativePositions` lays out the group in
 a compact wedge.
 
@@ -180,15 +180,16 @@ Both Blue and Red coalitions active.
 
 ### 5.2 Player slots
 
-Three blue client groups, skill = Player, country = any blue country,
+Four blue player/client groups, country = any blue country,
 **not** late-activated. Place airborne at 15 000 ft. Names **must be
-exactly** `Aerial-1`, `Aerial-2`, `Aerial-3`.
+exactly** `Aerial-1`, `Aerial-2`, `Aerial-3`, `Aerial-4`. The current archive
+contains three `FA-18C_hornet` slots and one `F-16C_50` slot.
 
 ### 5.3 Bandit SPAWN templates
 
 Three one-aircraft red AI groups currently exist, named `Bandit-1`, `Bandit-2`,
 and `Bandit-3`, with **Late Activation ✓**. The current wave spawner uses
-`Bandit-1` and MOOSE `InitGrouping` to create a 1–3 aircraft group. `Bandit-2`
+`Bandit-1` and MOOSE `InitGrouping` to create a 1–4 aircraft group. `Bandit-2`
 and `Bandit-3` are retained for compatibility with historical telemetry and
 older builds, but the package-wave lifecycle does not spawn them.
 
@@ -303,12 +304,14 @@ The first `SCRIPTING ERROR` line names the file and line.
 
 ---
 
-## 8. Testing the count-matching (1 / 2 / 3 players)
+## 8. Testing the count-matching (1 / 2 / 3 / 4 players)
 
 - **1 live player:** one `Bandit-1#NNN` group containing one aircraft.
 - **2 live players during assembly:** one group containing two aircraft in
   close formation.
 - **3 live players during assembly:** one group containing three aircraft.
+- **4 live players during assembly:** one compact group containing four
+  aircraft.
 - **Join during combat:** no immediate reset or second group; the next wave
   uses the new live-player count.
 - **First red loss in a multi-ship wave:** no respawn timer yet.

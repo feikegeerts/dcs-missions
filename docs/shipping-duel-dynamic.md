@@ -114,7 +114,7 @@ This is the real test. Without it, you don't know if it works.
      `[duel-dynamic] shipping build start`, `[duel-dynamic] MOOSE loaded`,
      and `[duel-dynamic] init done` (once a player joins).
     - One package-sized bandit group should spawn and the F10 menu should work.
-5. Spawn 2-3 player slots. Confirm one close 2/3-ship red group appears, a
+5. Spawn 2–4 player slots. Confirm one close, equally sized red group appears, a
    partial red loss does not respawn, and one complete replacement appears 30
    seconds after the final red loss.
 6. Tacview-check: red aircraft remain a package and engage the blue package;
