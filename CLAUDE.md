@@ -101,6 +101,9 @@ Repack with `build\pack-miz.ps1` — never re-zip manually in the editor mid-dev
 3. Otherwise: `build\pack-shipping-miz.ps1` (writes to `out/duel-dynamic.miz` and leaves `out/duel-dynamic-build/` as a inspectable staging dir). The dev `.miz` and `src/` are NEVER modified. Restore `MissionScripting.lua` to stock first to actually verify the shipping build runs without the dev environment.
 4. Test on dedicated server; tail `Saved Games\DCS.server\Logs\dcs.log`
 5. Sanity-check spawn logic visually in Tacview
+6. Unattended dedicated-server runs (no player, no WebGUI) — hook-driven
+   mission load, auto-pause/auto-stop, telemetry + collector verification:
+   `docs/telemetry/unattended-test-loop.md`
 
 ## Editor tooling
 

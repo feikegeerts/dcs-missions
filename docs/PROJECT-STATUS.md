@@ -271,11 +271,15 @@ validation, a durable SQLite spool with idempotent inserts, file-identity
 cursors with truncation/replacement resets, quarantine for invalid lines,
 in-order delivery/acknowledgement, and a dry-run summary. It made no network
 calls and passed a two-pass real-data idempotency check
-(145 events, zero loss, zero duplicates). Evidence:
-`docs/telemetry/slice-6-collector-evidence.md`. Telemetry now has priority
-over the optional MIST respawn work. The next planned telemetry work is
-Slice 7, the web shell and raw event persistence; record explicit Gate E
-approval before implementation starts.
+(145 events, zero loss, zero duplicates), plus an unattended live
+dedicated-server tail (two live runs, four collector passes, no player).
+Evidence: `docs/telemetry/slice-6-collector-evidence.md`. The unattended
+test loop itself (hook-driven mission load, no player/WebGUI) is documented
+in `docs/telemetry/unattended-test-loop.md`; unattended ordnance testing
+(blue AI engagement) is designed in that doc but not yet implemented.
+Telemetry now has priority over the optional MIST respawn work. The next
+planned telemetry work is Slice 7, the web shell and raw event persistence;
+record explicit Gate E approval before implementation starts.
 
 ---
 

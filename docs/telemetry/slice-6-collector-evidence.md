@@ -125,6 +125,60 @@ directory that was deleted afterward. The input files were opened read-only.
 Repeated consumption therefore caused neither event loss nor duplicate spool
 records on real producer output.
 
+## Live dedicated-server tail (unattended)
+
+Validated 2026-09-02 with the dedicated server only — no player connected.
+The setup de-sanitized `MissionScripting.lua` in the server install, used a
+temporary `Scripts\Hooks` script that (1) loaded the dev `duel-dynamic.miz`
+loader via `net.load_mission` when the server's auto-loaded last mission was
+not the dev loader, (2) called `setPause(false)` after the dev mission loaded,
+and (3) called `Sim.stopMission()` 120 s after load. `MissionScripting.lua`
+was restored to stock (verified by hash against its `.orig` backup) and the
+temporary hook was removed after the run.
+
+Environment facts discovered:
+
+- The dedicated server auto-loads its last mission list entry at startup;
+  the WebGUI-selected v3 shipping test was that entry, so the hook's
+  `net.load_mission` branch exercised the dev loader load.
+- With no player, the simulation starts `ssPaused`: model time does not
+  advance, so `mission.heartbeat` (30 s model-time scheduler) does not fire.
+  `setPause(false)` resumes model time without any player.
+- `onSimulationFrame` still ticks while paused, so the hook's real-time
+  auto-stop fired in both runs.
+
+Two live runs were produced:
+
+- `run-20260902T171718Z-4f401cd6` (paused run): sequence 1
+  `mission.started`, sequence 2 `mission.ended` at sim time 0 when the hook's
+  120 s auto-stop fired.
+- `run-20260902T172154Z-3169883c` (resumed run): sequence 1
+  `mission.started`, sequences 2–4 `mission.heartbeat` at sim 30/60/90 s,
+  sequence 5 `mission.ended` at sim 119.495 s from the clean auto-stop.
+
+Four collector passes ran against
+`Saved Games\DCS.dcs_serverrelease\Logs\telemetry` into one persistent state
+directory (separate CLI process invocations, so cursors came from the
+durable spool each time):
+
+| Pass | Moment | Result |
+|---|---|---|
+| A | run 1 live (paused, only `mission.started` written) | 8 files, 146 spooled = 145 historical + run 1 seq 1; 0 duplicates |
+| B | ~10 s later, no new data | 0 complete lines, 0 spooled, 0 duplicates |
+| C | after run 2's clean `mission.ended` | 9 files, 6 spooled = run 1 seq 2 + run 2 seqs 1–5; 0 duplicates |
+| D | immediate repeat | 0 complete lines, 0 spooled, 0 duplicates |
+
+Final spool state: 9 runs, every sequence gapless from 1 to
+`maximum_sequence`, 152 total events (145 historical + 2 + 5 live). A
+delivery/acknowledgement drill on a copy of the state directory for the live
+run delivered `mission.started` first, acknowledged sequences 1–5 in order,
+then reported no further deliverable, and treated a re-acknowledgement of
+sequence 1 as a duplicate.
+
+The full repeatable procedure (hook template, environment facts, collector
+pass matrix, teardown, and the unattended ordnance-testing gap/design) is
+documented in `docs/telemetry/unattended-test-loop.md`.
+
 ## Known limitations (v1)
 
 - Single collector process is assumed. Two concurrent collectors could race
