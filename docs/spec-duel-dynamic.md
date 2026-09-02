@@ -9,6 +9,9 @@ package fight rather than unrelated paired duels.
 This is a test bed for the dynamic-spawn pipeline. It supersedes `duel-1v1`
 (see §10).
 
+**Shipping status:** the self-contained `.miz` is built and verified on a stock,
+sanitized dedicated server. See `docs/shipping-duel-dynamic.md`.
+
 ---
 
 ## 1. What's in the repo

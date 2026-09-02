@@ -13,9 +13,9 @@
 #      the shipping action lists. No regex on Lua string contents (the
 #      dev .miz's loadfile string has lots of \" and \<LF> escapes that
 #      make regex brittle). Pure substring search/replace.
-#   4. Embeds the shipping Lua sources into Scripts/ inside the .miz:
-#        - Scripts/Moose_.lua   (copied from src/lib/Moose_.lua)
-#        - Scripts/main.lua     (synthesized: inlines score.lua and
+#   4. Embeds the shipping Lua sources as DCS resources under l10n/DEFAULT:
+#        - Moose_.lua   (copied from src/lib/Moose_.lua)
+#        - main.lua     (synthesized: inlines score.lua and
 #                               patches the dev main.lua for stock
 #                               DCS - strips TraceOn, replaces os.time()
 #                               with timer.getTime()*1000, removes the
@@ -46,12 +46,71 @@ if (-not $SrcRoot) { $SrcRoot = (Join-Path $PSScriptRoot "..\src") }
 if (-not $OutDir)  { $OutDir  = (Join-Path $PSScriptRoot "..\out") }
 
 $ErrorActionPreference = "Stop"
+Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
+
+function New-PortableZipFromDirectory {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$SourceDirectory,
+
+        [Parameter(Mandatory = $true)]
+        [string]$DestinationPath
+    )
+
+    # Zip entry names always use forward slashes. ZipFile.CreateFromDirectory()
+    # preserves Windows backslashes in entry names under Windows PowerShell 5.1;
+    # DCS resource lookup expects l10n/DEFAULT/<file>, so those archives silently
+    # fail to resolve DO SCRIPT FILE resources.
+    $sourcePath = [System.IO.Path]::GetFullPath($SourceDirectory).TrimEnd('\', '/')
+    $outputStream = $null
+    $archive = $null
+    try {
+        $outputStream = [System.IO.File]::Open($DestinationPath, [System.IO.FileMode]::CreateNew)
+        $archive = New-Object System.IO.Compression.ZipArchive(
+            $outputStream,
+            [System.IO.Compression.ZipArchiveMode]::Create,
+            $false
+        )
+
+        $files = [System.IO.Directory]::GetFiles(
+            $sourcePath,
+            '*',
+            [System.IO.SearchOption]::AllDirectories
+        ) | Sort-Object
+        foreach ($filePath in $files) {
+            $entryName = $filePath.Substring($sourcePath.Length + 1).Replace('\', '/')
+            [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
+                $archive,
+                $filePath,
+                $entryName,
+                [System.IO.Compression.CompressionLevel]::Optimal
+            ) | Out-Null
+        }
+    } finally {
+        if ($null -ne $archive) { $archive.Dispose() }
+        if ($null -ne $outputStream) { $outputStream.Dispose() }
+    }
+}
 
 # Resolve inputs.
 if (-not (Test-Path -LiteralPath $DevMizPath)) {
     throw "Dev .miz not found: $DevMizPath. Edit -DevMizPath or save the mission first."
 }
+$DevMizPath = (Resolve-Path -LiteralPath $DevMizPath).Path
+foreach ($nameParameter in @(
+    @{ Name = 'BuildName'; Value = $BuildName },
+    @{ Name = 'OutName'; Value = $OutName }
+)) {
+    $value = $nameParameter.Value
+    if ([string]::IsNullOrWhiteSpace($value) -or
+        [System.IO.Path]::IsPathRooted($value) -or
+        [System.IO.Path]::GetFileName($value) -cne $value -or
+        $value -in @('.', '..')) {
+        throw "$($nameParameter.Name) must be a file or directory name, not a path: $value"
+    }
+}
+$OutDir = [System.IO.Path]::GetFullPath($OutDir)
 $mooseSrc = Join-Path $SrcRoot "lib\Moose_.lua"
 if (-not (Test-Path -LiteralPath $mooseSrc)) {
     throw "Moose_.lua not found: $mooseSrc"
@@ -65,13 +124,18 @@ foreach ($f in @($devMain, $devScore)) {
 }
 
 # Build dir lives under out/ so it's easy to inspect and so the user
-# can iterate (edit mission / Scripts/main.lua, re-zip) without running
-# the packager again. Wiped on every run so it always reflects the
-# current dev .miz + src/.
+# can inspect the exact generated payload. Wiped on every run so it always
+# reflects the current dev .miz + src/; make changes in src/, not staging.
 if (-not (Test-Path -LiteralPath $OutDir)) {
     New-Item -ItemType Directory -Path $OutDir -Force | Out-Null
 }
 $workDir = Join-Path $OutDir $BuildName
+if ([System.StringComparer]::OrdinalIgnoreCase.Equals(
+    [System.IO.Path]::GetFullPath($workDir),
+    [System.IO.Path]::GetFullPath($DevMizPath)
+)) {
+    throw "Build directory must not overwrite the dev .miz: $DevMizPath"
+}
 if (Test-Path -LiteralPath $workDir) {
     Write-Host "Cleaning previous build at $workDir ..."
     Remove-Item -LiteralPath $workDir -Recurse -Force
@@ -120,7 +184,9 @@ try {
     # on its own line.
     # Indent: original 4 tabs before [1] = are preserved from the file
     # (they're before the match). Replacement starts with [1] = (no tabs).
-    $newInnerActions = "[1] =`n`t`t`t`t{`n`t`t`t`t`t[`"file`"] = `"Scripts/Moose_.lua`",`n`t`t`t`t`t[`"predicate`"] = `"a_do_script_file`",`n`t`t`t`t}, -- end of [1]`n`t`t`t`t[2] =`n`t`t`t`t{`n`t`t`t`t`t[`"file`"] = `"Scripts/main.lua`",`n`t`t`t`t`t[`"predicate`"] = `"a_do_script_file`",`n`t`t`t`t}, -- end of [2]"
+    $mooseResourceKey = "ResKey_Action_duel_dynamic_moose"
+    $mainResourceKey = "ResKey_Action_duel_dynamic_main"
+    $newInnerActions = "[1] =`n`t`t`t`t{`n`t`t`t`t`t[`"file`"] = `"$mooseResourceKey`",`n`t`t`t`t`t[`"predicate`"] = `"a_do_script_file`",`n`t`t`t`t}, -- end of [1]`n`t`t`t`t[2] =`n`t`t`t`t{`n`t`t`t`t`t[`"file`"] = `"$mainResourceKey`",`n`t`t`t`t`t[`"predicate`"] = `"a_do_script_file`",`n`t`t`t`t}, -- end of [2]"
     $mission = $mission.Substring(0, $m.Index) + $newInnerActions + $mission.Substring($m.Index + $m.Length)
     Write-Host "Patched trigrules block (modern)"
 
@@ -155,9 +221,9 @@ try {
     # in the mission file. Inside it, the inner quotes around the path
     # must be escaped with backslash (the ME's own format uses this).
     # Path uses forward slashes so it doesn't need further escaping.
-    $newTrigAction = @"
-[1] = "a_do_script_file(\"Scripts/Moose_.lua\");",
-			[2] = "a_do_script_file(\"Scripts/main.lua\");",
+$newTrigAction = @"
+[1] = "a_do_script_file(getValueResourceByKey(\"$mooseResourceKey\"));",
+			[2] = "a_do_script_file(getValueResourceByKey(\"$mainResourceKey\"));",
 "@
     $mission = $mission.Substring(0, $tStart) + $newTrigAction + $mission.Substring($tEnd)
     Write-Host "Patched trig block (legacy) actions"
@@ -188,13 +254,49 @@ try {
         Write-Host "Note: trig.flag block not updated (block already had multiple entries?)"
     }
 
+    # The legacy startup function explicitly invokes action 1. Extend it to
+    # invoke action 2 as well; otherwise a runtime using the legacy trig table
+    # can load MOOSE without ever starting the mission script.
+    $startupAction = '[1] = "if mission.trig.conditions[1]() then mission.trig.actions[1]() end",'
+    $startupReplacement = '[1] = "if mission.trig.conditions[1]() then mission.trig.actions[1]() mission.trig.actions[2]() end",'
+    $startupIdx = $mission.IndexOf($startupAction)
+    if ($startupIdx -lt 0) {
+        throw "trig.funcStartup action not found"
+    }
+    $mission = $mission.Substring(0, $startupIdx) + $startupReplacement + $mission.Substring($startupIdx + $startupAction.Length)
+    Write-Host "Patched trig.funcStartup block"
+
+    # DO SCRIPT FILE actions reference resource keys, not arbitrary archive
+    # paths. Register both embedded payloads in mapResource; DCS resolves those
+    # names under l10n/DEFAULT at mission start. Literal "Scripts/..." paths are
+    # silently ignored by stock DCS.
+    $resourceDir = Join-Path $workDir "l10n\DEFAULT"
+    $mapResourcePath = Join-Path $resourceDir "mapResource"
+    if (-not (Test-Path -LiteralPath $mapResourcePath)) {
+        throw "Extracted .miz has no l10n/DEFAULT/mapResource file"
+    }
+    $mapResource = [System.IO.File]::ReadAllText($mapResourcePath, [System.Text.Encoding]::UTF8)
+    foreach ($resourceKey in @($mooseResourceKey, $mainResourceKey)) {
+        if ($mapResource.Contains($resourceKey)) {
+            throw "mapResource already contains shipping key '$resourceKey'"
+        }
+    }
+    $mapResourceClose = $mapResource.LastIndexOf("}")
+    if ($mapResourceClose -lt 0) {
+        throw "l10n/DEFAULT/mapResource has no closing brace"
+    }
+    $resourceEntries = "`r`n`t[`"$mooseResourceKey`"] = `"Moose_.lua`",`r`n`t[`"$mainResourceKey`"] = `"main.lua`",`r`n"
+    $mapResource = $mapResource.Substring(0, $mapResourceClose) + $resourceEntries + $mapResource.Substring($mapResourceClose)
+    [System.IO.File]::WriteAllText($mapResourcePath, $mapResource, (New-Object System.Text.UTF8Encoding $false))
+    Write-Host "Registered embedded scripts in mapResource"
+
     # Write back the modified mission file.
     [System.IO.File]::WriteAllText($missionPath, $mission, (New-Object System.Text.UTF8Encoding $false))
     Write-Host "Wrote modified mission file"
 
-    # --- 5. Synthesize Scripts/main.lua ---
-    Write-Host "Synthesizing Scripts/main.lua ..."
-    $scriptsDir = Join-Path $workDir "Scripts"
+    # --- 5. Synthesize l10n/DEFAULT/main.lua ---
+    Write-Host "Synthesizing l10n/DEFAULT/main.lua ..."
+    $scriptsDir = $resourceDir
     New-Item -ItemType Directory -Path $scriptsDir -Force | Out-Null
 
     $devMainText  = [System.IO.File]::ReadAllText($devMain)
@@ -229,12 +331,12 @@ try {
     }
 
     $shippingHeader = @'
--- Scripts/main.lua - SHIPPING BUILD for duel-dynamic.
+-- main.lua - SHIPPING BUILD resource for duel-dynamic.
 -- Generated by build/pack-shipping-miz.ps1 from src/missions/duel-dynamic/.
 -- DO NOT EDIT BY HAND - edit the dev sources and re-run the packager.
 --
--- This file is loaded as the second DO SCRIPT FILE in the .miz's
--- MISSION START trigger (after Scripts/Moose_.lua). MOOSE is already in _G.
+-- This file is loaded as the second DO SCRIPT FILE resource in the .miz's
+-- MISSION START trigger (after Moose_.lua). MOOSE is already in _G.
 --
 -- Diff vs the dev main.lua:
 --   * score.lua is INLINED below (no dofile() in stock DCS - the CWD is
@@ -251,7 +353,7 @@ try {
 env.info("[duel-dynamic] shipping build start")
 
 if not _G.BASE then
-  env.error("[duel-dynamic] MOOSE not loaded - check Scripts/Moose_.lua in the .miz")
+  env.error("[duel-dynamic] MOOSE not loaded - check the Moose_.lua resource in the .miz")
   return
 end
 
@@ -312,8 +414,8 @@ end
     [System.IO.File]::WriteAllText($shippingMainPath, $shippingMain, (New-Object System.Text.UTF8Encoding $false))
     Write-Host "  wrote $shippingMainPath ($((Get-Item $shippingMainPath).Length) bytes)"
 
-    # --- 6. Copy Scripts/Moose_.lua ---
-    Write-Host "Copying Moose_.lua ..."
+    # --- 6. Copy l10n/DEFAULT/Moose_.lua ---
+    Write-Host "Copying l10n/DEFAULT/Moose_.lua ..."
     $mooseDest = Join-Path $scriptsDir "Moose_.lua"
     [System.IO.File]::Copy($mooseSrc, $mooseDest, $true)
     Write-Host "  wrote $mooseDest ($((Get-Item $mooseDest).Length) bytes)"
@@ -321,13 +423,14 @@ end
     # --- 7. Re-zip into out/<OutName> (only if -Zip) ---
     if ($Zip) {
         $outPath = Join-Path $OutDir $OutName
+        if ([System.StringComparer]::OrdinalIgnoreCase.Equals(
+            [System.IO.Path]::GetFullPath($outPath),
+            [System.IO.Path]::GetFullPath($DevMizPath)
+        )) {
+            throw "Output .miz must not overwrite the dev .miz: $DevMizPath"
+        }
         if (Test-Path -LiteralPath $outPath) { Remove-Item -LiteralPath $outPath -Force }
-        [System.IO.Compression.ZipFile]::CreateFromDirectory(
-            $workDir,
-            $outPath,
-            [System.IO.Compression.CompressionLevel]::Optimal,
-            $false
-        ) | Out-Null
+        New-PortableZipFromDirectory -SourceDirectory $workDir -DestinationPath $outPath
 
         Write-Host ""
         Write-Host "Entries in ${outPath}:" -ForegroundColor Cyan
@@ -335,6 +438,15 @@ end
         # `$zip`: that would overwrite the [switch]$Zip parameter above.
         $zipArchive = [System.IO.Compression.ZipFile]::OpenRead($outPath)
         try {
+            $invalidEntries = @($zipArchive.Entries | Where-Object { $_.FullName.Contains('\') })
+            if ($invalidEntries.Count -gt 0) {
+                throw "Shipping archive contains Windows-style entry names: $($invalidEntries.FullName -join ', ')"
+            }
+            foreach ($requiredResource in @('l10n/DEFAULT/Moose_.lua', 'l10n/DEFAULT/main.lua')) {
+                if (-not ($zipArchive.Entries | Where-Object { $_.FullName -ceq $requiredResource })) {
+                    throw "Shipping archive is missing DCS resource entry '$requiredResource'"
+                }
+            }
             $zipArchive.Entries | Sort-Object FullName | ForEach-Object {
                 Write-Host ("  {0,-40} {1,12} bytes" -f $_.FullName, $_.Length)
             }
@@ -350,19 +462,19 @@ end
         Write-Host "Build tree left at: $workDir" -ForegroundColor Yellow
         Write-Host "Inspect / edit it, then re-zip with:" -ForegroundColor Yellow
         Write-Host "  pwsh -File build\pack-shipping-miz.ps1 -Zip  # to re-run + auto-zip"
-        Write-Host "  Compress-Archive -Path '$workDir\*' -DestinationPath 'out\${OutName}' -Force  # to zip manually"
+        Write-Host "  Re-run this command with -Zip after making source changes. Do not use Compress-Archive;" -ForegroundColor Yellow
+        Write-Host "  on Windows it can create backslash entry names that DCS cannot resolve as resources." -ForegroundColor Yellow
     }
 
     Write-Host ""
     Write-Host "Next steps:" -ForegroundColor Cyan
-    Write-Host "  1. Test on a STOCK (sanitized) DCS install. See docs/shipping-duel-dynamic.md §5."
+    Write-Host "  1. Test on a STOCK (sanitized) DCS install. See docs/shipping-duel-dynamic.md section 5."
     Write-Host "  2. Drop the .miz into Saved Games\DCS.dcs_serverrelease\Missions\ on the server."
     Write-Host "  3. Watch Saved Games\DCS.dcs_serverrelease\Logs\dcs.log for 'MOOSE INCLUDE END' and"
     Write-Host "     '[duel-dynamic] ...' breadcrumbs."
 }
-# Note: we do NOT clean up $workDir in finally. The whole point of this
-# refactor is to leave the staged tree on disk for inspection / manual
-# edits / re-zipping. Re-running the packager wipes it for you.
+# Note: we do NOT clean up $workDir in finally. It remains available for
+# inspection; make changes in src/ and re-run because the next build wipes it.
 finally {
     # intentionally empty — see comment above
 }

@@ -17,11 +17,56 @@ param(
 
     [switch]$Use7Zip,
 
-    [string]$MissionsDir = (Join-Path $PSScriptRoot "..\missions"),
-    [string]$OutDir      = (Join-Path $PSScriptRoot "..\out")
+    [string]$MissionsDir = "",
+    [string]$OutDir      = ""
 )
 
 $ErrorActionPreference = "Stop"
+Add-Type -AssemblyName System.IO.Compression -ErrorAction Stop
+Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop
+
+if (-not $MissionsDir) { $MissionsDir = (Join-Path $PSScriptRoot "..\missions") }
+if (-not $OutDir) { $OutDir = (Join-Path $PSScriptRoot "..\out") }
+
+function New-PortableZipFromDirectory {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$SourceDirectory,
+
+        [Parameter(Mandatory = $true)]
+        [string]$DestinationPath
+    )
+
+    $sourcePath = [System.IO.Path]::GetFullPath($SourceDirectory).TrimEnd('\', '/')
+    $outputStream = $null
+    $archive = $null
+    try {
+        $outputStream = [System.IO.File]::Open($DestinationPath, [System.IO.FileMode]::CreateNew)
+        $archive = New-Object System.IO.Compression.ZipArchive(
+            $outputStream,
+            [System.IO.Compression.ZipArchiveMode]::Create,
+            $false
+        )
+
+        $files = [System.IO.Directory]::GetFiles(
+            $sourcePath,
+            '*',
+            [System.IO.SearchOption]::AllDirectories
+        ) | Sort-Object
+        foreach ($filePath in $files) {
+            $entryName = $filePath.Substring($sourcePath.Length + 1).Replace('\', '/')
+            [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
+                $archive,
+                $filePath,
+                $entryName,
+                [System.IO.Compression.CompressionLevel]::Optimal
+            ) | Out-Null
+        }
+    } finally {
+        if ($null -ne $archive) { $archive.Dispose() }
+        if ($null -ne $outputStream) { $outputStream.Dispose() }
+    }
+}
 
 $src = Join-Path $MissionsDir $MissionName
 if (-not (Test-Path -LiteralPath $src)) {
@@ -53,17 +98,21 @@ try {
         & $sevenZip a -tzip -mx=5 -- $out "./\*" | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "7z exited with $LASTEXITCODE" }
     } else {
-        Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop
-        [System.IO.Compression.ZipFile]::CreateFromDirectory(
-            (Get-Location).Path,
-            $out,
-            [System.IO.Compression.CompressionLevel]::Optimal,
-            $false  # includeBaseDirectory = false: entries are mission, options, ...
-        ) | Out-Null
+        New-PortableZipFromDirectory -SourceDirectory (Get-Location).Path -DestinationPath $out
     }
 }
 finally {
     Pop-Location
+}
+
+$archive = [System.IO.Compression.ZipFile]::OpenRead($out)
+try {
+    $invalidEntries = @($archive.Entries | Where-Object { $_.FullName.Contains('\') })
+    if ($invalidEntries.Count -gt 0) {
+        throw "Archive contains Windows-style entry names: $($invalidEntries.FullName -join ', ')"
+    }
+} finally {
+    $archive.Dispose()
 }
 
 Write-Host "Packed: $out" -ForegroundColor Green

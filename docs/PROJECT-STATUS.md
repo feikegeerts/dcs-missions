@@ -1,6 +1,6 @@
 # Project status
 
-**Last updated:** 2026-09-01. Read this first when coming back.
+**Last updated:** 2026-09-02. Read this first when coming back.
 
 This is a snapshot of where the project is, what's known to work, what's
 known to be broken, and what still needs to happen before the mission
@@ -36,6 +36,13 @@ Both `.miz` files contain the same generic loader trigger; only the
 
 Server config: `Saved Games\DCS.dcs_serverrelease\Config\autoexec.cfg`
 has the no-render / no-track / silent-crash settings. Don't lose it.
+
+Tacview `1.9.4.200` is installed and configured in the active dedicated-server
+profile. Recording is enabled for all host-visible multiplayer data; real-time
+telemetry and remote control are disabled. Host and client playback delay is
+set to zero for immediate training review. The pre-install `options.lua` is at
+`Saved Games\DCS.dcs_serverrelease\Backups\Tacview-setup-20260902\options.lua`.
+Host and client `.acmi` creation was runtime-verified on 2026-09-02.
 
 ---
 
@@ -142,7 +149,11 @@ These are DCS-imposed limitations, not bugs in the Lua. Documented in
 
 ## 6. What's still to do (post-PTO)
 
-### 6.1 MIST integration (for true random player respawns)
+### 6.1 Nice-to-have: MIST integration for true random player respawns
+
+This was explicitly deprioritized on 2026-09-02. Continue telemetry work first;
+revisit MIST after the telemetry path is established unless player respawning
+becomes a blocker.
 
 To get the player teleporting to a new position on death, we need
 `mist.teleportToPoint`. Steps:
@@ -176,35 +187,50 @@ deleting is probably the right call. Verify with the user first.
 
 ### 6.3 Ship the mission (static mode)
 
-Status: **built** (2026-07-28). `build/pack-shipping-miz.ps1`
+Status: **built and stock-runtime verified** (2026-09-02).
+`build/pack-shipping-miz.ps1`
 assembles `out/duel-dynamic.miz` (~840 KB, self-contained) from the
-dev `.miz` and `src/`. Mission file parses as Lua 5.1, the inner
-shipping `main.lua` parses as Lua 5.1 (gets to `env.info` on line 20
-before failing on `env` being nil, which DCS injects at runtime).
+dev `.miz` and `src/`. The generated mission, mapResource, MOOSE, and shipping
+main script parse as Lua 5.1.
 
 - [x] Build a self-contained `.miz` that loads via `DO SCRIPT FILE` —
       `build/pack-shipping-miz.ps1` writes to `out/duel-dynamic.miz`
       and `out/duel-dynamic-build/` (staging dir, left in place for
       inspection when `-Zip` is not passed).
-- [x] `-Zip` packaging and entry listing re-verified 2026-09-01. The
-      PowerShell case-insensitive `$Zip`/`$zip` variable collision was fixed.
+- [x] `-Zip` packaging and entry listing re-verified 2026-09-02. The
+      PowerShell case-insensitive `$Zip`/`$zip` variable collision was fixed,
+      and the packager now writes ZIP entry names with DCS-compatible forward
+      slashes and rejects backslash entries.
 - [x] Strip all `:TraceOn()` / `BASE:TraceOn()` calls. Sanity check
       in the packager; current `src/` has none.
 - [x] `os.time()` → `math.floor(timer.getTime() * 1000)` for the LCG
       seed (stock DCS nils `os`).
-- [x] `score.lua` inlined into `Scripts/main.lua` (no `dofile()` in
+- [x] `score.lua` inlined into `l10n/DEFAULT/main.lua` (no `dofile()` in
       stock DCS — CWD is the DCS install dir, not the .miz).
 - [x] `MissionScripting.lua` restored to stock on both installs
       (2026-07-28). `os`/`io`/`lfs` are nilled again. The `.orig`
       backups were the source.
 - [x] Lua syntax of patched mission file validated with `lua5.1
       -e "loadfile(...)"`.
-- [ ] Verify it runs on a stock (sanitized) DCS install. The user
+- [x] Verify it runs on a stock (sanitized) DCS install. The user
       (2026-07-28) hit one Lua parse error on first attempt — the
       packager used `""` for inner quotes (Lua adjacent-string
       concat) instead of `\"` (escaped quote), so the .miz wouldn't
       load. **Fixed** in the packager; re-built .miz parses cleanly.
-      User to retry.
+      A 2026-09-02 retry exposed a second packager bug: DO SCRIPT FILE actions
+      used literal `Scripts/...` paths, so DCS silently skipped both scripts.
+      The packager now embeds scripts under `l10n/DEFAULT`, registers resource
+      keys in `mapResource`, and patches the legacy startup callback to invoke
+      both actions. The first resource-key build (`shipping-test-v2`) exposed a
+      third Windows-only bug: `.NET ZipFile.CreateFromDirectory()` stored
+      resource member names with backslashes, while editor-authored missions
+      use `l10n/DEFAULT/...` forward-slash names. The packager now creates ZIP
+      entries explicitly with forward slashes and validates the archive layout.
+      `duel-dynamic-shipping-test-v3.miz` was loaded on the stock server on
+      2026-09-02. The log confirmed `MOOSE INCLUDE END`, shipping/main init,
+      a tasked 1-ship package, a mutual player/bandit kill, the 30-second
+      replacement schedule, and wave 2 spawning exactly 30 seconds later.
+      Tacview recorded the run with playback delay zero.
 - [ ] Final QA on a fresh dedicated server install.
 
 See `docs/shipping-duel-dynamic.md` for what the packager does and
@@ -219,14 +245,16 @@ how to verify, and `docs/dev-setup.md §8` for the build/QA loop.
       losses are held; the 30-second timer starts after the final red loss.
 - [ ] Validate 1v1, 2v2, 3v3, and 4v4 package geometry/tasking on the dedicated
       server and inspect the result in Tacview.
-- [ ] Install/configure Tacview for
+- [x] Install/configure Tacview for
       `Saved Games\DCS.dcs_serverrelease` before that validation run.
-      Inspection on 2026-09-01 found Tacview `1.9.4.200` installed only under
-      the full-client `Saved Games\DCS` profile. The server profile currently
-      has no `Mods\tech\Tacview`, `Scripts\TacviewGameExport.lua`,
-      `Scripts\Hooks\TacviewGameGUI.lua`, `Scripts\Export.lua`, or Tacview
-      plugin options. Preserve/merge any future `Export.lua`; do not overwrite
-      unrelated export integrations.
+      Tacview `1.9.4.200`, its export and hook scripts, a minimal `Export.lua`,
+      and host-recording options were installed on 2026-09-02. Lua syntax,
+      copied-file hashes, and host/client `.acmi` output were verified. Playback
+      delay is disabled; the v2 mission-load log confirmed
+      `tacviewPlaybackDelay=0` at runtime. Use the `DCS-Host-...` recording for
+      package analysis: it contains both bandit waves. The `DCS-Client-...`
+      recording omits bandits because this server deliberately has
+      `allow_object_export=false` for multiplayer clients.
 - [ ] Pick a real map / theatre. Caucasus is the test default. Decide
       if the production mission uses a different map and update both
       the ME and the spec.
@@ -237,8 +265,9 @@ how to verify, and `docs/dev-setup.md §8` for the build/QA loop.
 
 Slices 1–5 are complete. Slice 5 was validated with controlled and two-player
 dedicated-server runs, and the development environment was restored to stock
-afterward. The next planned telemetry work is Slice 6, the local collector
-parser and durable spool, but Gate E approval is required before it starts.
+afterward. Telemetry now has priority over the optional MIST respawn work. The
+next planned telemetry work is Slice 6, the local collector parser and durable
+spool; record explicit Gate E approval before implementation starts.
 
 ---
 

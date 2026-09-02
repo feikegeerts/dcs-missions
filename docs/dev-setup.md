@@ -97,15 +97,16 @@ Do this for **both** the client install and the dedicated server install.
 
 ## 3. Dedicated server setup
 
-1. Install via the modular installer. Default write dir: **`Saved Games\DCS.server`**.
+1. Install via the modular installer. On this machine the active write dir is
+   **`Saved Games\DCS.dcs_serverrelease`**.
 2. Start it once; open the local WebGUI (desktop link "Local Web GUI", or
    `http://localhost:8088`).
 3. Ports (forward only if you want external players; not needed for local dev):
    - `10308` TCP+UDP — game traffic
    - `8088` TCP — local WebGUI
-4. Put dev .miz files in `Saved Games\DCS.server\Missions\`, add to the mission list
+4. Put dev .miz files in `Saved Games\DCS.dcs_serverrelease\Missions\`, add to the mission list
    in the WebGUI.
-5. Recommended hardening — create `Saved Games\DCS.server\Config\autoexec.cfg`:
+5. Recommended hardening — create `Saved Games\DCS.dcs_serverrelease\Config\autoexec.cfg`:
 
 ```lua
 options.graphics.render3D = false
@@ -119,9 +120,9 @@ Facts to remember:
   (start/stop/restart buttons).
 - Programmatic restart is possible via the **server-env** function
   `net.load_mission(path)` from a hook script in
-  `Saved Games\DCS.server\Scripts\Hooks\` (how DCSServerBot/DCS-gRPC do it).
+  `Saved Games\DCS.dcs_serverrelease\Scripts\Hooks\` (how DCSServerBot/DCS-gRPC do it).
   Optional quality-of-life; the WebGUI button is fine to start.
-- Server log: `Saved Games\DCS.server\Logs\dcs.log`.
+- Server log: `Saved Games\DCS.dcs_serverrelease\Logs\dcs.log`.
 
 ---
 
@@ -307,7 +308,7 @@ Mission Editor (and re-copy it to both Missions folders).
 # SP client:
 Get-Content -Wait -Tail 30 "$env:USERPROFILE\Saved Games\DCS\Logs\dcs.log"
 # dedicated server:
-Get-Content -Wait -Tail 30 "$env:USERPROFILE\Saved Games\DCS.server\Logs\dcs.log"
+Get-Content -Wait -Tail 30 "$env:USERPROFILE\Saved Games\DCS.dcs_serverrelease\Logs\dcs.log"
 ```
 
 What to look for, in order:
@@ -352,10 +353,18 @@ Alternative: DCS-gRPC (works against the dedicated server too).
 ### 7.5 Tacview (behavioral verification)
 
 Records everything your scripts did — spawn positions/timing, group composition,
-routes, deaths. Default folder: `%USERPROFILE%\Documents\Tacview\`. Use it to verify
-spawn/wave logic actually behaves as designed; catches geometry and timing bugs that
-logs can't show. Works on the dedicated server too
-(`Saved Games\DCS.server\Config\options.lua` → `["Tacview"]` block).
+routes, deaths. On this machine verified host/client recordings are under
+`%USERPROFILE%\Saved Games\DCS\Tracks\Tacview\`. Use them to verify spawn/wave
+logic actually behaves as designed; this catches geometry and timing bugs that
+logs cannot show. The active dedicated-server settings are in
+`Saved Games\DCS.dcs_serverrelease\Config\options.lua` under the `["Tacview"]`
+block. The server log must show `tacviewPlaybackDelay=0` for immediate review.
+For dedicated multiplayer tests, open the file named `DCS-Host-...` when
+checking AI packages. With `allow_object_export=false` in `serverSettings.lua`,
+the parallel `DCS-Client-...` recording contains the player aircraft but omits
+other objects such as bandits. Enabling object export would expose all objects
+to every multiplayer client's export scripts, so do not change it just for
+local analysis when the complete host recording is available.
 
 ### 7.6 Breakpoint debugging (optional)
 
@@ -389,13 +398,17 @@ What the packager does:
 2. Rewrites the MISSION START trigger in the `mission` file: one
    `a_do_script` action → two `a_do_script_file` actions, in both the
    modern (`trigrules`) and legacy (`trig`) trigger representations.
-3. Synthesizes `Scripts/main.lua` from `src/missions/<name>/main.lua`:
+3. Registers MOOSE and main script resource keys in
+   `l10n/DEFAULT/mapResource`.
+4. Synthesizes `l10n/DEFAULT/main.lua` from `src/missions/<name>/main.lua`:
    inlines `score.lua`, removes the dev-only `MY_SCRIPTS_ROOT` lookup,
    replaces `os.time()` with `timer.getTime()*1000` for the LCG seed,
    refuses to ship if any `TraceOn`/`os.*`/`io.open`/`lfs.*` reference
    survives in non-comment lines.
-4. Copies `Scripts/Moose_.lua` from `src/lib/`.
-5. Re-zips into `out/duel-dynamic.miz` (only if `-Zip` is passed).
+5. Copies `l10n/DEFAULT/Moose_.lua` from `src/lib/`.
+6. Re-zips into `out/duel-dynamic.miz` (only if `-Zip` is passed), forcing
+   ZIP member names to use forward slashes and rejecting invalid backslash
+   resource entries.
 
 What you must do before distributing the .miz:
 
@@ -403,10 +416,10 @@ What you must do before distributing the .miz:
    (it's the file with `sanitizeModule('os'/'io'/'lfs')` lines).
    The installer keeps `MissionScripting.lua.orig` backups — just
    `Copy-Item MissionScripting.lua.orig MissionScripting.lua -Force`.
-2. **Drop** the .miz into `Saved Games\DCS.server\Missions\` (or
+2. **Drop** the .miz into `Saved Games\DCS.dcs_serverrelease\Missions\` (or
    `Saved Games\DCS\Missions\` for SP / non-dedicated host).
 3. **Start** the mission and watch the log:
-   - Dedicated: `Saved Games\DCS.server\Logs\dcs.log`
+   - Dedicated: `Saved Games\DCS.dcs_serverrelease\Logs\dcs.log`
    - SP / non-dedicated host: `Saved Games\DCS\Logs\dcs.log`
 4. Look for `*** MOOSE INCLUDE END ***` followed by
    `[duel-dynamic] shipping build start`, `[duel-dynamic] MOOSE loaded`,
@@ -487,12 +500,20 @@ your own .miz-mangling script.
    When generating strings that go INTO a Lua source file (the
    mission file), use `\"` for embedded quotes.
 
-7. **Forward slashes in DCS file paths are universally accepted.** If
-   you don't want to deal with `\\` vs `\` in Lua string escaping, just
-   use `/`. It works for `a_do_script_file("Scripts/Moose_.lua")` and
-   for `[[...]]` long-bracket literals alike.
+7. **DO SCRIPT FILE does not accept an arbitrary archive path.** Its mission
+   action references a key from `l10n/DEFAULT/mapResource`; the legacy action
+   resolves that key through `getValueResourceByKey(...)`. A literal call such
+   as `a_do_script_file("Scripts/Moose_.lua")` can parse cleanly but is silently
+   ignored by stock DCS.
 
-8. **Don't trust in-memory debugging across separate PowerShell
+8. **ZIP member separators matter.** DCS resolves a resource such as
+   `Moose_.lua` against the exact archive member `l10n/DEFAULT/Moose_.lua`.
+   Under Windows PowerShell 5.1, `.NET ZipFile.CreateFromDirectory()` and
+   `Compress-Archive` can store the member as `l10n\DEFAULT\Moose_.lua`.
+   The archive remains a valid ZIP but DCS silently skips the resource. Create
+   entries explicitly with `/`, and fail the build if any entry contains `\`.
+
+9. **Don't trust in-memory debugging across separate PowerShell
    processes.** I lost an hour once where `Write-Host` showed the
    in-memory `$mission` was patched correctly, but a separate
    PowerShell session reading the file on disk still saw the unpatched
@@ -500,7 +521,7 @@ your own .miz-mangling script.
    Always verify with `Get-Content -LiteralPath` in the SAME process
    that did the write, or close and reopen your test process.
 
-9. **Test the Lua syntax of the produced .miz with `lua5.1 -e
+10. **Test the Lua syntax of the produced .miz with `lua5.1 -e
    "loadfile('mission.lua')"` BEFORE you load it in DCS.** The DCS
    error `Cannot get theatre for miz: ... -> '}' expected (to close
    '{' at line 51)` is opaque — it doesn't say which file or which
@@ -508,7 +529,7 @@ your own .miz-mangling script.
    line-and-column error. Available on this machine via
    `C:\ProgramData\chocolatey\bin\lua5.1.exe`.
 
-10. **The dev `.miz` is never overwritten.** The packager reads
+11. **The dev `.miz` is never overwritten.** The packager reads
     from `Saved Games\DCS.dcs_serverrelease\Missions\duel-dynamic.miz`
     and writes the shipping `.miz` to `out/duel-dynamic.miz` plus the
     staging dir at `out/duel-dynamic-build/`. If a step in the
@@ -540,7 +561,7 @@ your own .miz-mangling script.
 | Your edits have no effect | Mission loading embedded (static) scripts; forgot LShift+R; ME re-embedded stale file | Confirm dev trigger is `DO SCRIPT` loader; restart mission |
 | `attempt to index nil` on `lfs`/`os`/`io` | DCS update restored `MissionScripting.lua` | Re-apply §2 |
 | Logic starts then silently stops | Error swallowed inside TIMER/scheduled callback | §7.3 pcall wrapper |
-| Server doesn't list the mission | Wrong folder / not in mission list | `Saved Games\DCS.server\Missions\`, add via WebGUI |
+| Server doesn't list the mission | Wrong folder / not in mission list | `Saved Games\DCS.dcs_serverrelease\Missions\`, add via WebGUI |
 | `SPAWN` returns nil | Template group name typo / not late-activated / wrong coalition | Template name must match ME group name exactly |
 | Group name comparisons fail | Alias suffix: spawned groups are `Name#NNN` | Prefix-match: `name:find("^Bandit%-Alpha")` |
 | MOOSE class "doesn't exist" | Develop-only class, or legacy `AI_*` from an old guide | Check class against your pinned Moose_.lua (`findstr`) and stable docs |
