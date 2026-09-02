@@ -16,6 +16,11 @@ lib/dcs-world-schema/
 # Contract test dependencies
 /contracts/node_modules/
 
+# Local telemetry collector
+/collector/node_modules/
+/collector/dist/
+/collector/state/
+
 # OS
 Thumbs.db
 .DS_Store

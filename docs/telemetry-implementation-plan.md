@@ -1,6 +1,6 @@
 # DCS Telemetry Implementation Plan
 
-**Status:** Implementation in progress. Slices 1–5 are complete; every later
+**Status:** Implementation in progress. Slices 1–6 are complete; every later
 slice still requires its own Gate E approval.
 
 This plan turns the duel-dynamic mission into a telemetry producer and adds a
@@ -697,6 +697,10 @@ and verify a new run key. Preserve existing duel behavior and clean logs.
 spawn, respawn, or F10 score behavior.
 
 ### Slice 6: Local collector parser and durable spool
+
+**Status:** Complete on 2026-09-02. See
+`docs/telemetry/slice-6-collector-evidence.md` for the crash-consistency
+design, the automated test matrix, and real-data idempotency evidence.
 
 **Recommended model:** GPT-5.6 SOL High.
 

@@ -263,11 +263,19 @@ how to verify, and `docs/dev-setup.md §8` for the build/QA loop.
 
 ### 6.5 Telemetry
 
-Slices 1–5 are complete. Slice 5 was validated with controlled and two-player
+Slices 1–6 are complete. Slice 5 was validated with controlled and two-player
 dedicated-server runs, and the development environment was restored to stock
-afterward. Telemetry now has priority over the optional MIST respawn work. The
-next planned telemetry work is Slice 6, the local collector parser and durable
-spool; record explicit Gate E approval before implementation starts.
+afterward. Slice 6 added the local TypeScript collector
+(`collector/`): NDJSON tailing with partial-line handling, contract
+validation, a durable SQLite spool with idempotent inserts, file-identity
+cursors with truncation/replacement resets, quarantine for invalid lines,
+in-order delivery/acknowledgement, and a dry-run summary. It made no network
+calls and passed a two-pass real-data idempotency check
+(145 events, zero loss, zero duplicates). Evidence:
+`docs/telemetry/slice-6-collector-evidence.md`. Telemetry now has priority
+over the optional MIST respawn work. The next planned telemetry work is
+Slice 7, the web shell and raw event persistence; record explicit Gate E
+approval before implementation starts.
 
 ---
 
@@ -282,7 +290,7 @@ spool; record explicit Gate E approval before implementation starts.
 3. Start the dedicated server, WebGUI → Restart `duel-dynamic`.
 4. Sanity check: the log shows the init sequence from
    `spec-duel-dynamic.md §7`. The bandit spawns. F10 menu works.
-5. For telemetry, review Slice 5 evidence and approve Slice 6 explicitly before
+5. For telemetry, review Slice 6 evidence and approve Slice 7 explicitly before
    implementation. Other work
    remains in §6.1, §6.2, and §6.4. §6.3 builds a self-contained `.miz`;
    final QA on a stock install remains.
