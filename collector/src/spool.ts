@@ -211,6 +211,66 @@ export class DurableSpool {
     };
   }
 
+  /**
+   * Returns the contiguous run of spooled, not-yet-acknowledged events for a
+   * run without advancing its acknowledgement cursor.
+   */
+  listDeliverable(
+    producerId: string,
+    runKey: string,
+    limit: number,
+  ): DeliverableEvent[] {
+    if (!Number.isInteger(limit) || limit < 1) {
+      return [];
+    }
+
+    const acknowledgedThrough = this.acknowledgedThrough(producerId, runKey);
+    const expectedFirstSequence = acknowledgedThrough + 1;
+    const rows = this.database
+      .prepare(
+        `SELECT * FROM spool_events
+         WHERE producer_id = ? AND run_key = ? AND event_sequence > ?
+         ORDER BY event_sequence
+         LIMIT ?`,
+      )
+      .all(producerId, runKey, acknowledgedThrough, limit) as EventRow[];
+
+    const deliverable: DeliverableEvent[] = [];
+    for (let index = 0; index < rows.length; index += 1) {
+      const row = rows[index];
+      if (
+        row === undefined ||
+        row.event_sequence !== expectedFirstSequence + index
+      ) {
+        break;
+      }
+      if (row.event_sequence === 1 && row.event_type !== "mission.started") {
+        return [];
+      }
+      deliverable.push({
+        event: JSON.parse(row.event_json) as TelemetryEvent,
+        canonical_json: row.event_json,
+      });
+    }
+    return deliverable;
+  }
+
+  /** Returns one exact spooled event without changing delivery state. */
+  getEvent(
+    producerId: string,
+    runKey: string,
+    sequence: number,
+  ): DeliverableEvent | null {
+    const row = this.getEventRowBySequence(producerId, runKey, sequence);
+    if (row === undefined) {
+      return null;
+    }
+    return {
+      event: JSON.parse(row.event_json) as TelemetryEvent,
+      canonical_json: row.event_json,
+    };
+  }
+
   acknowledge(eventId: string): "acknowledged" | "duplicate" {
     return this.database.transaction(() => {
       const event = this.getEventRowById(eventId);
