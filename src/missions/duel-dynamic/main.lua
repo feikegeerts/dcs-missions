@@ -710,6 +710,59 @@ end, {}, INIT_DELAY, INIT_POLL_INTERVAL, 0, INIT_TIMEOUT)
 -- no TEST_COMBAT strings survive in the shipping build.
 -- =====================================================================
 if _G.TEST_COMBAT_ENABLED then
+  -- Deterministic single-shot loadout for unattended ordnance verification.
+  -- The bandit template copy carries exactly ONE AAM and no guns; the blue
+  -- target copy carries no weapons at all. A successful engagement then
+  -- yields exactly one ordnance.fired event, so the count is assertable.
+  -- Flip TEST_COMBAT_MISSILE between "AIM-120C" and "AIM-9X" per run.
+  local TEST_COMBAT_MISSILE = "AIM-120C"
+  local TEST_COMBAT_MISSILE_PYLONS = {
+    ["AIM-120C"] = { index = 2, pylon = { CLSID = "LAU-115_2*LAU-127_AIM-120C" } },
+    ["AIM-9X"] = {
+      index = 1,
+      pylon = {
+        CLSID = "{5CE2FF2A-645A-4197-B48D-8720AC69394F}",
+        settings = { NFP_VIS_DrawArgNo_57 = 0.1, NFP_PRESID = "MDRN_M_A_AIM9" },
+      },
+    },
+  }
+  -- Mission-file payload shape (see the dev .miz `mission` table): pylons by
+  -- index plus fuel/countermeasures. gun = 0 removes the M61 entirely so the
+  -- bandit cannot add gun shots to the ordnance count.
+  local function testCombatPayload(pylonIndex, pylonTable)
+    local pylons = pylonIndex and { [pylonIndex] = pylonTable } or {}
+    return {
+      pylons = pylons,
+      fuel = 4900,
+      flare = 60,
+      ammo_type = 1,
+      chaff = 60,
+      gun = 0,
+    }
+  end
+  -- SPAWN hands the spawner's SpawnTemplate table straight to
+  -- coalition.addGroup via DATABASE:Spawn -- but only when TweakedTemplate
+  -- is true (NewFromTemplate sets it). SPAWN:New-based spawners keep it
+  -- false, in which case SPAWN:_Prepare re-fetches a fresh copy from the
+  -- shared _DATABASE template on every spawn and silently ignores the
+  -- spawner's own SpawnTemplate. The block below flips the flag on
+  -- waveSpawner so the payload overwrites control the spawned units'
+  -- weapons without touching the shared _DATABASE template.
+  local function setTemplatePayload(spawner, payload)
+    local units = spawner and spawner.SpawnTemplate and spawner.SpawnTemplate.units
+    if type(units) ~= "table" then
+      return false
+    end
+    local applied = false
+    for _, unit in pairs(units) do
+      if type(unit) == "table" then
+        unit.payload = payload
+        applied = true
+      end
+    end
+    return applied
+  end
+
   SCHEDULER:New(nil, function()
     if not initDone then
       return nil -- wait for doInit (runs early when TEST_COMBAT skips the player-wait)
@@ -777,6 +830,35 @@ if _G.TEST_COMBAT_ENABLED then
     waveSpawner:InitGrouping(1)
     waveSpawner:InitSetUnitRelativePositions(formationPositions(1, banditHeading))
     waveSpawner:InitHeading(banditHeading)
+    -- 3b. Apply the deterministic single-shot loadouts to this spawner's
+    --     template copies (bandit: exactly one AAM; blue: no weapons).
+    -- waveSpawner was built with SPAWN:New (TweakedTemplate=false), which
+    -- makes SPAWN:_Prepare re-fetch a fresh template copy from the shared
+    -- _DATABASE on every spawn and silently ignore the spawner's own
+    -- SpawnTemplate. Flipping the flag routes _Prepare to the spawner's
+    -- own template table (the documented "user made template" path), so
+    -- the payload overwrites below reach coalition.addGroup via
+    -- DATABASE:Spawn. blueSpawner (SPAWN:NewFromTemplate) already has
+    -- TweakedTemplate=true.
+    waveSpawner.TweakedTemplate = true
+    local missile = TEST_COMBAT_MISSILE_PYLONS[TEST_COMBAT_MISSILE]
+    if not missile then
+      env.error("[duel-dynamic][test-combat] unknown TEST_COMBAT_MISSILE: " .. tostring(TEST_COMBAT_MISSILE))
+      return false
+    end
+    if
+      not setTemplatePayload(waveSpawner, testCombatPayload(missile.index, missile.pylon))
+      or not setTemplatePayload(blueSpawner, testCombatPayload(nil, nil))
+    then
+      env.error("[duel-dynamic][test-combat] template payload not settable on both spawners")
+      return false
+    end
+    env.info(
+      string.format(
+        "[duel-dynamic][test-combat] fixed loadout: bandit 1x%s gun=0, blue no weapons",
+        TEST_COMBAT_MISSILE
+      )
+    )
     local banditGrp = waveSpawner:SpawnFromCoordinate(banditCoord)
     if not banditGrp then
       env.error("[duel-dynamic][test-combat] failed to spawn bandit wave")
@@ -786,7 +868,9 @@ if _G.TEST_COMBAT_ENABLED then
     currentWaveGroup = banditGrp
     currentWaveGroupName = banditGrp:GetName()
     currentWaveAlive = 1
-    env.info(string.format("[duel-dynamic][test-combat] bandit wave %d spawned at %s", waveNumber, coordStr(banditCoord)))
+    env.info(
+      string.format("[duel-dynamic][test-combat] bandit wave %d spawned at %s", waveNumber, coordStr(banditCoord))
+    )
 
     -- 4. Spawn the blue AI at the reference position, headed toward the bandit.
     local okSpawn, blueGrp = pcall(function()
@@ -800,9 +884,15 @@ if _G.TEST_COMBAT_ENABLED then
 
     -- 5. Task both sides: INTERCEPT + WEAPON_FREE + RED alarm.
     local function taskIntercept(grp, targetGrp, label)
-      if not grp or not targetGrp then return end
-      pcall(function() grp:OptionROEOpenFireWeaponFree() end)
-      pcall(function() grp:OptionAlarmStateRed() end)
+      if not grp or not targetGrp then
+        return
+      end
+      pcall(function()
+        grp:OptionROEOpenFireWeaponFree()
+      end)
+      pcall(function()
+        grp:OptionAlarmStateRed()
+      end)
       local fg = FLIGHTGROUP:New(grp)
       local mission = AUFTRAG:NewINTERCEPT(targetGrp)
       mission.optionROE = ENUMS.ROE.OpenFireWeaponFree
