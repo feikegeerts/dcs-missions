@@ -54,6 +54,7 @@ local function initDevelopmentTelemetry()
     local lifecycle = dofile(DIR .. "telemetry/lifecycle.lua")
     local development = dofile(DIR .. "telemetry/development.lua")
     local shot = dofile(DIR .. "telemetry/shot.lua")
+    local participant = dofile(DIR .. "telemetry/participant.lua")
 
     return development.start({
       event_id = eventId,
@@ -62,6 +63,7 @@ local function initDevelopmentTelemetry()
       ndjson_sink = ndjsonSink,
       lifecycle = lifecycle,
       shot = shot,
+      participant = participant,
       io = io,
       lfs = lfs,
       os = os,

@@ -110,6 +110,33 @@ function M.start(config)
   if not shot then
     return nil, dependency_error
   end
+  local participant
+  participant, dependency_error = require_dependency(config, "participant", "new")
+  if not participant then
+    -- The pre-Slice-9 lifecycle harness supplies a deliberately reduced EVENTS
+    -- table. Keep that isolated harness compatible; every real MOOSE runtime
+    -- exposes these constants and must inject the participant dependency.
+    if
+      type(config.EVENTS) == "table"
+      and config.EVENTS.PlayerEnterUnit == nil
+      and config.EVENTS.PlayerLeaveUnit == nil
+    then
+      participant = {
+        new = function()
+          return {
+            start = function(self)
+              return self
+            end,
+            stop = function()
+              return true
+            end,
+          }
+        end,
+      }
+    else
+      return nil, dependency_error
+    end
+  end
   local lfs_api
   lfs_api, dependency_error = require_dependency(config, "lfs", "writedir")
   if not lfs_api or type(lfs_api.attributes) ~= "function" or type(lfs_api.mkdir) ~= "function" then
@@ -242,6 +269,29 @@ function M.start(config)
     return nil, "creating Shot adapter failed: " .. tostring(shot_creation_error)
   end
 
+  local participant_adapter, participant_creation_error
+  local participant_created, participant_result, participant_error = pcall(function()
+    return participant.new({
+      controller = controller,
+      envelope = envelope,
+      BASE = config.BASE,
+      EVENTS = config.EVENTS,
+      player_group_names = config.player_group_names,
+      player_coalition = config.player_coalition,
+      log = function(level, message)
+        log(config.env, level, message)
+      end,
+    })
+  end)
+  if not participant_created then
+    return nil, "creating participant adapter failed: " .. tostring(participant_result)
+  end
+  participant_adapter = participant_result
+  participant_creation_error = participant_error
+  if not participant_adapter then
+    return nil, "creating participant adapter failed: " .. tostring(participant_creation_error)
+  end
+
   local runtime = {
     controller = controller,
     path = path,
@@ -276,8 +326,20 @@ function M.start(config)
     end
   end
 
+  local function stop_participant()
+    local stopped, stop_result, stop_error = pcall(function()
+      return participant_adapter:stop()
+    end)
+    if not stopped then
+      log(config.env, "error", "participant subscription removal raised: " .. tostring(stop_result))
+    elseif not stop_result then
+      log(config.env, "error", "participant subscription removal failed: " .. tostring(stop_error))
+    end
+  end
+
   local function finish()
     stop_heartbeat()
+    stop_participant()
     stop_shot()
     local event, finish_error = controller:finish()
     if not event then
@@ -338,6 +400,21 @@ function M.start(config)
     return nil, start_error
   end
 
+  local participant_started, participant_start_result, participant_start_error = pcall(function()
+    return participant_adapter:start()
+  end)
+  if not participant_started or not participant_start_result then
+    stop_heartbeat()
+    pcall(function()
+      watcher:UnHandleEvent(config.EVENTS.MissionEnd)
+    end)
+    pcall(function()
+      participant_adapter:stop()
+    end)
+    return nil,
+      "registering participant adapter failed: " .. tostring(participant_start_error or participant_start_result)
+  end
+
   local shot_started, shot_start_result, shot_start_error = pcall(function()
     return shot_adapter:start()
   end)
@@ -349,6 +426,9 @@ function M.start(config)
     pcall(function()
       shot_adapter:stop()
     end)
+    pcall(function()
+      participant_adapter:stop()
+    end)
     return nil, "registering Shot adapter failed: " .. tostring(shot_start_error or shot_start_result)
   end
 
@@ -356,6 +436,8 @@ function M.start(config)
   runtime.watcher = watcher
   runtime.shot = shot_adapter
   runtime.shot_watcher = shot_adapter.watcher
+  runtime.participant = participant_adapter
+  runtime.participant_watcher = participant_adapter.watcher
   runtime.finish = finish
   log(
     config.env,

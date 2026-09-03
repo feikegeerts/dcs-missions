@@ -174,6 +174,13 @@ Verified end-to-end on the dedicated server (logs from 2026-07-26 session):
   13/13 page/API checks passed. Full evidence:
   `docs/telemetry/unattended-test-loop.md` § "Slice 8 delivery +
   network-interrupt drill".
+- ✅ Telemetry Slice 9: exact-roster `participant.entered` / `participant.left`
+  capture now retains stable UCID plus name/callsign snapshots, including
+  per-slot identity fallback on late leave. Pure web sortie derivation pairs
+  control periods and recovers from missing leaves without inventing identity.
+  Lua, web, collector, and unattended no-player gates passed; the human-in-seat
+  multiplayer drill remains the explicit follow-up. Evidence:
+  `docs/telemetry/slice-9-participant-evidence.md`.
 
 ## 5. What's known to be broken / limited
 
@@ -315,7 +322,7 @@ how to verify, and `docs/dev-setup.md §8` for the build/QA loop.
 
 ### 6.5 Telemetry
 
-Slices 1–7 are complete. Slice 5 was validated with controlled and two-player
+Slices 1–9 are complete. Slice 5 was validated with controlled and two-player
 dedicated-server runs, and the development environment was restored to stock
 afterward. Slice 6 added the local TypeScript collector
 (`collector/`): NDJSON tailing with partial-line handling, contract
@@ -349,9 +356,16 @@ correct for both runs, idempotent ingest re-pass against the production URL
 (delivery client `879f41c` + the network-interrupt drill) was completed the
 same day: see the §4 Slice 8 delivery bullet and
 `docs/telemetry/unattended-test-loop.md` § "Slice 8 delivery +
-network-interrupt drill" for the Run A/B evidence. Per the plan's Gate E,
-Slice 9 (participants and sorties) now needs its own explicit approval
-before it starts.
+network-interrupt drill" for the Run A/B evidence.
+
+Slice 9 (approved and completed 2026-09-03) added exact-roster participant
+enter/leave source capture with stable UCID and historical label snapshots,
+per-slot leave fallback, and pure sortie pairing. Automated Lua/web/collector
+checks and a 90-second unattended dedicated-server run passed with zero false
+participant events and no scripting errors. A real participant still needs to
+exercise enter, leave, rejoin, slot change, and mission restart to validate the
+known multiplayer event/field limitations. Evidence:
+`docs/telemetry/slice-9-participant-evidence.md`.
 
 Telemetry now has priority over the optional MIST respawn work.
 
