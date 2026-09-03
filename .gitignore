@@ -2,6 +2,9 @@
 out/
 /missions/
 
+# In-repo git worktrees for delegated implementation tasks (avoids out-of-repo permission prompts)
+/worktrees/
+
 # DCS Saved Games mirror
 Saved Games/
 

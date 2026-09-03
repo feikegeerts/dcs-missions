@@ -29,7 +29,13 @@ C:\Projects\dcs-missions\
   build\pack-shipping-miz.ps1   # builds a self-contained shipping .miz from the dev .miz + src/
   out\                          # generated .miz files + staging dir for inspection
   docs\                         # see "Documentation" below
+  worktrees\                    # gitignored; git worktrees for delegated implementation tasks
 ```
+
+Worktrees for delegated implementation tasks are created **inside** the repo
+under `worktrees\<task-name>\` (`git worktree add worktrees/<name> <branch>`),
+never as sibling folders of the repo — agents get no permission prompts for
+paths inside the workspace, and `worktrees/` is gitignored.
 
 ### Local DCS paths on this machine
 
