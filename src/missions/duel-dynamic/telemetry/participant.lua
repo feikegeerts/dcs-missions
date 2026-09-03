@@ -1,6 +1,7 @@
 local M = {}
 
-local AIR_CATEGORY = 2
+local AIRPLANE_CATEGORY = 0
+local HELICOPTER_CATEGORY = 1
 
 local function is_finite_number(value)
   return type(value) == "number" and value == value and value ~= math.huge and value ~= -math.huge
@@ -71,56 +72,51 @@ local function map_coalition(value)
 end
 
 local function read_unit(config, event_data)
-  -- EVENT:CreateEventPlayerEnterUnit/PlayerLeaveUnit place the raw DCS unit in
-  -- Event.initiator. IniDCSUnit is only the MOOSE-normalized fallback because
-  -- leave callbacks can arrive after the original event has been enriched.
-  local unit = read_field(config, event_data, "initiator")
-  if unit == nil then
-    unit = read_field(config, event_data, "IniDCSUnit")
-  end
-  return unit
+  return read_field(config, event_data, "IniDCSUnit")
+    or read_field(config, event_data, "initiator")
+    or read_field(config, event_data, "IniUnit")
 end
 
-local function read_observation(config, unit)
-  local observation = {}
+local function read_group_name(config, event_data, unit)
+  local name = non_empty_string(read_field(config, event_data, "IniGroupName"))
+    or non_empty_string(read_field(config, event_data, "IniDCSGroupName"))
+  if name then
+    return name
+  end
+  local group = call_method(config, unit, "getGroup")
+  return non_empty_string(call_method(config, group, "getName"))
+end
 
-  -- Core.Event does not guarantee IniGroupName for synthetic player events;
-  -- use the raw DCS unit capability and keep an unreadable group unresolved.
-  observation.group_name = non_empty_string(call_method(config, unit, "getGroupName"))
+local function read_category(config, event_data, unit)
+  local category = read_field(config, event_data, "IniCategory")
+  if category ~= nil then
+    return category
+  end
+  local descriptor = call_method(config, unit, "getDesc")
+  return read_field(config, descriptor, "category")
+end
 
-  -- Core.Event derives IniUnitName by calling the raw unit without protection;
-  -- repeat that capability here defensively so adapter failures stay isolated.
-  observation.dcs_name = non_empty_string(call_method(config, unit, "getName"))
-
-  -- Core.Event may omit IniTypeName when a leaving unit is already invalid;
-  -- the raw unit type is the only source label available to this adapter.
-  observation.dcs_type = non_empty_string(call_method(config, unit, "getTypeName"))
-
-  -- MOOSE event normalization may not retain IniCoalition on a late leave;
-  -- query the raw unit and degrade an unreadable value to unknown.
-  observation.raw_coalition = call_method(config, unit, "getCoalition")
-
-  -- MOOSE has no reliable wrapper position for an invalidating leave event;
-  -- getPosition is the isolated raw-DCS fallback required for the observation.
-  observation.position = call_method(config, unit, "getPosition")
-
-  -- Core.Event's category enrichment is not guaranteed for synthetic events;
-  -- query the raw unit so non-air roster collisions can be rejected.
-  observation.category = call_method(config, unit, "getCategory")
-
-  -- Player enter/leave event tables contain no participant name of their own;
-  -- getPlayerName is the checked raw-DCS capability for the display snapshot.
-  observation.display_name = non_empty_string(call_method(config, unit, "getPlayerName"))
-
-  -- MOOSE cannot guarantee IniPlayerUCID for these multiplayer lifecycle
-  -- events; use the raw unit capability and preserve an explicit unknown if nil.
-  observation.participant_id = non_empty_string(call_method(config, unit, "getPlayerUCID"))
-
-  -- UNIT:GetCallsign substitutes the unit name for an empty raw callsign, so
-  -- query getCallsign directly to avoid inventing a reported callsign label.
-  observation.callsign = non_empty_string(call_method(config, unit, "getCallsign"))
-
-  return observation
+local function read_observation(config, event_data, unit)
+  -- Core.Event enriches both the synthetic PlayerEnterAircraft event and a
+  -- usable PlayerLeaveUnit event before dispatch. Prefer those real MOOSE
+  -- fields; raw DCS methods are protected fallbacks for genuinely absent data.
+  return {
+    group_name = read_group_name(config, event_data, unit),
+    dcs_name = non_empty_string(read_field(config, event_data, "IniDCSUnitName")) or non_empty_string(
+      read_field(config, event_data, "IniUnitName")
+    ) or non_empty_string(call_method(config, unit, "getName")),
+    dcs_type = non_empty_string(read_field(config, event_data, "IniTypeName"))
+      or non_empty_string(call_method(config, unit, "getTypeName")),
+    raw_coalition = read_field(config, event_data, "IniCoalition") or call_method(config, unit, "getCoalition"),
+    position = call_method(config, unit, "getPosition"),
+    category = read_category(config, event_data, unit),
+    display_name = non_empty_string(read_field(config, event_data, "IniPlayerName")),
+    -- A DCS unit has no stable-identity API. Never manufacture a UCID from a
+    -- display name or a mock-only unit method.
+    participant_id = non_empty_string(read_field(config, event_data, "IniPlayerUCID")),
+    -- UNIT:GetCallsign substitutes a unit name, so only use the raw report.
+    callsign = non_empty_string(call_method(config, unit, "getCallsign")),
+  }
 end
 
 local function read_location(config, position)
@@ -217,12 +213,13 @@ local function merge_leave_snapshot(observation, snapshot)
   }
 end
 
-local function resolve_entered_asset(config, unit, group_name, event_time)
+local function resolve_entered_asset(config, unit, group_name, event_time, event_data)
   local registry = config.asset_registry
   if type(registry) ~= "table" or type(registry.observe_player_unit) ~= "function" then
     return nil
   end
-  local ok, asset, observe_error = pcall(registry.observe_player_unit, registry, unit, event_time, group_name)
+  local ok, asset, observe_error =
+    pcall(registry.observe_player_unit, registry, unit, event_time, group_name, event_data)
   if not ok then
     log_error(config, "tracked asset observation raised: " .. tostring(asset))
     return nil
@@ -255,13 +252,17 @@ local function capture(adapter, event_type, event_data)
   end
 
   local unit = read_unit(config, event_data)
-  local observation = read_observation(config, unit)
+  local observation = read_observation(config, event_data, unit)
   local group_name = observation.group_name
   if not group_name or not adapter.roster[group_name] then
     return nil, "participant group is outside the tracked roster"
   end
 
-  if observation.category ~= nil and observation.category ~= AIR_CATEGORY then
+  if
+    observation.category ~= nil
+    and observation.category ~= AIRPLANE_CATEGORY
+    and observation.category ~= HELICOPTER_CATEGORY
+  then
     return nil, "participant unit is not an aircraft"
   end
   if
@@ -282,7 +283,7 @@ local function capture(adapter, event_type, event_data)
   local event_time = read_field(config, event_data, "time")
   local asset
   if event_type == "participant.entered" then
-    asset = resolve_entered_asset(config, unit, group_name, event_time)
+    asset = resolve_entered_asset(config, unit, group_name, event_time, event_data)
   else
     asset = resolve_existing_asset(config, unit)
   end
@@ -352,8 +353,12 @@ function M.new(config)
   if type(config.BASE) ~= "table" or type(config.BASE.New) ~= "function" then
     return nil, "participant requires MOOSE BASE"
   end
-  if type(config.EVENTS) ~= "table" or config.EVENTS.PlayerEnterUnit == nil or config.EVENTS.PlayerLeaveUnit == nil then
-    return nil, "participant requires EVENTS.PlayerEnterUnit and EVENTS.PlayerLeaveUnit"
+  if
+    type(config.EVENTS) ~= "table"
+    or config.EVENTS.PlayerEnterAircraft == nil
+    or config.EVENTS.PlayerLeaveUnit == nil
+  then
+    return nil, "participant requires EVENTS.PlayerEnterAircraft and EVENTS.PlayerLeaveUnit"
   end
 
   local roster, roster_error = build_roster(config.player_group_names)
@@ -380,11 +385,13 @@ function M.new(config)
     return event, capture_error
   end
 
-  function adapter:OnEventPlayerEnterUnit(event_data)
+  function adapter:OnEventPlayerEnterAircraft(event_data)
     return self:capture("participant.entered", event_data)
   end
 
   function adapter:OnEventPlayerLeaveUnit(event_data)
+    -- Pinned MOOSE drops PlayerLeaveUnit when DCS supplies no initiator. A hard
+    -- disconnect is therefore unobservable here and must not synthesize left.
     return self:capture("participant.left", event_data)
   end
 
@@ -401,8 +408,8 @@ function M.new(config)
       return nil, "creating MOOSE participant watcher failed"
     end
 
-    function watcher:OnEventPlayerEnterUnit(event_data)
-      return adapter:OnEventPlayerEnterUnit(event_data)
+    function watcher:OnEventPlayerEnterAircraft(event_data)
+      return adapter:OnEventPlayerEnterAircraft(event_data)
     end
 
     function watcher:OnEventPlayerLeaveUnit(event_data)
@@ -410,11 +417,11 @@ function M.new(config)
     end
 
     local enter_handled, enter_error = pcall(function()
-      watcher:HandleEvent(self.config.EVENTS.PlayerEnterUnit)
+      watcher:HandleEvent(self.config.EVENTS.PlayerEnterAircraft)
     end)
     if not enter_handled then
-      log_error(self.config, "registering EVENTS.PlayerEnterUnit failed: " .. tostring(enter_error))
-      return nil, "registering EVENTS.PlayerEnterUnit failed"
+      log_error(self.config, "registering EVENTS.PlayerEnterAircraft failed: " .. tostring(enter_error))
+      return nil, "registering EVENTS.PlayerEnterAircraft failed"
     end
 
     local leave_handled, leave_error = pcall(function()
@@ -422,7 +429,7 @@ function M.new(config)
     end)
     if not leave_handled then
       pcall(function()
-        watcher:UnHandleEvent(self.config.EVENTS.PlayerEnterUnit)
+        watcher:UnHandleEvent(self.config.EVENTS.PlayerEnterAircraft)
       end)
       log_error(self.config, "registering EVENTS.PlayerLeaveUnit failed: " .. tostring(leave_error))
       return nil, "registering EVENTS.PlayerLeaveUnit failed"
@@ -439,7 +446,7 @@ function M.new(config)
     end
 
     local enter_ok, enter_error = pcall(function()
-      watcher:UnHandleEvent(self.config.EVENTS.PlayerEnterUnit)
+      watcher:UnHandleEvent(self.config.EVENTS.PlayerEnterAircraft)
     end)
     local leave_ok, leave_error = pcall(function()
       watcher:UnHandleEvent(self.config.EVENTS.PlayerLeaveUnit)
@@ -447,8 +454,8 @@ function M.new(config)
     self.watcher = nil
 
     if not enter_ok then
-      log_error(self.config, "unregistering EVENTS.PlayerEnterUnit failed: " .. tostring(enter_error))
-      return nil, "unregistering EVENTS.PlayerEnterUnit failed"
+      log_error(self.config, "unregistering EVENTS.PlayerEnterAircraft failed: " .. tostring(enter_error))
+      return nil, "unregistering EVENTS.PlayerEnterAircraft failed"
     end
     if not leave_ok then
       log_error(self.config, "unregistering EVENTS.PlayerLeaveUnit failed: " .. tostring(leave_error))

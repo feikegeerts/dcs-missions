@@ -533,14 +533,32 @@ end)
 -- in the next wave; DCS cannot add a unit to an already spawned group.
 -- =====================================================================
 local playerWatcher = BASE:New()
-playerWatcher:HandleEvent(EVENTS.PlayerEnterUnit)
+playerWatcher:HandleEvent(EVENTS.PlayerEnterAircraft)
 playerWatcher:HandleEvent(EVENTS.PlayerLeaveUnit)
 
-local function onPlayerEnter(EventData)
-  if not EventData or not EventData.IniGroup then
-    return
+local function playerEventGroupName(EventData)
+  if not EventData then
+    return nil
   end
-  local gname = EventData.IniGroup:GetName()
+  if EventData.IniGroupName and EventData.IniGroupName ~= "" then
+    return EventData.IniGroupName
+  end
+  if EventData.IniDCSGroupName and EventData.IniDCSGroupName ~= "" then
+    return EventData.IniDCSGroupName
+  end
+  if EventData.IniGroup then
+    local ok, name = pcall(function()
+      return EventData.IniGroup:GetName()
+    end)
+    if ok then
+      return name
+    end
+  end
+  return nil
+end
+
+local function onPlayerEnter(EventData)
+  local gname = playerEventGroupName(EventData)
   local idx = gname and findIdxByName(gname, PLAYER_GROUP_NAMES) or nil
   if not idx then
     return
@@ -560,10 +578,7 @@ local function onPlayerEnter(EventData)
 end
 
 local function onPlayerLeave(EventData)
-  if not EventData or not EventData.IniGroup then
-    return
-  end
-  local gname = EventData.IniGroup:GetName()
+  local gname = playerEventGroupName(EventData)
   local idx = gname and findIdxByName(gname, PLAYER_GROUP_NAMES) or nil
   if not idx then
     return
@@ -583,7 +598,7 @@ local function onPlayerLeave(EventData)
   end, {}, EMPTY_SERVER_CLEANUP_DELAY)
 end
 
-function playerWatcher:OnEventPlayerEnterUnit(EventData)
+function playerWatcher:OnEventPlayerEnterAircraft(EventData)
   onPlayerEnter(EventData)
 end
 function playerWatcher:OnEventPlayerLeaveUnit(EventData)
@@ -665,6 +680,10 @@ function banditWatcher:OnEventCrash(EventData)
   handleBanditKill(EventData)
 end
 
+-- MOOSE stores event subscribers as weak keys. Top-level locals can otherwise
+-- be collected after this chunk returns, silently removing gameplay callbacks.
+_G.duel_gameplay_watchers = { player = playerWatcher, bandit = banditWatcher }
+
 -- =====================================================================
 -- Deferred init: build the bandit SPAWN objects, randomize player
 -- headings, and catch any player already in a slot, after the DCS
@@ -715,7 +734,7 @@ local function doInit()
     end
   end
 
-  -- Catch every player already in a slot. Their PlayerEnterUnit events may
+  -- Catch every player already in a slot. Their PlayerEnterAircraft events may
   -- have fired before initDone. One delayed spawn then uses the full roster.
   for i, pname in ipairs(PLAYER_GROUP_NAMES) do
     if getPlayerCoord(pname) then

@@ -309,7 +309,7 @@ function SCHEDULER:New(_, callback, args, startAfter, repeatInterval, count, sto
 end
 
 local EVENTS = {
-  PlayerEnterUnit = "PlayerEnterUnit",
+  PlayerEnterAircraft = "PlayerEnterAircraft",
   PlayerLeaveUnit = "PlayerLeaveUnit",
   Dead = "Dead",
   Crash = "Crash",
@@ -435,6 +435,7 @@ local GLOBAL_NAMES = {
   "TELEMETRY_DEVELOPMENT_ENABLED",
   "duel_tracker",
   "duel_telemetry_runtime",
+  "duel_gameplay_watchers",
 }
 
 local savedGlobals = {}
@@ -457,7 +458,7 @@ _G.AUFTRAG = AUFTRAG
 _G.ZONE_RADIUS = ZONE_RADIUS
 _G.ENUMS = ENUMS
 _G.coalition = coalition
-_G.MY_SCRIPTS_ROOT = [[C:\Projects\dcs-missions\src\]]
+_G.MY_SCRIPTS_ROOT = "src/"
 _G.TELEMETRY_DEVELOPMENT_ENABLED = false
 
 local function restoreGlobals()
@@ -548,9 +549,10 @@ local function hasExactlyEvents(watcher, first, second)
 end
 
 local function firePlayerEvent(watcher, method, groupName, playerName)
-  playerAlive[groupName] = method == "OnEventPlayerEnterUnit"
+  playerAlive[groupName] = method == "OnEventPlayerEnterAircraft"
   local eventData = {
-    IniGroup = playerGroups[groupName],
+    IniGroupName = groupName,
+    IniDCSGroupName = groupName,
     IniPlayerName = playerName,
     IniCoalition = BLUE,
   }
@@ -596,7 +598,7 @@ local currentPackage = nil
 -- =====================================================================
 
 succeeds("1. deferred init and the distinct three-second assembly spawn one package", function()
-  local mainPath = [[C:\Projects\dcs-missions\src\missions\duel-dynamic\main.lua]]
+  local mainPath = "src/missions/duel-dynamic/main.lua"
   dofile(mainPath)
 
   equal(#schedules, 1, "main.lua did not register the init poll scheduler")
@@ -677,7 +679,7 @@ succeeds("3. the initial package receives one CAP mission at the blue centroid",
 end)
 
 succeeds("4. a partial leave keeps combat alive and re-entry is deferred to the next wave", function()
-  local playerWatcher = findWatcher(EVENTS.PlayerEnterUnit)
+  local playerWatcher = findWatcher(EVENTS.PlayerEnterAircraft)
   check(playerWatcher ~= nil, "player enter/leave watcher is missing")
   local beforeSpawns = #spawnRecords
   local beforeDestroy = currentPackage.destroy_count
@@ -690,7 +692,7 @@ succeeds("4. a partial leave keeps combat alive and re-entry is deferred to the 
   equal(currentPackage.destroy_count, beforeDestroy, "partial leave destroyed the live package")
   check(currentPackage:IsAlive(), "package stopped being alive after a partial leave")
 
-  firePlayerEvent(playerWatcher, "OnEventPlayerEnterUnit", "Aerial-1", "PilotOne")
+  firePlayerEvent(playerWatcher, "OnEventPlayerEnterAircraft", "Aerial-1", "PilotOne")
   equal(#spawnRecords, beforeSpawns, "re-entry during combat spawned or resized a package")
   check(logContains("joining player will be matched in the next wave"), "deferred-to-next-wave log is missing")
 end)
@@ -788,7 +790,7 @@ succeeds("8. empty-server cleanup destroys the package and a later single join a
   equal(packageBeforeCleanup.destroy_count, 1, "empty-server cleanup did not destroy the package")
   equal(#liveWrappers(), 0, "a package remained live after empty-server cleanup")
 
-  firePlayerEvent(findWatcher(EVENTS.PlayerEnterUnit), "OnEventPlayerEnterUnit", "Aerial-2", "PilotTwo")
+  firePlayerEvent(findWatcher(EVENTS.PlayerEnterAircraft), "OnEventPlayerEnterAircraft", "Aerial-2", "PilotTwo")
   local assembly = findPendingSchedule(3, false)
   check(assembly ~= nil, "single-player re-entry did not schedule three-second assembly")
   runSchedule(assembly)
@@ -802,13 +804,13 @@ succeeds("8. empty-server cleanup destroys the package and a later single join a
 end)
 
 succeeds("9. mid-wave joins are included together in the next four-ship package", function()
-  local playerWatcher = findWatcher(EVENTS.PlayerEnterUnit)
+  local playerWatcher = findWatcher(EVENTS.PlayerEnterAircraft)
   local deadWatcher = findWatcher(EVENTS.Dead)
   local spawnsBefore = #spawnRecords
 
-  firePlayerEvent(playerWatcher, "OnEventPlayerEnterUnit", "Aerial-1", "PilotOne")
-  firePlayerEvent(playerWatcher, "OnEventPlayerEnterUnit", "Aerial-3", "PilotThree")
-  firePlayerEvent(playerWatcher, "OnEventPlayerEnterUnit", "Aerial-4", "PilotFour")
+  firePlayerEvent(playerWatcher, "OnEventPlayerEnterAircraft", "Aerial-1", "PilotOne")
+  firePlayerEvent(playerWatcher, "OnEventPlayerEnterAircraft", "Aerial-3", "PilotThree")
+  firePlayerEvent(playerWatcher, "OnEventPlayerEnterAircraft", "Aerial-4", "PilotFour")
   equal(#spawnRecords, spawnsBefore, "mid-wave joins changed the active one-ship package")
 
   fireBanditEvent(deadWatcher, "OnEventDead", currentPackage, currentPackage.units[1].name)
@@ -832,15 +834,15 @@ end)
 
 succeeds("10. only the two required event watchers are registered", function()
   equal(#watchers, 2, "unexpected BASE watcher was registered")
-  local playerWatcher = findWatcher(EVENTS.PlayerEnterUnit)
+  local playerWatcher = findWatcher(EVENTS.PlayerEnterAircraft)
   local banditWatcher = findWatcher(EVENTS.Dead)
-  check(playerWatcher ~= nil, "PlayerEnterUnit watcher is missing")
+  check(playerWatcher ~= nil, "PlayerEnterAircraft watcher is missing")
   check(banditWatcher ~= nil, "Dead watcher is missing")
   check(findWatcher(EVENTS.PlayerLeaveUnit) == playerWatcher, "PlayerLeaveUnit uses a different watcher")
   check(findWatcher(EVENTS.Crash) == banditWatcher, "Crash uses a different watcher")
   check(playerWatcher ~= banditWatcher, "player and bandit events share a watcher")
   check(
-    hasExactlyEvents(playerWatcher, EVENTS.PlayerEnterUnit, EVENTS.PlayerLeaveUnit),
+    hasExactlyEvents(playerWatcher, EVENTS.PlayerEnterAircraft, EVENTS.PlayerLeaveUnit),
     "player watcher handles events other than enter/leave"
   )
   check(
@@ -849,7 +851,13 @@ succeeds("10. only the two required event watchers are registered", function()
   )
 end)
 
-succeeds("11. the valid scenario logs no environment errors", function()
+succeeds("11. gameplay watchers remain strongly reachable after main returns", function()
+  check(type(_G.duel_gameplay_watchers) == "table", "gameplay watcher retention table is missing")
+  check(_G.duel_gameplay_watchers.player == findWatcher(EVENTS.PlayerEnterAircraft), "player watcher is not retained")
+  check(_G.duel_gameplay_watchers.bandit == findWatcher(EVENTS.Dead), "bandit watcher is not retained")
+end)
+
+succeeds("12. the valid scenario logs no environment errors", function()
   for _, entry in ipairs(logs) do
     check(entry.level ~= "ERROR", "error log: " .. entry.message)
   end

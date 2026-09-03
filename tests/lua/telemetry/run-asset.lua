@@ -86,8 +86,12 @@ local function new_raw_unit(options)
   function raw:getID()
     return options.id
   end
-  function raw:getGroupName()
-    return options.group_name
+  function raw:getGroup()
+    return {
+      getName = function()
+        return options.group_name
+      end,
+    }
   end
   function raw:getName()
     return options.name
@@ -97,6 +101,12 @@ local function new_raw_unit(options)
   end
   function raw:getCoalition()
     return options.coalition
+  end
+  function raw:getDesc()
+    if options.category == nil then
+      return nil
+    end
+    return { category = options.category }
   end
   function raw:getPosition()
     return { p = options.position or { x = 100, y = 200, z = 300 } }
@@ -154,12 +164,12 @@ local function new_group(options)
   return group
 end
 
-local function new_asset_adapter(controller)
+local function new_asset_adapter(controller, base)
   local adapter, adapter_error = asset.new({
     controller = controller,
     envelope = envelope,
-    BASE = new_base(),
-    EVENTS = { PlayerEnterUnit = 20 },
+    BASE = base or new_base(),
+    EVENTS = { PlayerEnterAircraft = 20 },
     player_group_names = { "Aerial-1", "Aerial-2", "Aerial-3", "Aerial-4" },
     bandit_group_names = { "Bandit-1", "Bandit-2", "Bandit-3" },
     player_coalition = 2,
@@ -199,6 +209,94 @@ local function count_type(events, event_type)
   end
   return count
 end
+
+local function player_enter_event(raw, options)
+  options = options or {}
+  local group_name = options.group_name or "Aerial-1"
+  local ini_group_name = group_name
+  if options.omit_ini_group_name then
+    ini_group_name = nil
+  end
+  return {
+    initiator = raw,
+    IniDCSUnit = raw,
+    IniDCSGroupName = group_name,
+    IniGroupName = ini_group_name,
+    IniDCSUnitName = options.name or "Aerial-1-1",
+    IniTypeName = options.type_name or "FA-18C_hornet",
+    IniCoalition = options.coalition == nil and 2 or options.coalition,
+    IniCategory = options.category == nil and 0 or options.category,
+    IniPlayerName = options.player_name or "Viper",
+    IniPlayerUCID = options.player_ucid or "ucid-viper",
+    time = options.time or 10,
+  }
+end
+
+succeeds("asset adapter subscribes to multiplayer aircraft entry and cleans up", function()
+  local controller = new_controller("subscription")
+  local base = new_base()
+  local adapter = new_asset_adapter(controller, base)
+  local watcher, start_error = adapter:start()
+  check(watcher ~= nil, start_error)
+  equal(watcher.handled[1], 20)
+  check(adapter.watcher == watcher, "adapter did not retain its watcher")
+  local stopped, stop_error = adapter:stop()
+  check(stopped, stop_error)
+  equal(watcher.unhandled[1], 20)
+  check(adapter.watcher == nil, "adapter retained its stopped watcher")
+end)
+
+succeeds("MOOSE entry fields normalize identity, names, category, and UCID", function()
+  local controller = new_controller("event-fields")
+  local adapter = new_asset_adapter(controller)
+  local watcher = adapter:start()
+  local raw = new_raw_unit({
+    id = 300,
+    group_name = "wrong-raw-group",
+    name = "wrong-raw-name",
+    type_name = "wrong-raw-type",
+    coalition = 1,
+  })
+  local reference, created, instance = watcher:OnEventPlayerEnterAircraft(player_enter_event(raw, {
+    omit_ini_group_name = true,
+    group_name = "Aerial-2",
+    name = "Aerial-2-1",
+    type_name = "F-16C_50",
+    player_name = "Spikkert",
+    player_ucid = "ucid-spikkert",
+  }))
+  check(reference ~= nil)
+  equal(created, true)
+  equal(reference.asset_key, "aerial-2.u1.g1")
+  equal(reference.dcs_name, "Aerial-2-1")
+  equal(reference.dcs_type, "F-16C_50")
+  equal(reference.coalition, "blue")
+  equal(instance.observation.display_name, "Spikkert")
+  equal(instance.observation.participant_id, "ucid-spikkert")
+  equal(instance.observation.category, 0)
+end)
+
+succeeds("airplane and helicopter entries are accepted while ground is rejected", function()
+  local controller, events = new_controller("categories")
+  local adapter = new_asset_adapter(controller)
+  local watcher = adapter:start()
+  for index, category in ipairs({ 0, 1 }) do
+    local raw = new_raw_unit({ id = 310 + index })
+    local accepted, accept_error = watcher:OnEventPlayerEnterAircraft(player_enter_event(raw, {
+      group_name = "Aerial-" .. tostring(index),
+      name = "Aerial-" .. tostring(index) .. "-1",
+      category = category,
+    }))
+    check(accepted ~= nil, accept_error)
+  end
+  local rejected = watcher:OnEventPlayerEnterAircraft(player_enter_event(new_raw_unit({ id = 313 }), {
+    group_name = "Aerial-3",
+    name = "Aerial-3-1",
+    category = 2,
+  }))
+  equal(rejected, nil)
+  equal(count_type(events, "asset.spawned"), 2)
+end)
 
 succeeds("repeated multi-unit bandit waves receive distinct incarnation keys", function()
   local controller, events = new_controller("bandit-waves")
@@ -243,13 +341,14 @@ end)
 succeeds("player re-entry into the same aircraft does not duplicate its incarnation", function()
   local controller, events = new_controller("player-reentry")
   local adapter = new_asset_adapter(controller)
-  local unit, raw = player_unit(301, "Aerial-1", "Aerial-1-1")
-  local first, created = adapter:observe_player_unit(raw, 10, "Aerial-1")
+  local _, raw = player_unit(301, "Aerial-1", "Aerial-1-1")
+  local watcher = adapter:start()
+  local first, created = watcher:OnEventPlayerEnterAircraft(player_enter_event(raw, { time = 10 }))
   check(first ~= nil)
   equal(created, true)
   equal(first.asset_key, "aerial-1.u1.g1")
 
-  local again, duplicate_created = adapter:observe_player_unit(unit, 20, "Aerial-1")
+  local again, duplicate_created = watcher:OnEventPlayerEnterAircraft(player_enter_event(raw, { time = 20 }))
   check(again ~= nil)
   equal(duplicate_created, false)
   equal(again.asset_key, first.asset_key)
@@ -263,8 +362,9 @@ succeeds("a confirmed player aircraft replacement advances the generation", func
   -- The mission-editor numeric ID may be reused. A distinct raw DCS object is
   -- the replacement confirmation; the reused name and ID are not identity.
   local _, replacement_raw = player_unit(401, "Aerial-1", "Aerial-1-1")
-  local first = adapter:observe_player_unit(first_raw, 10, "Aerial-1")
-  local replacement, created = adapter:observe_player_unit(replacement_raw, 20, "Aerial-1")
+  local watcher = adapter:start()
+  local first = watcher:OnEventPlayerEnterAircraft(player_enter_event(first_raw, { time = 10 }))
+  local replacement, created = watcher:OnEventPlayerEnterAircraft(player_enter_event(replacement_raw, { time = 20 }))
   check(first ~= nil)
   check(replacement ~= nil)
   equal(created, true)
@@ -351,14 +451,20 @@ succeeds("shots resolve only registered incarnations and otherwise remain explic
   check(shot_adapter ~= nil, shot_error)
   local watcher = shot_adapter:start()
 
-  local tracked_unit, tracked_raw = player_unit(601, "Aerial-1", "Aerial-1-1")
-  local registered = registry:observe_player_unit(tracked_raw, 10, "Aerial-1")
+  local asset_watcher = registry:start()
+  local _, first_raw = player_unit(601, "Aerial-1", "Aerial-1-1")
+  local registered = asset_watcher:OnEventPlayerEnterAircraft(player_enter_event(first_raw, { time = 10 }))
   check(registered ~= nil)
-  local tracked_shot, tracked_error = watcher:OnEventShot(shot_event(tracked_unit, tracked_raw, "Aerial-1", 20))
+  local replacement_unit, replacement_raw = player_unit(601, "Aerial-1", "Aerial-1-1")
+  local replacement = asset_watcher:OnEventPlayerEnterAircraft(player_enter_event(replacement_raw, { time = 15 }))
+  check(replacement ~= nil)
+  equal(replacement.asset_key, "aerial-1.u1.g2")
+  equal(registry:resolve_unit(first_raw), nil)
+  local tracked_shot, tracked_error = watcher:OnEventShot(shot_event(replacement_unit, replacement_raw, "Aerial-1", 20))
   check(tracked_shot ~= nil, tracked_error)
   equal(tracked_shot.asset.status, "known")
-  equal(tracked_shot.asset.asset_key, "aerial-1.u1.g1")
-  equal(tracked_shot.initiator.asset_key, "aerial-1.u1.g1")
+  equal(tracked_shot.asset.asset_key, "aerial-1.u1.g2")
+  equal(tracked_shot.initiator.asset_key, "aerial-1.u1.g2")
 
   local untracked_unit, untracked_raw = player_unit(602, "Aerial-2", "Aerial-2-1")
   local untracked_shot, untracked_error = watcher:OnEventShot(shot_event(untracked_unit, untracked_raw, "Aerial-2", 21))

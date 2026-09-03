@@ -89,7 +89,7 @@ local function new_adapter(controller, base, logs)
     controller = controller,
     envelope = envelope,
     BASE = base,
-    EVENTS = { PlayerEnterUnit = 20, PlayerLeaveUnit = 21 },
+    EVENTS = { PlayerEnterAircraft = 20, PlayerLeaveUnit = 21 },
     player_group_names = { "Aerial-1", "Aerial-2", "Aerial-3", "Aerial-4" },
     player_coalition = 2,
     log = function(level, message)
@@ -113,7 +113,7 @@ end
 local function new_unit(options)
   options = options or {}
   local calls = options.calls or {}
-  local unit = {}
+  local unit = { _options = options }
 
   local function result(name, default)
     calls[#calls + 1] = name
@@ -123,8 +123,17 @@ local function new_unit(options)
     return option(options, name, default)
   end
 
-  function unit:getGroupName()
-    return result("group_name", "Aerial-1")
+  function unit:getGroup()
+    calls[#calls + 1] = "group"
+    if options.missing_group_name then
+      return nil
+    end
+    return {
+      getName = function()
+        calls[#calls + 1] = "group_name"
+        return option(options, "group_name", "Aerial-1")
+      end,
+    }
   end
   function unit:getName()
     return result("name", "Aerial-1-1")
@@ -138,14 +147,8 @@ local function new_unit(options)
   function unit:getPosition()
     return result("position", { p = { x = 101.5, y = 202.5, z = -303.5 } })
   end
-  function unit:getCategory()
-    return result("category", 2)
-  end
-  function unit:getPlayerName()
-    return result("player_name", "Viper")
-  end
-  function unit:getPlayerUCID()
-    return result("player_ucid", "ucid-viper")
+  function unit:getDesc()
+    return { category = result("category", 0) }
   end
   function unit:getCallsign()
     return result("callsign", "Aerial 1-1")
@@ -155,7 +158,31 @@ local function new_unit(options)
 end
 
 local function event(unit, time)
-  return { initiator = unit, time = time }
+  local options = unit._options or {}
+  local function normalized(name, default)
+    return option(options, name, default)
+  end
+  local dcs_group_name
+  if not options.missing_group_name then
+    dcs_group_name = normalized("dcs_group_name", "Aerial-1")
+  end
+  local ini_group_name = normalized("group_name", "Aerial-1")
+  if options.omit_ini_group_name then
+    ini_group_name = nil
+  end
+  return {
+    initiator = unit,
+    IniDCSUnit = unit,
+    IniGroupName = ini_group_name,
+    IniDCSGroupName = dcs_group_name,
+    IniDCSUnitName = normalized("name", "Aerial-1-1"),
+    IniTypeName = normalized("type_name", "FA-18C_hornet"),
+    IniCoalition = normalized("coalition", 2),
+    IniCategory = normalized("category", 0),
+    IniPlayerName = normalized("player_name", "Viper"),
+    IniPlayerUCID = normalized("player_ucid", "ucid-viper"),
+    time = time,
+  }
 end
 
 local function contains_log(logs, fragment)
@@ -189,16 +216,16 @@ succeeds("registration is delayed, subscribes both events, and stop unsubscribes
   check(adapter:stop())
 end)
 
-succeeds("known enter emits a complete participant event from raw unit methods in order", function()
+succeeds("MOOSE aircraft enter fields emit a complete participant event", function()
   local logs = {}
   local base = new_base()
   local controller, events = new_controller("known-enter")
   local adapter = new_adapter(controller, base, logs)
   check(controller:start())
   local watcher = adapter:start()
-  local unit, calls = new_unit()
+  local unit, calls = new_unit({ omit_ini_group_name = true })
 
-  local entered, enter_error = watcher:OnEventPlayerEnterUnit(event(unit, 12.5))
+  local entered, enter_error = watcher:OnEventPlayerEnterAircraft(event(unit, 12.5))
   check(entered ~= nil, enter_error)
   equal(#events, 2)
   equal(entered.event_sequence, 2)
@@ -223,10 +250,7 @@ succeeds("known enter emits a complete participant event from raw unit methods i
   equal(entered.target, envelope.JSON_NULL)
   equal(entered.weapon, envelope.JSON_NULL)
   equal(next(entered.payload), nil)
-  equal(
-    table.concat(calls, ","),
-    "group_name,name,type_name,coalition,position,category,player_name,player_ucid,callsign"
-  )
+  equal(table.concat(calls, ","), "position,callsign")
   check(contains_log(logs, "info participant capture: emitted participant.entered sequence=2"))
 end)
 
@@ -242,7 +266,7 @@ succeeds("leave preserves stable identity from the slot snapshot and prefers liv
     callsign = "Original Callsign",
     type_name = "Original Type",
   })
-  check(watcher:OnEventPlayerEnterUnit(event(enter_unit, 10)))
+  check(watcher:OnEventPlayerEnterAircraft(event(enter_unit, 10)))
 
   local leave_unit = new_unit({
     missing_player_ucid = true,
@@ -273,7 +297,7 @@ succeeds("missing UCID emits an explicit unknown participant and warning", funct
   local watcher = adapter:start()
   local unit = new_unit({ missing_player_ucid = true, player_name = "Observed Human" })
 
-  local entered, enter_error = watcher:OnEventPlayerEnterUnit(event(unit, 5))
+  local entered, enter_error = watcher:OnEventPlayerEnterAircraft(event(unit, 5))
   check(entered ~= nil, enter_error)
   equal(entered.participant.status, "unknown")
   equal(entered.participant.reason, "stable-identity-unavailable")
@@ -281,8 +305,7 @@ succeeds("missing UCID emits an explicit unknown participant and warning", funct
   equal(entered.participant.display_name, "Observed Human")
   check(contains_log(logs, "warning participant capture: stable identity unavailable for slot Aerial-1"))
 
-  local leave_unit = new_unit({ group_name = "Aerial-2", player_name = "Leaving Human" })
-  leave_unit.getPlayerUCID = nil
+  local leave_unit = new_unit({ group_name = "Aerial-2", player_name = "Leaving Human", missing_player_ucid = true })
   local left, leave_error = watcher:OnEventPlayerLeaveUnit(event(leave_unit, 6))
   check(left ~= nil, leave_error)
   equal(left.participant.status, "unknown")
@@ -291,7 +314,7 @@ succeeds("missing UCID emits an explicit unknown participant and warning", funct
   equal(left.participant.display_name, "Leaving Human")
 end)
 
-succeeds("exact roster, readable coalition, and air category guard capture", function()
+succeeds("exact roster, coalition, and aircraft categories guard capture", function()
   local base = new_base()
   local controller, events = new_controller("filters")
   local adapter = new_adapter(controller, base, {})
@@ -303,13 +326,18 @@ succeeds("exact roster, readable coalition, and air category guard capture", fun
     { group_name = "Aerial-10" },
     { group_name = "Bandit-1" },
     { group_name = "Aerial-2", coalition = 1 },
-    { group_name = "Aerial-3", category = 1 },
+    { group_name = "Aerial-3", category = 2 },
     { group_name = "Aerial-4", category = 3 },
   }) do
-    local ignored = watcher:OnEventPlayerEnterUnit(event(new_unit(options), 10))
+    local ignored = watcher:OnEventPlayerEnterAircraft(event(new_unit(options), 10))
     equal(ignored, nil, "filtered participant event was emitted")
   end
   equal(#events, 1)
+  for _, category in ipairs({ 0, 1 }) do
+    local accepted, accept_error = watcher:OnEventPlayerEnterAircraft(event(new_unit({ category = category }), 11))
+    check(accepted ~= nil, accept_error)
+  end
+  equal(#events, 3)
 end)
 
 succeeds("unreadable category and coalition proceed with explicit unknown coalition", function()
@@ -318,9 +346,10 @@ succeeds("unreadable category and coalition proceed with explicit unknown coalit
   local adapter = new_adapter(controller, base, {})
   check(controller:start())
   local watcher = adapter:start()
-  local unit = new_unit({ throw_category = true, throw_coalition = true })
+  local unit =
+    new_unit({ missing_category = true, throw_category = true, missing_coalition = true, throw_coalition = true })
 
-  local entered, enter_error = watcher:OnEventPlayerEnterUnit(event(unit, 8))
+  local entered, enter_error = watcher:OnEventPlayerEnterAircraft(event(unit, 8))
   check(entered ~= nil, enter_error)
   equal(entered.coalition, "unknown")
   equal(entered.participant.coalition, "unknown")
@@ -335,17 +364,25 @@ succeeds("throwing optional raw methods degrade to contract-valid unknown refere
   check(controller:start())
   local watcher = adapter:start()
   local unit = new_unit({
+    missing_name = true,
     throw_name = true,
+    missing_type_name = true,
     throw_type_name = true,
+    missing_coalition = true,
     throw_coalition = true,
+    missing_position = true,
     throw_position = true,
+    missing_category = true,
     throw_category = true,
+    missing_player_name = true,
     throw_player_name = true,
+    missing_player_ucid = true,
     throw_player_ucid = true,
+    missing_callsign = true,
     throw_callsign = true,
   })
 
-  local entered, enter_error = watcher:OnEventPlayerEnterUnit(event(unit))
+  local entered, enter_error = watcher:OnEventPlayerEnterAircraft(event(unit))
   check(entered ~= nil, enter_error)
   equal(entered.sim_time, 77.5)
   equal(entered.participant.status, "unknown")
@@ -365,7 +402,7 @@ succeeds("missing raw unit or group is ignored without allocating an event", fun
   check(controller:start())
   local watcher = adapter:start()
 
-  equal(watcher:OnEventPlayerEnterUnit({ time = 1 }), nil)
+  equal(watcher:OnEventPlayerEnterAircraft({ time = 1 }), nil)
   equal(watcher:OnEventPlayerLeaveUnit(event(new_unit({ missing_group_name = true }), 2)), nil)
   equal(#events, 1)
 end)

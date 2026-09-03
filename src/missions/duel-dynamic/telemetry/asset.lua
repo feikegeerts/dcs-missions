@@ -1,5 +1,8 @@
 local M = {}
 
+local AIRPLANE_CATEGORY = 0
+local HELICOPTER_CATEGORY = 1
+
 local function is_finite_number(value)
   return type(value) == "number" and value == value and value ~= math.huge and value ~= -math.huge
 end
@@ -151,28 +154,45 @@ local function read_group_name(config, unit)
   return non_empty_string(first_method(config, group, "getName", "GetName"))
 end
 
-local function read_observation(config, unit, group_name)
+local function read_observation(config, unit, group_name, event_data)
   local raw, identity_id = read_identity(config, unit)
-  local dcs_name = non_empty_string(first_method(config, unit, "GetName", "getName"))
+  local event_group_name = non_empty_string(read_field(config, event_data, "IniGroupName"))
+    or non_empty_string(read_field(config, event_data, "IniDCSGroupName"))
+  local dcs_name = non_empty_string(read_field(config, event_data, "IniDCSUnitName"))
+    or non_empty_string(read_field(config, event_data, "IniUnitName"))
+    or non_empty_string(first_method(config, unit, "GetName", "getName"))
   if not dcs_name and raw ~= unit then
     dcs_name = non_empty_string(first_method(config, raw, "getName", "GetName"))
   end
-  local dcs_type = non_empty_string(first_method(config, unit, "GetTypeName", "getTypeName"))
+  local dcs_type = non_empty_string(read_field(config, event_data, "IniTypeName"))
+    or non_empty_string(first_method(config, unit, "GetTypeName", "getTypeName"))
   if not dcs_type and raw ~= unit then
     dcs_type = non_empty_string(first_method(config, raw, "getTypeName", "GetTypeName"))
   end
-  local coalition = first_method(config, unit, "GetCoalition", "getCoalition")
+  local coalition = read_field(config, event_data, "IniCoalition")
+  if coalition == nil then
+    coalition = first_method(config, unit, "GetCoalition", "getCoalition")
+  end
   if coalition == nil and raw ~= unit then
     coalition = first_method(config, raw, "getCoalition", "GetCoalition")
+  end
+  local category = read_field(config, event_data, "IniCategory")
+  if category == nil then
+    local descriptor = first_method(config, raw, "getDesc", "GetDesc")
+    category = read_field(config, descriptor, "category")
   end
   return {
     unit = unit,
     raw = raw,
     identity_id = identity_id,
-    group_name = group_name or read_group_name(config, raw),
+    group_name = group_name or event_group_name or read_group_name(config, raw),
     dcs_name = dcs_name,
     dcs_type = dcs_type,
     coalition = coalition,
+    category = category,
+    display_name = non_empty_string(read_field(config, event_data, "IniPlayerName")),
+    participant_id = non_empty_string(read_field(config, event_data, "IniPlayerUCID")),
+    callsign = non_empty_string(first_method(config, raw, "getCallsign", "GetCallsign")),
   }
 end
 
@@ -260,8 +280,8 @@ function M.new(config)
   if type(config.BASE) ~= "table" or type(config.BASE.New) ~= "function" then
     return nil, "asset requires MOOSE BASE"
   end
-  if type(config.EVENTS) ~= "table" or config.EVENTS.PlayerEnterUnit == nil then
-    return nil, "asset requires EVENTS.PlayerEnterUnit"
+  if type(config.EVENTS) ~= "table" or config.EVENTS.PlayerEnterAircraft == nil then
+    return nil, "asset requires EVENTS.PlayerEnterAircraft"
   end
 
   local player_roster, player_error = build_roster(config.player_group_names, "player")
@@ -374,11 +394,18 @@ function M.new(config)
     return instance, spawned
   end
 
-  function adapter:observe_player_unit(unit, sim_time, known_group_name)
-    local observation = read_observation(self.config, unit, known_group_name)
+  function adapter:observe_player_unit(unit, sim_time, known_group_name, event_data)
+    local observation = read_observation(self.config, unit, known_group_name, event_data)
     local entry = observation.group_name and self.player_roster.lookup[observation.group_name]
     if not entry then
       return nil, "player aircraft is outside the tracked roster"
+    end
+    if
+      observation.category ~= nil
+      and observation.category ~= AIRPLANE_CATEGORY
+      and observation.category ~= HELICOPTER_CATEGORY
+    then
+      return nil, "player unit is not an aircraft"
     end
     if
       self.config.player_coalition ~= nil
@@ -522,15 +549,16 @@ function M.new(config)
     return true
   end
 
-  function adapter:OnEventPlayerEnterUnit(event_data)
+  function adapter:OnEventPlayerEnterAircraft(event_data)
     if type(event_data) ~= "table" then
       return nil, "player lifecycle event data is unavailable"
     end
-    local unit = read_field(self.config, event_data, "initiator")
-      or read_field(self.config, event_data, "IniDCSUnit")
+    local unit = read_field(self.config, event_data, "IniDCSUnit")
+      or read_field(self.config, event_data, "initiator")
       or read_field(self.config, event_data, "IniUnit")
-    local group_name = read_field(self.config, event_data, "IniGroupName")
-    return self:observe_player_unit(unit, read_field(self.config, event_data, "time"), group_name)
+    local group_name = non_empty_string(read_field(self.config, event_data, "IniGroupName"))
+      or non_empty_string(read_field(self.config, event_data, "IniDCSGroupName"))
+    return self:observe_player_unit(unit, read_field(self.config, event_data, "time"), group_name, event_data)
   end
 
   function adapter:start()
@@ -543,15 +571,15 @@ function M.new(config)
     if not ok or type(watcher) ~= "table" then
       return nil, "creating MOOSE asset watcher failed"
     end
-    function watcher:OnEventPlayerEnterUnit(event_data)
-      return adapter:OnEventPlayerEnterUnit(event_data)
+    function watcher:OnEventPlayerEnterAircraft(event_data)
+      return adapter:OnEventPlayerEnterAircraft(event_data)
     end
     local handled, handle_error = pcall(function()
-      watcher:HandleEvent(self.config.EVENTS.PlayerEnterUnit)
+      watcher:HandleEvent(self.config.EVENTS.PlayerEnterAircraft)
     end)
     if not handled then
-      log_error(self.config, "registering EVENTS.PlayerEnterUnit failed: " .. tostring(handle_error))
-      return nil, "registering EVENTS.PlayerEnterUnit failed"
+      log_error(self.config, "registering EVENTS.PlayerEnterAircraft failed: " .. tostring(handle_error))
+      return nil, "registering EVENTS.PlayerEnterAircraft failed"
     end
     self.watcher = watcher
     return watcher
@@ -564,11 +592,11 @@ function M.new(config)
     local watcher = self.watcher
     self.watcher = nil
     local ok, stop_error = pcall(function()
-      watcher:UnHandleEvent(self.config.EVENTS.PlayerEnterUnit)
+      watcher:UnHandleEvent(self.config.EVENTS.PlayerEnterAircraft)
     end)
     if not ok then
-      log_error(self.config, "unregistering EVENTS.PlayerEnterUnit failed: " .. tostring(stop_error))
-      return nil, "unregistering EVENTS.PlayerEnterUnit failed"
+      log_error(self.config, "unregistering EVENTS.PlayerEnterAircraft failed: " .. tostring(stop_error))
+      return nil, "unregistering EVENTS.PlayerEnterAircraft failed"
     end
     return true
   end

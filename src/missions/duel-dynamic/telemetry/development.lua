@@ -109,8 +109,8 @@ function M.start(config)
   asset, dependency_error = require_dependency(config, "asset", "new")
   if not asset then
     -- Keep the pre-Slice-10 lifecycle harness compatible. Real MOOSE runtimes
-    -- inject asset.lua and expose PlayerEnterUnit.
-    if type(config.EVENTS) == "table" and config.EVENTS.PlayerEnterUnit == nil then
+    -- inject asset.lua and expose PlayerEnterAircraft.
+    if type(config.EVENTS) == "table" and config.EVENTS.PlayerEnterAircraft == nil then
       asset = {
         new = function()
           return {
@@ -140,7 +140,7 @@ function M.start(config)
     -- exposes these constants and must inject the participant dependency.
     if
       type(config.EVENTS) == "table"
-      and config.EVENTS.PlayerEnterUnit == nil
+      and config.EVENTS.PlayerEnterAircraft == nil
       and config.EVENTS.PlayerLeaveUnit == nil
     then
       participant = {
