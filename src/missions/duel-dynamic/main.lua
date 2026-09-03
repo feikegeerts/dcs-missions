@@ -53,6 +53,7 @@ local function initDevelopmentTelemetry()
     local ndjsonSink = dofile(DIR .. "telemetry/ndjson_sink.lua")
     local lifecycle = dofile(DIR .. "telemetry/lifecycle.lua")
     local development = dofile(DIR .. "telemetry/development.lua")
+    local asset = dofile(DIR .. "telemetry/asset.lua")
     local shot = dofile(DIR .. "telemetry/shot.lua")
     local participant = dofile(DIR .. "telemetry/participant.lua")
 
@@ -62,6 +63,7 @@ local function initDevelopmentTelemetry()
       json = json,
       ndjson_sink = ndjsonSink,
       lifecycle = lifecycle,
+      asset = asset,
       shot = shot,
       participant = participant,
       io = io,
@@ -242,6 +244,44 @@ local initDone = false
 local spawnWave
 local scheduleWave
 
+local function telemetryAssetAdapter()
+  local runtime = _G.duel_telemetry_runtime
+  return runtime and runtime.asset or nil
+end
+
+local function registerBanditAssets(group)
+  local adapter = telemetryAssetAdapter()
+  if not adapter then
+    if _G.TELEMETRY_DEVELOPMENT_ENABLED == true then
+      env.warning("[duel-dynamic][telemetry] bandit asset registration skipped: asset adapter unavailable")
+    end
+    return
+  end
+  local ok, instances, registrationError = pcall(adapter.register_bandit_group, adapter, group, WAVE_TEMPLATE_NAME)
+  if not ok or not instances then
+    env.error(
+      "[duel-dynamic][telemetry] bandit asset registration failed: " .. tostring(ok and registrationError or instances)
+    )
+  end
+end
+
+local function registerPlayerAssets(group)
+  local adapter = telemetryAssetAdapter()
+  if not adapter then
+    if _G.TELEMETRY_DEVELOPMENT_ENABLED == true then
+      env.warning("[duel-dynamic][telemetry] player asset registration skipped: asset adapter unavailable")
+    end
+    return
+  end
+  local ok, assetReference, registrationError = pcall(adapter.register_player_group, adapter, group)
+  if not ok or not assetReference then
+    env.error(
+      "[duel-dynamic][telemetry] player asset registration failed: "
+        .. tostring(ok and registrationError or assetReference)
+    )
+  end
+end
+
 local function anyPlayerSlotOccupied()
   return next(occupiedPlayerSlots) ~= nil
 end
@@ -306,6 +346,18 @@ end
 local function despawnCurrentWave()
   local grp = currentWaveGroup
   local name = currentWaveGroupName
+  if grp then
+    local adapter = telemetryAssetAdapter()
+    if adapter then
+      local ok, despawned, despawnError = pcall(adapter.despawn_group, adapter, grp)
+      if not ok or not despawned then
+        env.error(
+          "[duel-dynamic][telemetry] intentional bandit despawn emission failed: "
+            .. tostring(ok and despawnError or despawned)
+        )
+      end
+    end
+  end
   currentWaveGroup = nil
   currentWaveGroupName = nil
   currentWaveAlive = 0
@@ -640,6 +692,7 @@ local function doInit()
     return
   end
   waveSpawner:OnSpawnGroup(function(grp)
+    registerBanditAssets(grp)
     env.info(string.format("[duel-dynamic] package spawned: %s at %s", grp:GetName(), coordStr(grp:GetCoordinate())))
   end)
 
@@ -667,6 +720,7 @@ local function doInit()
   for i, pname in ipairs(PLAYER_GROUP_NAMES) do
     if getPlayerCoord(pname) then
       occupiedPlayerSlots[i] = true
+      registerPlayerAssets(GROUP:FindByName(pname))
       env.info(string.format("[duel-dynamic] %s already occupied at init — adding to first package roster", pname))
     end
   end

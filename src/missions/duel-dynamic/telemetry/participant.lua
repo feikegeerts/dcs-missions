@@ -217,6 +217,36 @@ local function merge_leave_snapshot(observation, snapshot)
   }
 end
 
+local function resolve_entered_asset(config, unit, group_name, event_time)
+  local registry = config.asset_registry
+  if type(registry) ~= "table" or type(registry.observe_player_unit) ~= "function" then
+    return nil
+  end
+  local ok, asset, observe_error = pcall(registry.observe_player_unit, registry, unit, event_time, group_name)
+  if not ok then
+    log_error(config, "tracked asset observation raised: " .. tostring(asset))
+    return nil
+  end
+  if not asset then
+    log_error(config, "tracked asset observation failed: " .. tostring(observe_error))
+    return nil
+  end
+  return asset
+end
+
+local function resolve_existing_asset(config, unit)
+  local registry = config.asset_registry
+  if type(registry) ~= "table" or type(registry.resolve_unit) ~= "function" then
+    return nil
+  end
+  local ok, asset = pcall(registry.resolve_unit, registry, unit)
+  if ok then
+    return asset
+  end
+  log_error(config, "tracked asset resolution raised: " .. tostring(asset))
+  return nil
+end
+
 local function capture(adapter, event_type, event_data)
   local config = adapter.config
   if type(event_data) ~= "table" then
@@ -249,12 +279,19 @@ local function capture(adapter, event_type, event_data)
   local coalition = observation.coalition
     or (observation.raw_coalition == nil and "unknown" or map_coalition(observation.raw_coalition))
   local participant = make_participant(observation, coalition)
+  local event_time = read_field(config, event_data, "time")
+  local asset
+  if event_type == "participant.entered" then
+    asset = resolve_entered_asset(config, unit, group_name, event_time)
+  else
+    asset = resolve_existing_asset(config, unit)
+  end
   local input = {
     event_type = event_type,
     initiator = config.envelope.JSON_NULL,
     target = config.envelope.JSON_NULL,
     participant = participant,
-    asset = {
+    asset = asset or {
       status = "unknown",
       kind = "aircraft",
       reason = "instance-identity-unavailable",
@@ -270,7 +307,6 @@ local function capture(adapter, event_type, event_data)
 
   -- Core.Event owns the callback's simulation timestamp. Access remains
   -- protected because synthetic MOOSE events may omit or invalidate the field.
-  local event_time = read_field(config, event_data, "time")
   if is_finite_number(event_time) and event_time >= 0 then
     input.sim_time = event_time
   end

@@ -179,8 +179,21 @@ Verified end-to-end on the dedicated server (logs from 2026-07-26 session):
   per-slot identity fallback on late leave. Pure web sortie derivation pairs
   control periods and recovers from missing leaves without inventing identity.
   Lua, web, collector, and unattended no-player gates passed; the human-in-seat
-  multiplayer drill remains the explicit follow-up. Evidence:
-  `docs/telemetry/slice-9-participant-evidence.md`.
+multiplayer drill remains the explicit follow-up. Evidence:
+   `docs/telemetry/slice-9-participant-evidence.md`.
+- ✅ Telemetry Slice 10 (branch `slice-10-tracked-instances`, committed, not
+   pushed): tracked aircraft instance identity. The dev runtime emits
+   `asset.spawned` for roster wave and player groups, and resolves
+   `ordnance.fired` to the firing instance with a generation-based
+   `asset_key` (`{roster-token}.u{unit_index}.g{generation}`), degrading to
+   explicit unknown references when identity is unavailable. Unattended
+   dedicated-server evidence: one `asset.spawned` and one attributed
+   `ordnance.fired` in a gapless 6-event run with zero participant events and
+   no scripting errors. The first attempt silently ran the main worktree's
+   Slice 9 code because the worktree's `bootstrap.lua` fallback root is the
+   main project path — the `[bootstrap] root:` line in `dcs.log` is the
+   authoritative check of which `src/` tree a worktree miz loaded. Evidence:
+   `docs/telemetry/slice-10-asset-evidence.md`.
 
 ## 5. What's known to be broken / limited
 
@@ -322,7 +335,7 @@ how to verify, and `docs/dev-setup.md §8` for the build/QA loop.
 
 ### 6.5 Telemetry
 
-Slices 1–9 are complete. Slice 5 was validated with controlled and two-player
+Slices 1–10 are complete. Slice 5 was validated with controlled and two-player
 dedicated-server runs, and the development environment was restored to stock
 afterward. Slice 6 added the local TypeScript collector
 (`collector/`): NDJSON tailing with partial-line handling, contract
@@ -364,8 +377,21 @@ per-slot leave fallback, and pure sortie pairing. Automated Lua/web/collector
 checks and a 90-second unattended dedicated-server run passed with zero false
 participant events and no scripting errors. A real participant still needs to
 exercise enter, leave, rejoin, slot change, and mission restart to validate the
-known multiplayer event/field limitations. Evidence:
-`docs/telemetry/slice-9-participant-evidence.md`.
+   known multiplayer event/field limitations. Evidence:
+   `docs/telemetry/slice-9-participant-evidence.md`.
+
+Slice 10 (approved and completed 2026-09-03 on branch
+`slice-10-tracked-instances`, committed, not pushed) added tracked aircraft
+instances: `asset.spawned` capture for roster wave and player groups,
+generation-based `asset_key` identity that survives group-name reuse,
+`ordnance.fired` attribution through the asset registry, and intentional
+`asset.despawned` emission on wave cleanup. Automated Lua/web/collector gates
+and a 90-second unattended dedicated-server run passed with one
+`asset.spawned` and one attributed `ordnance.fired` in a gapless 6-event run,
+zero participant events, and no scripting errors. The human-in-seat
+validation (player asset identity, incarnation generation across rejoin and
+restart, and intentional despawn) is the combined follow-up with Slice 9.
+Evidence: `docs/telemetry/slice-10-asset-evidence.md`.
 
 Telemetry now has priority over the optional MIST respawn work.
 

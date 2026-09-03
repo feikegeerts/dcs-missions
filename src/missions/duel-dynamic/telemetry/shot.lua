@@ -427,6 +427,28 @@ local function make_participant(config, player_name, player_ucid, callsign, coal
   }
 end
 
+local function resolve_asset(config, unit, group_name, dcs_name, dcs_type, coalition)
+  local registry = config.asset_registry
+  if type(registry) == "table" and type(registry.resolve_unit) == "function" then
+    local ok, resolved = pcall(registry.resolve_unit, registry, unit)
+    if ok and type(resolved) == "table" and resolved.status == "known" then
+      return resolved
+    end
+    if not ok then
+      log_error(config, "tracked asset resolution raised: " .. tostring(resolved))
+    end
+  end
+
+  return {
+    status = "unknown",
+    kind = "aircraft",
+    reason = "instance-identity-unavailable",
+    dcs_name = dcs_name or group_name,
+    dcs_type = dcs_type,
+    coalition = coalition,
+  }
+end
+
 local function capture(adapter, event_data)
   local config = adapter.config
   if type(event_data) ~= "table" then
@@ -476,20 +498,14 @@ local function capture(adapter, event_data)
   end
 
   local dcs_name = unit_name or group_name
+  local asset = resolve_asset(config, unit, group_name, dcs_name, type_name, coalition)
   local actor = {
     status = "known",
     kind = "aircraft",
     participant_id = stable_player_ucid,
+    asset_key = asset.status == "known" and asset.asset_key or nil,
     display_name = player_name,
     callsign = callsign,
-    dcs_name = dcs_name,
-    dcs_type = type_name,
-    coalition = coalition,
-  }
-  local asset = {
-    status = "unknown",
-    kind = "aircraft",
-    reason = "instance-identity-unavailable",
     dcs_name = dcs_name,
     dcs_type = type_name,
     coalition = coalition,

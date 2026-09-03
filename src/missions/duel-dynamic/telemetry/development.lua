@@ -105,6 +105,28 @@ function M.start(config)
   if not lifecycle then
     return nil, dependency_error
   end
+  local asset
+  asset, dependency_error = require_dependency(config, "asset", "new")
+  if not asset then
+    -- Keep the pre-Slice-10 lifecycle harness compatible. Real MOOSE runtimes
+    -- inject asset.lua and expose PlayerEnterUnit.
+    if type(config.EVENTS) == "table" and config.EVENTS.PlayerEnterUnit == nil then
+      asset = {
+        new = function()
+          return {
+            start = function(self)
+              return self
+            end,
+            stop = function()
+              return true
+            end,
+          }
+        end,
+      }
+    else
+      return nil, dependency_error
+    end
+  end
   local shot
   shot, dependency_error = require_dependency(config, "shot", "new")
   if not shot then
@@ -242,8 +264,33 @@ function M.start(config)
     return nil, lifecycle_error
   end
 
-  -- Constructing the adapter does not subscribe it. Registration is delayed
+  -- Constructing adapters does not subscribe them. Registration is delayed
   -- until after mission.started has been persisted below.
+  local asset_adapter, asset_creation_error
+  local asset_created, asset_result, asset_error = pcall(function()
+    return asset.new({
+      controller = controller,
+      envelope = envelope,
+      BASE = config.BASE,
+      EVENTS = config.EVENTS,
+      player_group_names = config.player_group_names,
+      bandit_group_names = config.bandit_group_names,
+      player_coalition = config.player_coalition,
+      bandit_coalition = config.bandit_coalition,
+      log = function(level, message)
+        log(config.env, level, message)
+      end,
+    })
+  end)
+  if not asset_created then
+    return nil, "creating asset adapter failed: " .. tostring(asset_result)
+  end
+  asset_adapter = asset_result
+  asset_creation_error = asset_error
+  if not asset_adapter then
+    return nil, "creating asset adapter failed: " .. tostring(asset_creation_error)
+  end
+
   local shot_adapter, shot_creation_error
   local shot_created, shot_result, shot_error = pcall(function()
     return shot.new({
@@ -255,6 +302,7 @@ function M.start(config)
       bandit_group_names = config.bandit_group_names,
       player_coalition = config.player_coalition,
       bandit_coalition = config.bandit_coalition,
+      asset_registry = asset_adapter,
       log = function(level, message)
         log(config.env, level, message)
       end,
@@ -278,6 +326,7 @@ function M.start(config)
       EVENTS = config.EVENTS,
       player_group_names = config.player_group_names,
       player_coalition = config.player_coalition,
+      asset_registry = asset_adapter,
       log = function(level, message)
         log(config.env, level, message)
       end,
@@ -326,6 +375,17 @@ function M.start(config)
     end
   end
 
+  local function stop_asset()
+    local stopped, stop_result, stop_error = pcall(function()
+      return asset_adapter:stop()
+    end)
+    if not stopped then
+      log(config.env, "error", "asset subscription removal raised: " .. tostring(stop_result))
+    elseif not stop_result then
+      log(config.env, "error", "asset subscription removal failed: " .. tostring(stop_error))
+    end
+  end
+
   local function stop_participant()
     local stopped, stop_result, stop_error = pcall(function()
       return participant_adapter:stop()
@@ -341,6 +401,7 @@ function M.start(config)
     stop_heartbeat()
     stop_participant()
     stop_shot()
+    stop_asset()
     local event, finish_error = controller:finish()
     if not event then
       log(config.env, "error", "mission end persistence failed: " .. tostring(finish_error))
@@ -400,6 +461,20 @@ function M.start(config)
     return nil, start_error
   end
 
+  local asset_started, asset_start_result, asset_start_error = pcall(function()
+    return asset_adapter:start()
+  end)
+  if not asset_started or not asset_start_result then
+    stop_heartbeat()
+    pcall(function()
+      watcher:UnHandleEvent(config.EVENTS.MissionEnd)
+    end)
+    pcall(function()
+      asset_adapter:stop()
+    end)
+    return nil, "registering asset adapter failed: " .. tostring(asset_start_error or asset_start_result)
+  end
+
   local participant_started, participant_start_result, participant_start_error = pcall(function()
     return participant_adapter:start()
   end)
@@ -410,6 +485,9 @@ function M.start(config)
     end)
     pcall(function()
       participant_adapter:stop()
+    end)
+    pcall(function()
+      asset_adapter:stop()
     end)
     return nil,
       "registering participant adapter failed: " .. tostring(participant_start_error or participant_start_result)
@@ -429,11 +507,16 @@ function M.start(config)
     pcall(function()
       participant_adapter:stop()
     end)
+    pcall(function()
+      asset_adapter:stop()
+    end)
     return nil, "registering Shot adapter failed: " .. tostring(shot_start_error or shot_start_result)
   end
 
   runtime.scheduler = scheduler
   runtime.watcher = watcher
+  runtime.asset = asset_adapter
+  runtime.asset_watcher = asset_adapter.watcher
   runtime.shot = shot_adapter
   runtime.shot_watcher = shot_adapter.watcher
   runtime.participant = participant_adapter
