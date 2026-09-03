@@ -25,7 +25,7 @@ Both `.miz` files contain the same generic loader trigger; only the
 ## 2. Environment status
 
 > **DCS environment is currently STOCK** (re-verified 2026-09-03 after the
-> telemetry dev window closed). The dedicated-server install
+> Slice 8 delivery-drill dev window closed). The dedicated-server install
 > (`D:\DCS World Server`) has `MissionScripting.lua` restored from its `.orig`
 > backup with a matching SHA-1 hash (`FB54471ECE4DB968…`); the content check
 > confirms the `sanitizeModule('os'/'io'/'lfs')` lines are active. The temp
@@ -161,6 +161,19 @@ Verified end-to-end on the dedicated server (logs from 2026-07-26 session):
   (`waveSpawner.TweakedTemplate` defaulting to false so the payload
   overwrite was ignored by `SPAWN:_Prepare`) is documented in
   `docs/telemetry/unattended-test-loop.md`.
+- ✅ Telemetry Slice 8 (delivery scope, complete 2026-09-03): the collector
+  delivery client (`collector/src/delivery.ts`, `879f41c`) was exercised
+  live on two unattended deterministic runs. Run A
+  (`run-20260903T110437Z-63460841`) delivered cleanly (16/16 `accepted`,
+  historical runs 194 accepted + 32 `duplicate` — idempotency held). Run B
+  (`run-20260903T111858Z-13744ac8`) is the **network-interrupt drill**: web
+  down while the run spooled → delivery attempt #1 failed with connection
+  refused and acked **nothing** (spool stayed 16/0, NDJSON untouched) → web
+  restored → attempt #2 delivered 16/16 `accepted`, and Neon holds exactly
+  16 rows for Run B (`eventCount=16`, not 32 — the no-duplication proof),
+  13/13 page/API checks passed. Full evidence:
+  `docs/telemetry/unattended-test-loop.md` § "Slice 8 delivery +
+  network-interrupt drill".
 
 ## 5. What's known to be broken / limited
 
@@ -326,17 +339,19 @@ Slice 7 added the web shell + raw event persistence (`web/`), committed
 unattended runs (idempotent ingest, correct `mission_runs`/
 `telemetry_events` rows). See §4.
 
-Slice 8 (approved 2026-09-03) deployed `web/` to production: Vercel project
-`dcs-missions` with `rootDirectory` fixed from repo root to `web` (the
-cause of three instant failed deploys), Neon + `TELEMETRY_INGEST_TOKEN`
-env for Production and Preview, `main` pushed, and a git-integrated
-production deploy READY from `52fae57`. Live verification: site + run/event
-APIs correct for both runs, idempotent ingest re-pass against the
-production URL (32/32 `duplicate`), 401 negatives from the app's own auth.
-The remaining Slice 8 work is the delivery path: a collector spool → API
-delivery client (replacing the manual `dev-ingest-run.mjs` step) and the
-network-interrupt drill, per `docs/telemetry-implementation-plan.md`
-Slice 8.
+Slice 8 (approved 2026-09-03) is **complete**: the deploy scope (Vercel
+project `dcs-missions` with `rootDirectory` fixed from repo root to `web` —
+the cause of three instant failed deploys; Neon + `TELEMETRY_INGEST_TOKEN`
+env for Production and Preview; `main` pushed; git-integrated production
+deploy READY from `52fae57`) was live-verified (site + run/event APIs
+correct for both runs, idempotent ingest re-pass against the production URL
+32/32 `duplicate`, 401 negatives from the app's own auth). The delivery scope
+(delivery client `879f41c` + the network-interrupt drill) was completed the
+same day: see the §4 Slice 8 delivery bullet and
+`docs/telemetry/unattended-test-loop.md` § "Slice 8 delivery +
+network-interrupt drill" for the Run A/B evidence. Per the plan's Gate E,
+Slice 9 (participants and sorties) now needs its own explicit approval
+before it starts.
 
 Telemetry now has priority over the optional MIST respawn work.
 

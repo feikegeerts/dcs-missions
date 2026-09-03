@@ -435,3 +435,101 @@ an inline comment, so the server loaded only the 20 chars before the `#`
 while the ingest script read the full 48-char value → `401 unauthorized`.
 Fix: **wrap the token in double quotes** in `.env.local` (quoted values are
 not subject to inline-comment truncation). No token rotation was needed.
+
+## Slice 8 delivery + network-interrupt drill (2026-09-03)
+
+Goal: prove the collector **delivery client** (`collector/src/delivery.ts`,
+added in `879f41c`) end-to-end on the live stack — first a clean delivery,
+then a full network-interrupt drill where the ingest endpoint is down while
+an event accumulates in the spool, with the acceptance bar being eventual
+delivery **without loss and without duplication**.
+
+**Status:** complete and verified 2026-09-03. Two unattended runs were used:
+Run A (clean delivery) and Run B (interrupt drill). Both are the
+deterministic single-shot loadout (1×AIM-120C, no gun), so the expected
+ingest is exactly 16 events, seq 1–16, one `ordnance.fired` at seq 4.
+
+### Setup
+
+- Dev window reopened: de-sanitized `MissionScripting.lua` on `D:\DCS World
+  Server`, `zz-dev-telemetry-load.lua` hook reinstalled with the 400 s
+  auto-stop, `DCS_server` started, web `npm run dev` up on `:3000`
+  (verified against the live Neon env: runs API 200).
+- One fresh collector state dir for the whole drill:
+  `C:\Users\g_for\AppData\Local\Temp\opencode\slice8-live-state` (kept after
+  teardown as evidence, with its `collector.sqlite3`).
+- Delivery was driven by a throwaway wrapper (`deliver-run.mjs`, removed at
+  teardown) that reads `TELEMETRY_INGEST_TOKEN` from `web/.env.local` (never
+  echoing it), sanity-checks its length, and invokes
+  `collector/dist/src/delivery-cli.js --state <drill-state> --url
+  http://localhost:3000`.
+
+### Run A — clean delivery (first live use of the delivery client)
+
+- Run key `run-20260903T110437Z-63460841`; telemetry started 11:04:37 UTC,
+  clean `mission.ended sequence=16` at 11:11:17 UTC.
+- Collector passes A–D: pass A spooled 228 lines (210 historical + 18 from
+  the live run before auto-stop) with `duplicates: 0`; after auto-stop the
+  run was gapless 1–16 in the spool; pass D fully quiescent
+  (`complete_lines: 0`). NDJSON ground truth: 16 events, exactly one
+  `ordnance.fired` at seq 4, `weapon.dcs_type = "AIM_120C"`.
+- **Delivery:** one invocation, `exit=0`, `had_failure=false`. Run A:
+  `state=complete`, 1 batch (seq 1–16), **16/16 `accepted`**,
+  `acknowledged_through=16`. All 15 other runs: 0 posted. Totals
+  `accepted=210, dup=32, rej=0` — that is Run A's 16, 194 accepted across the
+  12 historical runs not yet in Neon, and 32 `duplicate` for the two runs
+  already ingested during the Slice 7 verification
+  (`run-20260903T033512Z-21af9d3f`, `run-20260903T040817Z-745fc0db`) —
+  idempotency held across producer invocations.
+- **Verified once in Neon + public page:** 13/13 PASS against the production
+  URL (same Neon DB): run visible, `status=ended`, `eventCount=16`, seq
+  1–16, exactly one `ordnance.fired` with `weaponDcsType=AIM_120C`, run page
+  200 containing run key + weapon, home page lists the run.
+
+### Run B — network-interrupt drill
+
+Sequence (the web process was killed **on purpose** before the run started;
+the connection-refused state was confirmed, not simulated):
+
+| # | Action | Result |
+|---|---|---|
+| 1 | Collector pass after the 400 s auto-stop (mission ended 11:25:38 UTC, t=399.5 s, `persisted mission.ended sequence=16` in `dcs.log`) | spooled 16, `duplicates: 0`, `quarantined: 0`; Run B `event_count=16`, seq 1–16, `acknowledged_through=0` |
+| 2 | Delivery attempt #1, **web still down** | `delivery-cli` exit 1, wrapper exit 2, `had_failure=true`; totals `accepted=0 dup=0 rej=0 batches=1 events=16`; Run B `state=error`, `error: "network error: fetch failed"`, batch seq 1–16 posted, **0 accepted, 0 acks**; all other runs 0 posted, acks unchanged |
+| 3 | Spool-integrity assertion | Run B spool still 16 events / `acknowledged_through=0` (no premature deletion, no partial ack); NDJSON file still 16 lines on disk, last line `mission.ended`; quiescent collector pass `complete_lines: 0` |
+| 4 | Web restored (`npm run dev` in `web/`) | `:3000` 200 in ~2 s |
+| 5 | Delivery attempt #2 | wrapper `exit=0`, `had_failure=false`; totals `accepted=16 dup=0 rej=0 batches=1`; Run B `state=complete`, **16 `accepted`**, `acknowledged_through=16`; every other run 0 posted |
+| 6 | Verify Run B in Neon + public page | **13/13 PASS**; `eventCount=16` (not 32) and events API `count=16` contiguous 1–16 is the **no-duplication proof** — the failed attempt #1 acked nothing, attempt #2 delivered each event exactly once |
+
+Run B key: `run-20260903T111858Z-13744ac8`.
+
+**Notes for reading the delivery summary:** a run's terminal `state` is
+`complete` only when its last spooled event is `mission.ended`; an
+interrupted run (no clean end) reports `incomplete` even though it is fully
+delivered. Six historical runs in the spool are such interrupted runs (their
+DCS process was killed mid-mission), so they show `incomplete` with
+`acknowledged_through == event_count` and nothing left to post.
+
+**Pre-existing Neon data (unrelated to the spool):** the runs API lists two
+`run-slice7smoke-*` runs (5 events each, `status=active`) — synthetic
+fixtures ingested during Slice 7 testing. They are not in the local
+telemetry directory and are never touched by the delivery client (which only
+delivers what the spool contains).
+
+### Teardown (performed, environment stock again)
+
+- `DCS_server` stopped; the `:3000` listener (node + its `cmd.exe` wrapper)
+  killed; ports 3000 and 10308 verified free.
+- `zz-dev-telemetry-load.lua` hook removed.
+- Stock `MissionScripting.lua` restored from `.orig`; SHA-1
+  `FB54471ECE4DB968AED4A55A1806B25EA5116452` (matches stock); all three
+  `sanitizeModule('os'/'io'/'lfs')` lines active.
+- Throwaway scripts (`deliver-run.mjs`, `verify-run-a.mjs`,
+  `verify-run-b.mjs`) deleted. **Kept as evidence:** the drill state dir
+  (`slice8-live-state/collector.sqlite3`) and all 16 NDJSON files in
+  `Saved Games\DCS.dcs_serverrelease\Logs\telemetry\`.
+
+**Slice 8 exit criteria (per the plan):** the complete source-event path
+works before additional combat categories are added — spool → delivery
+client → protected ingest → Neon → public page, surviving an endpoint outage
+with no loss, no duplication, and no premature spool deletion. Met.
+
