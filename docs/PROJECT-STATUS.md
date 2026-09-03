@@ -135,10 +135,24 @@ Verified end-to-end on the dedicated server (logs from 2026-07-26 session):
   ingest `POST /api/telemetry/ingest` (AJV against the normative contract,
   per-event accepted/duplicate/rejected acks, no `db.transaction`,
   `ON CONFLICT (event_id) DO NOTHING`), run/event query routes, list + detail
-  pages. Committed `86e5f5a` (not pushed/deployed). Verified end-to-end
+  pages. Committed `86e5f5a`; pushed and deployed by Slice 8.
+  Verified end-to-end
   against the live Neon env with two real unattended runs: 32 events
   `accepted` on first pass, 32 `duplicate` on re-pass (idempotency), and
   `mission_runs`/`telemetry_events` rows correct.
+- ✅ Telemetry Slice 8 (deploy scope): first production deploy of `web/`.
+  Vercel project `dcs-missions` (git-integrated, `rootDirectory` fixed to
+  `web` — the repo-root default was why the first three deploys died in
+  seconds), Neon `POSTGRES_URL`/`DATABASE_URL` + `TELEMETRY_INGEST_TOKEN`
+  set for Production and Preview. `main` pushed
+  (`920b4bc..52fae57`); production deploy `dcs-missions-brg0iiry4` READY
+  from `52fae57`. Verified live: `GET /` 200, runs/run-detail/events APIs
+  return both runs (16 events each, seq 1–16, exactly one
+  `ordnance.fired` with the correct `weaponDcsType`), an idempotent ingest
+  re-pass against the production URL returned 32/32 `duplicate`, and the
+  401 negatives are the app's own Bearer auth. Vercel SSO deployment
+  protection is disabled (owner decision; ingest authenticates with the
+  app-level token).
 - ✅ Deterministic single-shot unattended ordnance: a dev-only
   `TEST_COMBAT_MISSILE` knob pins the bandit to exactly one AAM + no gun so
   the `ordnance.fired` count is assertable and the weapon identity is the
@@ -308,14 +322,23 @@ single-shot loadout and the `TweakedTemplate` weapon-identity root cause
 (2026-09-03, runs `…21af9d3f` AIM-120C and `…745fc0db` AIM-9X).
 
 Slice 7 added the web shell + raw event persistence (`web/`), committed
-`86e5f5a` (not pushed, not deployed). It is verified end-to-end against the
-live Neon env with two real unattended runs (idempotent ingest, correct
-`mission_runs`/`telemetry_events` rows). See §4.
+`86e5f5a`, verified end-to-end against the live Neon env with two real
+unattended runs (idempotent ingest, correct `mission_runs`/
+`telemetry_events` rows). See §4.
 
-Telemetry now has priority over the optional MIST respawn work. The next
-planned telemetry work is **Slice 8**, the first production deploy of `web/`
-to Vercel + Neon — **parked** (no push, no deploy yet). Gate E was approved
-for Slice 7; record explicit approval for the Slice 8 deploy before it runs.
+Slice 8 (approved 2026-09-03) deployed `web/` to production: Vercel project
+`dcs-missions` with `rootDirectory` fixed from repo root to `web` (the
+cause of three instant failed deploys), Neon + `TELEMETRY_INGEST_TOKEN`
+env for Production and Preview, `main` pushed, and a git-integrated
+production deploy READY from `52fae57`. Live verification: site + run/event
+APIs correct for both runs, idempotent ingest re-pass against the
+production URL (32/32 `duplicate`), 401 negatives from the app's own auth.
+The remaining Slice 8 work is the delivery path: a collector spool → API
+delivery client (replacing the manual `dev-ingest-run.mjs` step) and the
+network-interrupt drill, per `docs/telemetry-implementation-plan.md`
+Slice 8.
+
+Telemetry now has priority over the optional MIST respawn work.
 
 ---
 
