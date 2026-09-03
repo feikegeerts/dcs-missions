@@ -1,6 +1,6 @@
 # Project status
 
-**Last updated:** 2026-09-02. Read this first when coming back.
+**Last updated:** 2026-09-03. Read this first when coming back.
 
 This is a snapshot of where the project is, what's known to work, what's
 known to be broken, and what still needs to happen before the mission
@@ -24,11 +24,13 @@ Both `.miz` files contain the same generic loader trigger; only the
 
 ## 2. Environment status
 
-> **DCS environment is currently STOCK** (verified 2026-08-31). Both
-> installs (`C:\Program Files (x86)\Steam\steamapps\common\DCSWorld`
-> and `D:\DCS World Server`) have `MissionScripting.lua` restored from
-> the `.orig` backups with matching SHA-256 hashes — `os`/`io`/`lfs` are nilled. This is what
-> you need to verify the shipping `.miz` works.
+> **DCS environment is currently STOCK** (re-verified 2026-09-03 after the
+> telemetry dev window closed). The dedicated-server install
+> (`D:\DCS World Server`) has `MissionScripting.lua` restored from its `.orig`
+> backup with a matching SHA-1 hash (`FB54471ECE4DB968…`); the content check
+> confirms the `sanitizeModule('os'/'io'/'lfs')` lines are active. The temp
+> `zz-dev-telemetry-load.lua` hook is removed and `DCS_server` is stopped.
+> This is what you need to verify the shipping `.miz` works.
 >
 > To re-enter dev mode: patch the file again per `docs/dev-setup.md §2`.
 > Before flying any untrusted mission or joining an unknown server,
@@ -122,6 +124,29 @@ Verified end-to-end on the dedicated server (logs from 2026-07-26 session):
   contract-valid `ordnance.fired` records for players and paired AI bandits.
   Controlled two-shot and two-player dedicated-server evidence is in
   `docs/telemetry/slice-5-ordnance-evidence.md`.
+- ✅ Telemetry Slice 6: local TypeScript collector (`collector/`) — NDJSON
+  tailing with partial-line handling, contract validation, durable SQLite
+  spool with idempotent inserts, file-identity cursors, in-order
+  delivery/ack, dry-run. No network calls; two-pass real-data idempotency
+  (145 events, zero loss/dup) + unattended live dedicated-server tail.
+  Evidence: `docs/telemetry/slice-6-collector-evidence.md`.
+- ✅ Telemetry Slice 7: web shell + raw event persistence (`web/`, Next.js
+  App Router + Drizzle + `@neondatabase/serverless`). Protected idempotent
+  ingest `POST /api/telemetry/ingest` (AJV against the normative contract,
+  per-event accepted/duplicate/rejected acks, no `db.transaction`,
+  `ON CONFLICT (event_id) DO NOTHING`), run/event query routes, list + detail
+  pages. Committed `86e5f5a` (not pushed/deployed). Verified end-to-end
+  against the live Neon env with two real unattended runs: 32 events
+  `accepted` on first pass, 32 `duplicate` on re-pass (idempotency), and
+  `mission_runs`/`telemetry_events` rows correct.
+- ✅ Deterministic single-shot unattended ordnance: a dev-only
+  `TEST_COMBAT_MISSILE` knob pins the bandit to exactly one AAM + no gun so
+  the `ordnance.fired` count is assertable and the weapon identity is the
+  loadout. Verified for both AIM-120C and AIM-9X (one `ordnance.fired` each,
+  correct `weapon_dcs_type`). Root cause of the earlier mislabel
+  (`waveSpawner.TweakedTemplate` defaulting to false so the payload
+  overwrite was ignored by `SPAWN:_Prepare`) is documented in
+  `docs/telemetry/unattended-test-loop.md`.
 
 ## 5. What's known to be broken / limited
 
@@ -263,7 +288,7 @@ how to verify, and `docs/dev-setup.md §8` for the build/QA loop.
 
 ### 6.5 Telemetry
 
-Slices 1–6 are complete. Slice 5 was validated with controlled and two-player
+Slices 1–7 are complete. Slice 5 was validated with controlled and two-player
 dedicated-server runs, and the development environment was restored to stock
 afterward. Slice 6 added the local TypeScript collector
 (`collector/`): NDJSON tailing with partial-line handling, contract
@@ -278,10 +303,19 @@ test loop itself (hook-driven mission load, no player/WebGUI) is documented
 in `docs/telemetry/unattended-test-loop.md`; unattended ordnance testing
 (blue AI engagement) is implemented and live-verified in that doc (run
 `run-20260902T181007Z-7b3ea067`), with the design and evidence in
-`docs/test-combat-plan.md`.
+`docs/test-combat-plan.md`. The same doc now covers the deterministic
+single-shot loadout and the `TweakedTemplate` weapon-identity root cause
+(2026-09-03, runs `…21af9d3f` AIM-120C and `…745fc0db` AIM-9X).
+
+Slice 7 added the web shell + raw event persistence (`web/`), committed
+`86e5f5a` (not pushed, not deployed). It is verified end-to-end against the
+live Neon env with two real unattended runs (idempotent ingest, correct
+`mission_runs`/`telemetry_events` rows). See §4.
+
 Telemetry now has priority over the optional MIST respawn work. The next
-planned telemetry work is Slice 7, the web shell and raw event persistence;
-record explicit Gate E approval before implementation starts.
+planned telemetry work is **Slice 8**, the first production deploy of `web/`
+to Vercel + Neon — **parked** (no push, no deploy yet). Gate E was approved
+for Slice 7; record explicit approval for the Slice 8 deploy before it runs.
 
 ---
 

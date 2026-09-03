@@ -341,3 +341,97 @@ survives in the synthesized shipping `main.lua`.
   sequence 2 (`Bandit-1#001-01`, `AIM_120C`).
 - Collector pass spools it with `duplicates: 0`; sequence stays gapless
   through the whole run including `mission.ended` (1 → 16).
+
+## Deterministic single-shot loadout + weapon-identity verification (2026-09-03)
+
+Goal: make the unattended ordnance count **assertable** (exactly one
+`ordnance.fired` per run) and verify **which weapon** the bandit actually
+fires, so a fixed loadout can be pinned per run (AIM-120C vs AIM-9X).
+
+**Status:** implemented and verified 2026-09-03. Both weapons produce
+exactly one `ordnance.fired` with the correct `weapon_dcs_type`.
+
+### Design (in the dev-only test-combat block of `main.lua`)
+
+- `TEST_COMBAT_MISSILE` knob (`"AIM-120C"` or `"AIM-9X"`), flipped per run.
+- `testCombatPayload()` builds a mission-file-shaped payload: exactly ONE
+  AAM pylon, `gun = 0` (the M61 is removed so the bandit cannot add gun
+  shots), fuel/flare/chaff/ammo_type preserved.
+- `setTemplatePayload()` overwrites `units[n].payload` on the spawner's
+  template copy. The bandit gets one AAM + no gun; the blue target gets no
+  weapons at all (it cannot kill the bandit, so the bandit is always the
+  accepted initiator).
+- With one AAM and no gun, a successful engagement yields **exactly one**
+  `ordnance.fired` event, so the count is assertable and the weapon
+  identity is the loadout.
+
+### Root cause of the earlier "AIM-9X fired an AIM-120C" bug
+
+The first AIM-9X run still reported `weapon=AIM_120C`. The payload was
+correct (the AIM-9X CLSID `{5CE2FF2A-645A-4197-B48D-8720AC69394F}` is
+confirmed in `CoreMods\aircraft\AircraftWeaponPack\aim9_family.lua`, and
+`MDRN_M_A_AIM9` is only a visual GUI preset), so the problem was that the
+payload **was never applied to the spawned bandit**:
+
+- The bandit is spawned by `waveSpawner = SPAWN:New("Bandit-1")`, which sets
+  `TweakedTemplate = false` (`Core/Spawn.lua`, `SPAWN:New`).
+- In `SPAWN:_Prepare`, when `TweakedTemplate` is **not** true, MOOSE
+  re-fetches a fresh deep copy of the template via
+  `self:_GetTemplate(prefix)` (from the shared `_DATABASE`) and **ignores
+  the spawner's own `SpawnTemplate`** — so the `units[n].payload` overwrite
+  was silently discarded and the bandit flew the default loadout
+  (4×AIM-120C + 2×AIM-9X + gun). The AI's first BVR launch is an AIM-120C,
+  so both runs captured `AIM_120C`.
+- The blue spawner used `SPAWN:NewFromTemplate`, which sets
+  `TweakedTemplate = true`, so its "no weapons" override *was* applied —
+  consistent with the blue never firing back.
+
+**Fix:** set `waveSpawner.TweakedTemplate = true` inside the dev-only block
+before applying the payload. That routes `_Prepare` to the "tweaked
+template" branch, which uses the spawner's own (overwritten)
+`SpawnTemplate` and hands it to `coalition.addGroup` via `DATABASE:Spawn`
+(no extra copy). This is MOOSE's documented "user made template" path.
+
+**Naming side effect (benign here):** the tweaked branch names the group via
+`SpawnGroupName()` (no index) when `MooseNameing` is nil (the case for
+`SPAWN:New`), so the bandit loses the `#NNN` suffix — unit `Bandit-1-01`
+instead of `Bandit-1#001-01`. This does not affect the telemetry roster
+(exact `Bandit-1` still matches via `group_name == configured_name`, so the
+initiator stays `known`) and does not affect the count/weapon assertion. It
+is benign because the block is dev-only (stripped for shipping) and the
+unattended flow spawns a single bandit wave — but do **not** reuse
+`TweakedTemplate = true` on a shared spawner for multi-wave spawns, where
+every wave would be named `Bandit-1` and collide.
+
+### Evidence (2026-09-03)
+
+| run | missile knob | ordnance.fired | weapon_dcs_type | seq | sequence | ended |
+|---|---|---|---|---|---|---|
+| `run-20260903T033512Z-21af9d3f` | AIM-120C | 1 | `AIM_120C` | 4 | 1→16 gapless | `mission.ended` |
+| `run-20260903T040817Z-745fc0db` | AIM-9X | 1 | `AIM_9X` | 4 | 1→16 gapless | `mission.ended` |
+
+Both runs: no player, started + auto-stopped by the temporary hook,
+`duplicates: 0` in the collector, red bandit initiator, `weapon_status=known`.
+Log line `fixed loadout: bandit 1x<missile> gun=0, blue no weapons` present.
+NDJSON ground truth in
+`Saved Games\DCS.dcs_serverrelease\Logs\telemetry\`.
+
+### Web ingest + Neon verification (Slice 7, same runs)
+
+`web/scripts/dev-ingest-run.mjs` ingests each run's NDJSON into the local web
+app's `POST /api/telemetry/ingest` (Bearer token, `telemetry_batch_v1`
+batches ≤100, one producer+run, contiguous sequence). Verified against the
+live Neon env:
+
+- First pass: both runs `accepted=16` (32 total).
+- Second pass (idempotency): both runs `duplicate=16` (32 total), no errors.
+- `mission_runs`: both `status=ended`, `event_count=16`, seq 1–16.
+- `telemetry_events`: exactly one `ordnance.fired` per run with the correct
+  `weapon_dcs_type` (`AIM_120C`, `AIM_9X`).
+
+**Auth gotcha (fixed):** the `TELEMETRY_INGEST_TOKEN` in `web/.env.local`
+contains a `#`. Next's dotenv parser treats an unquoted `#` as the start of
+an inline comment, so the server loaded only the 20 chars before the `#`
+while the ingest script read the full 48-char value → `401 unauthorized`.
+Fix: **wrap the token in double quotes** in `.env.local` (quoted values are
+not subject to inline-comment truncation). No token rotation was needed.
