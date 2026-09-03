@@ -447,7 +447,9 @@ delivery **without loss and without duplication**.
 **Status:** complete and verified 2026-09-03. Two unattended runs were used:
 Run A (clean delivery) and Run B (interrupt drill). Both are the
 deterministic single-shot loadout (1×AIM-120C, no gun), so the expected
-ingest is exactly 16 events, seq 1–16, one `ordnance.fired` at seq 4.
+ingest is exactly 16 events, seq 1–16, one `ordnance.fired` early in the run
+(seq 4 in Run A, seq 3 in Run B — the shot lands just before or after the
+first 30 s heartbeat depending on engagement timing).
 
 ### Setup
 
