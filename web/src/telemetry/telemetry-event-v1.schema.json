@@ -1,0 +1,543 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:dcs-missions:telemetry-event-v1",
+  "title": "DCS telemetry source event version 1",
+  "$ref": "#/$defs/telemetry_event_v1",
+  "$defs": {
+    "token": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "nullable_string": {
+      "type": ["string", "null"],
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "nullable_token": {
+      "oneOf": [{ "$ref": "#/$defs/token" }, { "type": "null" }]
+    },
+    "coalition": {
+      "enum": ["blue", "red", "neutral", "unknown"]
+    },
+    "nullable_coalition": {
+      "oneOf": [{ "$ref": "#/$defs/coalition" }, { "type": "null" }]
+    },
+    "known_actor_reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "kind",
+        "participant_id",
+        "asset_key",
+        "display_name",
+        "callsign",
+        "dcs_name",
+        "dcs_type",
+        "coalition"
+      ],
+      "properties": {
+        "status": { "const": "known" },
+        "kind": { "enum": ["participant", "aircraft"] },
+        "participant_id": { "$ref": "#/$defs/nullable_token" },
+        "asset_key": { "$ref": "#/$defs/nullable_token" },
+        "display_name": { "$ref": "#/$defs/nullable_string" },
+        "callsign": { "$ref": "#/$defs/nullable_string" },
+        "dcs_name": { "$ref": "#/$defs/nullable_string" },
+        "dcs_type": { "$ref": "#/$defs/nullable_string" },
+        "coalition": { "$ref": "#/$defs/coalition" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "const": "participant" } } },
+          "then": { "properties": { "participant_id": { "type": "string" } } }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "aircraft" } } },
+          "then": {
+            "anyOf": [
+              { "properties": { "asset_key": { "type": "string" } } },
+              { "properties": { "dcs_name": { "type": "string" } } },
+              { "properties": { "dcs_type": { "type": "string" } } }
+            ]
+          }
+        }
+      ]
+    },
+    "unknown_actor_reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "kind",
+        "reason",
+        "participant_id",
+        "asset_key",
+        "display_name",
+        "callsign",
+        "dcs_name",
+        "dcs_type",
+        "coalition"
+      ],
+      "properties": {
+        "status": { "const": "unknown" },
+        "kind": { "const": "unknown" },
+        "reason": { "enum": ["not-reported", "unresolved"] },
+        "participant_id": { "type": "null" },
+        "asset_key": { "type": "null" },
+        "display_name": { "$ref": "#/$defs/nullable_string" },
+        "callsign": { "$ref": "#/$defs/nullable_string" },
+        "dcs_name": { "$ref": "#/$defs/nullable_string" },
+        "dcs_type": { "$ref": "#/$defs/nullable_string" },
+        "coalition": { "$ref": "#/$defs/coalition" }
+      }
+    },
+    "actor_reference": {
+      "oneOf": [
+        { "$ref": "#/$defs/known_actor_reference" },
+        { "$ref": "#/$defs/unknown_actor_reference" }
+      ]
+    },
+    "nullable_actor_reference": {
+      "oneOf": [{ "$ref": "#/$defs/actor_reference" }, { "type": "null" }]
+    },
+    "known_participant_reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "kind",
+        "participant_id",
+        "display_name",
+        "callsign",
+        "coalition"
+      ],
+      "properties": {
+        "status": { "const": "known" },
+        "kind": { "const": "participant" },
+        "participant_id": { "$ref": "#/$defs/token" },
+        "display_name": { "$ref": "#/$defs/nullable_string" },
+        "callsign": { "$ref": "#/$defs/nullable_string" },
+        "coalition": { "$ref": "#/$defs/coalition" }
+      }
+    },
+    "unknown_participant_reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "kind",
+        "reason",
+        "participant_id",
+        "display_name",
+        "callsign",
+        "coalition"
+      ],
+      "properties": {
+        "status": { "const": "unknown" },
+        "kind": { "const": "participant" },
+        "reason": { "enum": ["stable-identity-unavailable", "unresolved"] },
+        "participant_id": { "type": "null" },
+        "display_name": { "$ref": "#/$defs/nullable_string" },
+        "callsign": { "$ref": "#/$defs/nullable_string" },
+        "coalition": { "$ref": "#/$defs/coalition" }
+      }
+    },
+    "participant_reference": {
+      "oneOf": [
+        { "$ref": "#/$defs/known_participant_reference" },
+        { "$ref": "#/$defs/unknown_participant_reference" }
+      ]
+    },
+    "nullable_participant_reference": {
+      "oneOf": [{ "$ref": "#/$defs/participant_reference" }, { "type": "null" }]
+    },
+    "known_asset_reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "kind",
+        "asset_key",
+        "dcs_name",
+        "dcs_type",
+        "coalition"
+      ],
+      "properties": {
+        "status": { "const": "known" },
+        "kind": { "const": "aircraft" },
+        "asset_key": { "$ref": "#/$defs/token" },
+        "dcs_name": { "$ref": "#/$defs/nullable_string" },
+        "dcs_type": { "$ref": "#/$defs/nullable_string" },
+        "coalition": { "$ref": "#/$defs/coalition" }
+      }
+    },
+    "unknown_asset_reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "kind",
+        "reason",
+        "asset_key",
+        "dcs_name",
+        "dcs_type",
+        "coalition"
+      ],
+      "properties": {
+        "status": { "const": "unknown" },
+        "kind": { "const": "aircraft" },
+        "reason": { "enum": ["instance-identity-unavailable", "unresolved"] },
+        "asset_key": { "type": "null" },
+        "dcs_name": { "$ref": "#/$defs/nullable_string" },
+        "dcs_type": { "$ref": "#/$defs/nullable_string" },
+        "coalition": { "$ref": "#/$defs/coalition" }
+      }
+    },
+    "asset_reference": {
+      "oneOf": [
+        { "$ref": "#/$defs/known_asset_reference" },
+        { "$ref": "#/$defs/unknown_asset_reference" }
+      ]
+    },
+    "nullable_asset_reference": {
+      "oneOf": [{ "$ref": "#/$defs/asset_reference" }, { "type": "null" }]
+    },
+    "known_weapon_reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "dcs_type", "display_name", "category"],
+      "properties": {
+        "status": { "const": "known" },
+        "dcs_type": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "display_name": { "$ref": "#/$defs/nullable_string" },
+        "category": {
+          "enum": ["missile", "bomb", "rocket", "other-discrete", "unknown"]
+        }
+      }
+    },
+    "unknown_weapon_reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "reason", "dcs_type", "display_name", "category"],
+      "properties": {
+        "status": { "const": "unknown" },
+        "reason": { "enum": ["type-not-reported", "unresolved"] },
+        "dcs_type": { "type": "null" },
+        "display_name": { "$ref": "#/$defs/nullable_string" },
+        "category": { "const": "unknown" }
+      }
+    },
+    "weapon_reference": {
+      "oneOf": [
+        { "$ref": "#/$defs/known_weapon_reference" },
+        { "$ref": "#/$defs/unknown_weapon_reference" }
+      ]
+    },
+    "nullable_weapon_reference": {
+      "oneOf": [{ "$ref": "#/$defs/weapon_reference" }, { "type": "null" }]
+    },
+    "known_location_reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "coordinate_system", "x", "y", "z"],
+      "properties": {
+        "status": { "const": "known" },
+        "coordinate_system": { "const": "dcs-local" },
+        "x": { "type": "number" },
+        "y": { "type": "number" },
+        "z": { "type": "number" }
+      }
+    },
+    "unknown_location_reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "reason"],
+      "properties": {
+        "status": { "const": "unknown" },
+        "reason": { "enum": ["not-reported", "unavailable"] }
+      }
+    },
+    "location_reference": {
+      "oneOf": [
+        { "$ref": "#/$defs/known_location_reference" },
+        { "$ref": "#/$defs/unknown_location_reference" }
+      ]
+    },
+    "nullable_location_reference": {
+      "oneOf": [{ "$ref": "#/$defs/location_reference" }, { "type": "null" }]
+    },
+    "telemetry_event_v1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "event_id",
+        "source",
+        "producer_id",
+        "source_version",
+        "run_key",
+        "event_sequence",
+        "event_type",
+        "sim_time",
+        "wall_time",
+        "initiator",
+        "target",
+        "participant",
+        "asset",
+        "weapon",
+        "coalition",
+        "location",
+        "payload"
+      ],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "event_id": {
+          "type": "string",
+          "maxLength": 278,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}:[A-Za-z0-9][A-Za-z0-9._-]{0,127}:[1-9][0-9]*$"
+        },
+        "source": { "const": "moose-mission" },
+        "producer_id": { "$ref": "#/$defs/token" },
+        "source_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "run_key": { "$ref": "#/$defs/token" },
+        "event_sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "event_type": {
+          "enum": [
+            "mission.started",
+            "mission.ended",
+            "mission.heartbeat",
+            "participant.entered",
+            "participant.left",
+            "asset.spawned",
+            "asset.despawned",
+            "ordnance.fired",
+            "asset.hit",
+            "asset.kill-reported",
+            "asset.dead",
+            "asset.crashed",
+            "pilot.dead",
+            "pilot.ejected"
+          ]
+        },
+        "sim_time": { "type": "number", "minimum": 0 },
+        "wall_time": {
+          "type": ["string", "null"],
+          "format": "date-time"
+        },
+        "initiator": { "$ref": "#/$defs/nullable_actor_reference" },
+        "target": { "$ref": "#/$defs/nullable_actor_reference" },
+        "participant": { "$ref": "#/$defs/nullable_participant_reference" },
+        "asset": { "$ref": "#/$defs/nullable_asset_reference" },
+        "weapon": { "$ref": "#/$defs/nullable_weapon_reference" },
+        "coalition": { "$ref": "#/$defs/nullable_coalition" },
+        "location": { "$ref": "#/$defs/nullable_location_reference" },
+        "payload": { "type": "object" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "event_sequence": { "const": 1 } } },
+          "then": {
+            "properties": { "event_type": { "const": "mission.started" } }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "event_type": {
+                "enum": [
+                  "mission.started",
+                  "mission.ended",
+                  "mission.heartbeat"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "initiator": { "type": "null" },
+              "target": { "type": "null" },
+              "participant": { "type": "null" },
+              "asset": { "type": "null" },
+              "weapon": { "type": "null" },
+              "coalition": { "type": "null" },
+              "location": { "type": "null" }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "event_type": { "const": "mission.started" } }
+          },
+          "then": {
+            "properties": {
+              "event_sequence": { "const": 1 },
+              "payload": {
+                "type": "object",
+                "required": [
+                  "mission_name",
+                  "mission_version",
+                  "map_name",
+                  "run_classification"
+                ],
+                "properties": {
+                  "mission_name": { "type": "string", "minLength": 1 },
+                  "mission_version": { "type": "string", "minLength": 1 },
+                  "map_name": { "type": ["string", "null"], "minLength": 1 },
+                  "run_classification": { "enum": ["test", "historical"] }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "event_type": { "const": "mission.ended" } }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "type": "object",
+                "required": ["reason"],
+                "properties": { "reason": { "const": "mission-end-observed" } }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "event_type": {
+                "enum": ["participant.entered", "participant.left"]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "initiator": { "type": "null" },
+              "target": { "type": "null" },
+              "participant": { "$ref": "#/$defs/participant_reference" },
+              "asset": { "$ref": "#/$defs/asset_reference" },
+              "weapon": { "type": "null" },
+              "coalition": { "$ref": "#/$defs/coalition" },
+              "location": { "$ref": "#/$defs/location_reference" }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "event_type": { "enum": ["asset.spawned", "asset.despawned"] }
+            }
+          },
+          "then": {
+            "properties": {
+              "initiator": { "type": "null" },
+              "target": { "type": "null" },
+              "asset": { "$ref": "#/$defs/asset_reference" },
+              "weapon": { "type": "null" },
+              "coalition": { "$ref": "#/$defs/coalition" },
+              "location": { "$ref": "#/$defs/location_reference" }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "event_type": { "const": "asset.despawned" } }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "type": "object",
+                "required": ["reason"],
+                "properties": {
+                  "reason": { "enum": ["intentional", "unknown"] }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "event_type": { "const": "ordnance.fired" } }
+          },
+          "then": {
+            "properties": {
+              "initiator": { "$ref": "#/$defs/actor_reference" },
+              "target": { "type": "null" },
+              "asset": { "$ref": "#/$defs/asset_reference" },
+              "weapon": { "$ref": "#/$defs/weapon_reference" },
+              "coalition": { "$ref": "#/$defs/coalition" },
+              "location": { "$ref": "#/$defs/location_reference" }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "event_type": { "enum": ["asset.hit", "asset.kill-reported"] }
+            }
+          },
+          "then": {
+            "properties": {
+              "initiator": { "$ref": "#/$defs/actor_reference" },
+              "target": { "$ref": "#/$defs/actor_reference" },
+              "asset": { "$ref": "#/$defs/asset_reference" },
+              "coalition": { "$ref": "#/$defs/coalition" },
+              "location": { "$ref": "#/$defs/location_reference" }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "event_type": {
+                "enum": [
+                  "asset.dead",
+                  "asset.crashed",
+                  "pilot.dead",
+                  "pilot.ejected"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "initiator": { "type": "null" },
+              "target": { "type": "null" },
+              "asset": { "$ref": "#/$defs/asset_reference" },
+              "weapon": { "type": "null" },
+              "coalition": { "$ref": "#/$defs/coalition" },
+              "location": { "$ref": "#/$defs/location_reference" }
+            }
+          }
+        }
+      ]
+    },
+    "telemetry_batch_v1": {
+      "title": "DCS telemetry source event batch version 1",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["batch_schema_version", "events"],
+      "properties": {
+        "batch_schema_version": { "const": 1 },
+        "events": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 100,
+          "items": { "$ref": "#/$defs/telemetry_event_v1" }
+        }
+      }
+    }
+  }
+}

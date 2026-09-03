@@ -1,0 +1,5 @@
+.next/
+node_modules/
+drizzle/meta/
+next-env.d.ts
+tsconfig.tsbuildinfo
