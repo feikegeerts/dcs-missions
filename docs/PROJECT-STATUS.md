@@ -39,21 +39,19 @@ Both `.miz` files contain the same generic loader trigger; only the
 
 ## 2. Environment status
 
-> **DCS environment is currently DE-SANITIZED** (re-verified 2026-09-04
-> after the Slice 10 live drill). The dedicated-server install
-> (`D:\DCS World Server`) `MissionScripting.lua` has the
-> `sanitizeModule('os'/'io'/'lfs')` lines commented out (live SHA-1
-> `D0069384E34331079A2513D84AE474C9BF5A8843`); the stock backup is at
-> `MissionScripting.lua.orig` (SHA-1
-> `FB54471ECE4DB968AED4A55A1806B25EA5116452`), and a dev-window backup
-> exists as `MissionScripting.lua.telemetry-dev-backup`. `DCS_server` is
-> stopped. This is required for the dev loader (dynamic `src/` loading)
-> but **must be restored to stock before any shipping build or before
-> flying/joining untrusted missions** — copy the `.orig` over the live
-> file.
+> **DCS environment is currently STOCK** (restored 2026-09-04 after the
+> Slice 11 ordnance-matrix run). The dedicated-server install
+> (`D:\DCS World Server`) `MissionScripting.lua` is the stock file (live
+> SHA-1 `FB54471ECE4DB968AED4A55A1806B25EA5116452`, identical to the
+> `MissionScripting.lua.orig` backup); the dev-window de-sanitized variant
+> is preserved as `MissionScripting.lua.telemetry-dev-backup` (SHA-1
+> `33977AAD2B3FE7A39E15374839C813E164BF0929`; the exact live de-sanitized
+> file used during the Slice 11 dev window had SHA-1
+> `D0069384E34331079A2513D84AE474C9BF5A8843`). `DCS_server` is stopped.
 >
-> To re-enter dev mode after a restore: patch the file again per
-> `docs/dev-setup.md §2`.
+> To re-enter dev mode (required for the dynamic `src/` dev loader): patch
+> the file again per `docs/dev-setup.md §2`. Keep it stock before any
+> shipping build and before flying/joining untrusted missions.
 
 Server config: `Saved Games\DCS.dcs_serverrelease\Config\autoexec.cfg`
 has the no-render / no-track / silent-crash settings. Don't lose it.
@@ -474,10 +472,10 @@ Telemetry now has priority over the optional MIST respawn work.
 1. Pull / read the project, read this file and
    `docs/spec-duel-dynamic.md`.
 2. Verify the env: see §2 — `MissionScripting.lua` on the dedicated-server
-   install is currently **de-sanitized** (dev mode); restore it from its
-   `MissionScripting.lua.orig` backup (stock) before any shipping build or
-   untrusted mission/server. To re-enter dev mode, patch per
-   `docs/dev-setup.md §2`.
+   install is currently **stock** (restored 2026-09-04 after the Slice 11
+   matrix run). To re-enter dev mode (dynamic `src/` loading), patch per
+   `docs/dev-setup.md §2`; keep it stock before any shipping build or
+   before flying/joining untrusted missions/servers.
 3. Start the dedicated server, WebGUI → Restart `duel-dynamic`.
 4. Sanity check: the log shows the init sequence from
    `spec-duel-dynamic.md §7`. The bandit spawns. F10 menu works.
