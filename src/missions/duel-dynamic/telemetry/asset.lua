@@ -452,6 +452,46 @@ function M.new(config)
     return first_reference
   end
 
+  function adapter:extend_player_roster(names)
+    if type(names) ~= "table" or #names == 0 then
+      return nil, "player group names are required"
+    end
+
+    local additions = {}
+    local addition_tokens = {}
+    for index, name in ipairs(names) do
+      if type(name) ~= "string" or string.len(name) == 0 then
+        return nil, "player group name " .. tostring(index) .. " is invalid"
+      end
+      if self.player_roster.lookup[name] or additions[name] then
+        return nil, name .. " already tracked"
+      end
+      if self.bandit_roster.lookup[name] then
+        return nil, name .. " collides with bandit roster"
+      end
+      local key_part = token_part(name)
+      if
+        not key_part
+        or self.player_roster.token_lookup[key_part]
+        or self.bandit_roster.token_lookup[key_part]
+        or addition_tokens[key_part]
+      then
+        return nil, name .. " does not produce a distinct asset key token"
+      end
+      additions[name] = key_part
+      addition_tokens[key_part] = true
+    end
+
+    for _, name in ipairs(names) do
+      local index = #self.player_roster.names + 1
+      local key_part = additions[name]
+      self.player_roster.names[index] = name
+      self.player_roster.lookup[name] = { index = index, key_part = key_part }
+      self.player_roster.token_lookup[key_part] = true
+    end
+    return true
+  end
+
   function adapter:register_bandit_group(group, configured_name, sim_time)
     local runtime_name = non_empty_string(first_method(self.config, group, "GetName", "getName"))
     local canonical, roster_entry

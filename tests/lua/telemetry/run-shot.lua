@@ -416,6 +416,49 @@ succeeds("exact player and spawned bandit roster entries are accepted while simi
   equal(#events, 3)
 end)
 
+succeeds("an extended player roster captures the blue test-combat group", function()
+  local base = new_base()
+  local controller, events = new_controller("extended-roster")
+  local adapter = new_adapter(controller, base, {})
+  local extended, extend_error = adapter:extend_player_roster({ "TestCombat-Blue" })
+  check(extended, extend_error)
+  check(controller:start())
+  local watcher = adapter:start()
+  local event, event_error = watcher:OnEventShot(new_event({
+    group_name = "TestCombat-Blue",
+    unit_name = "TestCombat-Blue-1",
+    unit = new_unit({ unit_name = "TestCombat-Blue-1", coalition = 2 }),
+    coalition = 2,
+    type_name = "F-16C_50",
+    weapon_name = "weapons.missiles.AIM_9L",
+    weapon = new_weapon(),
+    time = 40,
+  }))
+  check(event ~= nil, event_error)
+  equal(event.initiator.dcs_type, "F-16C_50")
+  equal(event.initiator.coalition, "blue")
+end)
+
+succeeds("shot roster extension rejects collisions, duplicates, empty, and non-string names", function()
+  local base = new_base()
+  local controller = new_controller("extended-roster-errors")
+  local adapter = new_adapter(controller, base, {})
+  local result, message = adapter:extend_player_roster({ "Bandit-1" })
+  equal(result, nil)
+  equal(message, "Bandit-1 collides with bandit roster")
+  result, message = adapter:extend_player_roster({ "TestCombat-Blue" })
+  check(result, message)
+  result, message = adapter:extend_player_roster({ "TestCombat-Blue" })
+  equal(result, nil)
+  equal(message, "TestCombat-Blue already tracked")
+  result, message = adapter:extend_player_roster({ "" })
+  equal(result, nil)
+  equal(message, "player group name 1 is invalid")
+  result, message = adapter:extend_player_roster({ 42 })
+  equal(result, nil)
+  equal(message, "player group name 1 is invalid")
+end)
+
 succeeds("missing UCID is explicit unknown and AI has no participant placeholder", function()
   local base = new_base()
   local controller, events = new_controller("identity")

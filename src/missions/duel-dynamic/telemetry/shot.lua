@@ -608,6 +608,33 @@ function M.new(config)
     return self:capture(event_data)
   end
 
+  function adapter:extend_player_roster(names)
+    if type(names) ~= "table" or #names == 0 then
+      return nil, "player group names are required"
+    end
+
+    local additions = {}
+    for index, name in ipairs(names) do
+      if type(name) ~= "string" or string.len(name) == 0 then
+        return nil, "player group name " .. tostring(index) .. " is invalid"
+      end
+      if self.player_roster.lookup[name] or additions[name] then
+        return nil, name .. " already tracked"
+      end
+      if self.bandit_roster.lookup[name] then
+        return nil, name .. " collides with bandit roster"
+      end
+      additions[name] = true
+    end
+
+    for _, name in ipairs(names) do
+      local index = #self.player_roster.names + 1
+      self.player_roster.names[index] = name
+      self.player_roster.lookup[name] = index
+    end
+    return true
+  end
+
   function adapter:start()
     if self.watcher then
       return self.watcher

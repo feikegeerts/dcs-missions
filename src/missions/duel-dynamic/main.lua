@@ -789,22 +789,69 @@ if _G.TEST_COMBAT_ENABLED then
   -- The bandit template copy carries exactly ONE AAM and no guns; the blue
   -- target copy carries no weapons at all. A successful engagement then
   -- yields exactly one ordnance.fired event, so the count is assertable.
-  -- Flip TEST_COMBAT_MISSILE between "AIM-120C" and "AIM-9X" per run.
+  -- Matrix knobs. Keep the defaults identical to the live-proven red cell.
   local TEST_COMBAT_MISSILE = "AIM-120C"
-  local TEST_COMBAT_MISSILE_PYLONS = {
-    ["AIM-120C"] = { index = 2, pylon = { CLSID = "LAU-115_2*LAU-127_AIM-120C" } },
-    ["AIM-9X"] = {
-      index = 1,
-      pylon = {
-        CLSID = "{5CE2FF2A-645A-4197-B48D-8720AC69394F}",
-        settings = { NFP_VIS_DrawArgNo_57 = 0.1, NFP_PRESID = "MDRN_M_A_AIM9" },
+  local TEST_COMBAT_BLUE_MISSILE = nil
+  local TEST_COMBAT_BANDIT_AIRFRAME = nil
+  local TEST_COMBAT_BLUE_AIRFRAME = nil
+  local TEST_COMBAT_GUN_TEST = false
+  local TEST_COMBAT_PYLONS = {
+    ["FA-18C_hornet"] = {
+      ["AIM-120C"] = { index = 2, pylon = { CLSID = "LAU-115_2*LAU-127_AIM-120C" } },
+      ["AIM-9L"] = { index = 1, pylon = { CLSID = "{AIM-9L}" } },
+      ["AIM-9M"] = { index = 1, pylon = { CLSID = "{6CEB49FC-DED8-4DED-B053-E1F033FF72D3}" } },
+      ["AIM-9P"] = { index = 1, pylon = { CLSID = "{9BFD8C90-F7AE-4e90-833B-BFD0CED0E536}" } },
+      ["AIM-9X"] = {
+        index = 1,
+        pylon = {
+          CLSID = "{5CE2FF2A-645A-4197-B48D-8720AC69394F}",
+          settings = { NFP_VIS_DrawArgNo_57 = 0.1, NFP_PRESID = "MDRN_M_A_AIM9" },
+        },
       },
     },
+    ["F-16C_50"] = {
+      ["AIM-120B"] = { index = 1, pylon = { CLSID = "{C8E06185-7CD6-4C90-959F-044679E90751}" } },
+      ["AIM-120C"] = { index = 1, pylon = { CLSID = "{40EF17B7-F508-45de-8566-6FFECC0C1AB8}" } },
+      ["AIM-9X"] = { index = 2, pylon = { CLSID = "{5CE2FF2A-645A-4197-B48D-8720AC69394F}" } },
+    },
+    ["F-15ESE"] = {
+      ["AIM-9M"] = { index = 13, pylon = { CLSID = "{6CEB49FC-DED8-4DED-B053-E1F033FF72D3}" } },
+      ["AIM-120B"] = { index = 15, pylon = { CLSID = "{40EF17B7-F508-45de-8566-6FFECC0C1AB8}" } },
+      ["AIM-7M"] = { index = 11, pylon = { CLSID = "{AIM-7H}" } },
+    },
+    ["F-5E-3"] = {
+      ["AIM-9B"] = { index = 7, pylon = { CLSID = "{AIM-9B}" } },
+      ["AIM-9P"] = { index = 7, pylon = { CLSID = "{9BFD8C90-F7AE-4e90-833B-BFD0CED0E536}" } },
+      ["AIM-9P5"] = { index = 7, pylon = { CLSID = "{AIM-9P5}" } },
+    },
+    ["A-10C_2"] = {
+      ["AIM-9M"] = { index = 11, pylon = { CLSID = "{DB434044-F5D0-4F1F-9BA9-B73027E18DD3}" } },
+    },
+    ["MiG-21Bis"] = {
+      ["R-3S"] = { index = 1, pylon = { CLSID = "{R-3S}" } },
+      ["R-60"] = { index = 1, pylon = { CLSID = "{R-60 2L}" } },
+    },
+    ["MiG-29 Fulcrum"] = {
+      ["R-60"] = { index = 1, pylon = { CLSID = "{MISSILE_R-60_APU-60}" } },
+      ["R-73"] = { index = 1, pylon = { CLSID = "{MISSILE_R-73_APU-73}" } },
+    },
+    ["Su-34"] = {
+      ["R-73"] = { index = 1, pylon = { CLSID = "{FBC29BFE-3D24-4C64-B81D-941239D12249}" } },
+      ["R-77"] = { index = 2, pylon = { CLSID = "{B4C01D60-A8A3-4237-BD72-CA7655BC0FE9}" } },
+    },
+  }
+  local TEST_COMBAT_LIVERIES = {
+    ["FA-18C_hornet"] = "Australia 75 Sqn RAAF",
+    ["F-16C_50"] = "default",
+    ["F-5E-3"] = "USA standard",
+    ["A-10C_2"] = "104th FS Maryland ANG, Baltimore (MD)",
+    ["MiG-29 Fulcrum"] = "Air Force Standard",
+    ["Su-34"] = "Russian Air Force",
   }
   -- Mission-file payload shape (see the dev .miz `mission` table): pylons by
   -- index plus fuel/countermeasures. gun = 0 removes the M61 entirely so the
   -- bandit cannot add gun shots to the ordnance count.
-  local function testCombatPayload(pylonIndex, pylonTable)
+  local function testCombatPayload(pylonIndex, pylonTable, gun)
     local pylons = pylonIndex and { [pylonIndex] = pylonTable } or {}
     return {
       pylons = pylons,
@@ -812,7 +859,7 @@ if _G.TEST_COMBAT_ENABLED then
       flare = 60,
       ammo_type = 1,
       chaff = 60,
-      gun = 0,
+      gun = gun or 0,
     }
   end
   -- SPAWN hands the spawner's SpawnTemplate table straight to
@@ -832,6 +879,24 @@ if _G.TEST_COMBAT_ENABLED then
     for _, unit in pairs(units) do
       if type(unit) == "table" then
         unit.payload = payload
+        applied = true
+      end
+    end
+    return applied
+  end
+
+  local function setTemplateType(spawner, airframe_type, livery_id)
+    local units = spawner and spawner.SpawnTemplate and spawner.SpawnTemplate.units
+    if type(units) ~= "table" then
+      return false
+    end
+    local applied = false
+    for _, unit in pairs(units) do
+      if type(unit) == "table" then
+        unit.type = airframe_type
+        if livery_id then
+          unit.livery_id = livery_id
+        end
         applied = true
       end
     end
@@ -916,22 +981,68 @@ if _G.TEST_COMBAT_ENABLED then
     -- DATABASE:Spawn. blueSpawner (SPAWN:NewFromTemplate) already has
     -- TweakedTemplate=true.
     waveSpawner.TweakedTemplate = true
-    local missile = TEST_COMBAT_MISSILE_PYLONS[TEST_COMBAT_MISSILE]
-    if not missile then
-      env.error("[duel-dynamic][test-combat] unknown TEST_COMBAT_MISSILE: " .. tostring(TEST_COMBAT_MISSILE))
+    local bandit_airframe = TEST_COMBAT_BANDIT_AIRFRAME or "FA-18C_hornet"
+    local blue_airframe = TEST_COMBAT_BLUE_AIRFRAME or "FA-18C_hornet"
+    local type_ok, type_result = pcall(function()
+      return setTemplateType(waveSpawner, bandit_airframe, TEST_COMBAT_LIVERIES[bandit_airframe])
+        and setTemplateType(blueSpawner, blue_airframe, TEST_COMBAT_LIVERIES[blue_airframe])
+    end)
+    if not type_ok or not type_result then
+      env.error("[duel-dynamic][test-combat] template type not settable on both spawners")
       return false
     end
-    if
-      not setTemplatePayload(waveSpawner, testCombatPayload(missile.index, missile.pylon))
-      or not setTemplatePayload(blueSpawner, testCombatPayload(nil, nil))
-    then
+
+    local bandit_missile
+    local blue_missile
+    if TEST_COMBAT_GUN_TEST then
+      -- Both aircraft use their guns; no AAM pylon is armed.
+    elseif TEST_COMBAT_BLUE_MISSILE ~= nil then
+      blue_missile = TEST_COMBAT_PYLONS[blue_airframe]
+        and TEST_COMBAT_PYLONS[blue_airframe][TEST_COMBAT_BLUE_MISSILE]
+      if not blue_missile then
+        env.error(
+          "[duel-dynamic][test-combat] missing pylon cell: airframe="
+            .. tostring(blue_airframe)
+            .. " weapon="
+            .. tostring(TEST_COMBAT_BLUE_MISSILE)
+        )
+        return false
+      end
+    else
+      bandit_missile = TEST_COMBAT_PYLONS[bandit_airframe]
+        and TEST_COMBAT_PYLONS[bandit_airframe][TEST_COMBAT_MISSILE]
+      if not bandit_missile then
+        env.error(
+          "[duel-dynamic][test-combat] missing pylon cell: airframe="
+            .. tostring(bandit_airframe)
+            .. " weapon="
+            .. tostring(TEST_COMBAT_MISSILE)
+        )
+        return false
+      end
+    end
+
+    local payload_ok, payload_result = pcall(function()
+      local bandit_payload = bandit_missile
+          and testCombatPayload(bandit_missile.index, bandit_missile.pylon, 0)
+        or testCombatPayload(nil, nil, TEST_COMBAT_GUN_TEST and 100 or 0)
+      local blue_payload = blue_missile
+          and testCombatPayload(blue_missile.index, blue_missile.pylon, 0)
+        or testCombatPayload(nil, nil, TEST_COMBAT_GUN_TEST and 100 or 0)
+      return setTemplatePayload(waveSpawner, bandit_payload) and setTemplatePayload(blueSpawner, blue_payload)
+    end)
+    if not payload_ok or not payload_result then
       env.error("[duel-dynamic][test-combat] template payload not settable on both spawners")
       return false
     end
     env.info(
       string.format(
-        "[duel-dynamic][test-combat] fixed loadout: bandit 1x%s gun=0, blue no weapons",
-        TEST_COMBAT_MISSILE
+        "[duel-dynamic][test-combat] matrix cell: bandit=%s %s blue=%s %s gun_test=%s",
+        bandit_airframe,
+        bandit_missile and TEST_COMBAT_MISSILE or "no AAM",
+        blue_airframe,
+        blue_missile and TEST_COMBAT_BLUE_MISSILE or "no AAM",
+        tostring(TEST_COMBAT_GUN_TEST)
       )
     )
     local banditGrp = waveSpawner:SpawnFromCoordinate(banditCoord)
@@ -955,7 +1066,38 @@ if _G.TEST_COMBAT_ENABLED then
       env.error("[duel-dynamic][test-combat] failed to spawn blue AI: " .. tostring(blueGrp))
       return false
     end
-    env.info("[duel-dynamic][test-combat] blue AI spawned: " .. blueGrp:GetName())
+    local name_ok, blue_group_name = pcall(function()
+      return blueGrp:GetName()
+    end)
+    if not name_ok or type(blue_group_name) ~= "string" or blue_group_name == "" then
+      env.error("[duel-dynamic][test-combat] failed to read blue AI group name: " .. tostring(blue_group_name))
+      return false
+    end
+    env.info("[duel-dynamic][test-combat] blue AI spawned: " .. blue_group_name)
+
+    local runtime = _G.duel_telemetry_runtime
+    if runtime and type(runtime.shot) == "table" and type(runtime.asset) == "table" then
+      local shot_ok, shot_result, shot_error = pcall(function()
+        return runtime.shot:extend_player_roster({ blue_group_name })
+      end)
+      if not shot_ok or shot_result ~= true then
+        env.error("[duel-dynamic][test-combat] failed to extend shot player roster: " .. tostring(shot_error or shot_result))
+      end
+
+      local asset_ok, asset_result, asset_error = pcall(function()
+        return runtime.asset:extend_player_roster({ blue_group_name })
+      end)
+      if not asset_ok or asset_result ~= true then
+        env.error("[duel-dynamic][test-combat] failed to extend asset player roster: " .. tostring(asset_error or asset_result))
+      else
+        local register_ok, register_result, register_error = pcall(function()
+          return runtime.asset:register_player_group(blueGrp)
+        end)
+        if not register_ok or register_result == nil then
+          env.error("[duel-dynamic][test-combat] failed to register blue AI asset: " .. tostring(register_error or register_result))
+        end
+      end
+    end
 
     -- 5. Task both sides: INTERCEPT + WEAPON_FREE + RED alarm.
     local function taskIntercept(grp, targetGrp, label)

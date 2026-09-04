@@ -355,6 +355,40 @@ succeeds("player re-entry into the same aircraft does not duplicate its incarnat
   equal(count_type(events, "asset.spawned"), 1)
 end)
 
+succeeds("an extended player group emits a tracked asset instance", function()
+  local controller, events = new_controller("extended-roster")
+  local adapter = new_asset_adapter(controller)
+  local extended, extend_error = adapter:extend_player_roster({ "TestCombat-Blue" })
+  check(extended, extend_error)
+  local unit = new_unit({
+    id = 350,
+    group_name = "TestCombat-Blue",
+    name = "TestCombat-Blue-1",
+    type_name = "F-16C_50",
+    coalition = 2,
+    category = 0,
+  })
+  local reference, register_error =
+    adapter:register_player_group(new_group({ name = "TestCombat-Blue", units = { unit } }), 12)
+  check(reference ~= nil, register_error)
+  equal(reference.asset_key, "testcombat-blue.u1.g1")
+  equal(reference.dcs_type, "F-16C_50")
+  equal(count_type(events, "asset.spawned"), 1)
+end)
+
+succeeds("asset roster extension rejects collisions and duplicate key tokens", function()
+  local controller = new_controller("extended-roster-errors")
+  local adapter = new_asset_adapter(controller)
+  local result, message = adapter:extend_player_roster({ "Bandit-1" })
+  equal(result, nil)
+  equal(message, "Bandit-1 collides with bandit roster")
+  result, message = adapter:extend_player_roster({ "test-blue" })
+  check(result, message)
+  result, message = adapter:extend_player_roster({ "test blue" })
+  equal(result, nil)
+  equal(message, "test blue does not produce a distinct asset key token")
+end)
+
 succeeds("a confirmed player aircraft replacement advances the generation", function()
   local controller, events = new_controller("player-replacement")
   local adapter = new_asset_adapter(controller)
