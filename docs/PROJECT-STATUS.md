@@ -1,10 +1,23 @@
 # Project status
 
-**Last updated:** 2026-09-03. Read this first when coming back.
+**Last updated:** 2026-09-04 (rejoin lifecycle fix committed locally; live
+validation pending). Read this first when coming back.
 
 This is a snapshot of where the project is, what's known to work, what's
 known to be broken, and what still needs to happen before the mission
 is shippable. If you change anything, update the relevant section.
+
+---
+
+## 0. Do this first (2026-09-04)
+
+1. **Push is pending:** `main` is one commit ahead of `origin/main`
+   (worktrees convention), and branch `fix-multiplayer-rejoin-lifecycle`
+   (commit `a3aa01f`, the multiplayer rejoin lifecycle fix) is committed
+   locally, unpushed, and awaiting review + live validation. Checklist:
+   `docs/telemetry/rejoin-fix-evidence.md` §6.
+2. **The DCS env is DE-SANITIZED again** (see §2) — restore stock before
+   shipping or untrusted servers.
 
 ---
 
@@ -24,17 +37,21 @@ Both `.miz` files contain the same generic loader trigger; only the
 
 ## 2. Environment status
 
-> **DCS environment is currently STOCK** (re-verified 2026-09-03 after the
-> Slice 8 delivery-drill dev window closed). The dedicated-server install
-> (`D:\DCS World Server`) has `MissionScripting.lua` restored from its `.orig`
-> backup with a matching SHA-1 hash (`FB54471ECE4DB968…`); the content check
-> confirms the `sanitizeModule('os'/'io'/'lfs')` lines are active. The temp
-> `zz-dev-telemetry-load.lua` hook is removed and `DCS_server` is stopped.
-> This is what you need to verify the shipping `.miz` works.
+> **DCS environment is currently DE-SANITIZED** (re-verified 2026-09-04
+> after the Slice 10 live drill). The dedicated-server install
+> (`D:\DCS World Server`) `MissionScripting.lua` has the
+> `sanitizeModule('os'/'io'/'lfs')` lines commented out (live SHA-1
+> `D0069384E34331079A2513D84AE474C9BF5A8843`); the stock backup is at
+> `MissionScripting.lua.orig` (SHA-1
+> `FB54471ECE4DB968AED4A55A1806B25EA5116452`), and a dev-window backup
+> exists as `MissionScripting.lua.telemetry-dev-backup`. `DCS_server` is
+> stopped. This is required for the dev loader (dynamic `src/` loading)
+> but **must be restored to stock before any shipping build or before
+> flying/joining untrusted missions** — copy the `.orig` over the live
+> file.
 >
-> To re-enter dev mode: patch the file again per `docs/dev-setup.md §2`.
-> Before flying any untrusted mission or joining an unknown server,
-> restore the stock file.
+> To re-enter dev mode after a restore: patch the file again per
+> `docs/dev-setup.md §2`.
 
 Server config: `Saved Games\DCS.dcs_serverrelease\Config\autoexec.cfg`
 has the no-render / no-track / silent-crash settings. Don't lose it.
@@ -181,19 +198,39 @@ Verified end-to-end on the dedicated server (logs from 2026-07-26 session):
   Lua, web, collector, and unattended no-player gates passed; the human-in-seat
 multiplayer drill remains the explicit follow-up. Evidence:
    `docs/telemetry/slice-9-participant-evidence.md`.
-- ✅ Telemetry Slice 10 (branch `slice-10-tracked-instances`, committed, not
-   pushed): tracked aircraft instance identity. The dev runtime emits
-   `asset.spawned` for roster wave and player groups, and resolves
-   `ordnance.fired` to the firing instance with a generation-based
-   `asset_key` (`{roster-token}.u{unit_index}.g{generation}`), degrading to
-   explicit unknown references when identity is unavailable. Unattended
+- ✅ Telemetry Slice 10 (branch `slice-10-tracked-instances`, committed
+   `efa5621` and pushed to `origin/main` on 2026-09-04): tracked aircraft
+   instance identity. The dev runtime emits `asset.spawned` for roster wave
+   and player groups, and resolves `ordnance.fired` to the firing instance
+   with a generation-based `asset_key`
+   (`{roster-token}.u{unit_index}.g{generation}`), degrading to explicit
+   unknown references when identity is unavailable. Unattended
    dedicated-server evidence: one `asset.spawned` and one attributed
-   `ordnance.fired` in a gapless 6-event run with zero participant events and
-   no scripting errors. The first attempt silently ran the main worktree's
-   Slice 9 code because the worktree's `bootstrap.lua` fallback root is the
-   main project path — the `[bootstrap] root:` line in `dcs.log` is the
-   authoritative check of which `src/` tree a worktree miz loaded. Evidence:
-   `docs/telemetry/slice-10-asset-evidence.md`.
+   `ordnance.fired` in a gapless 6-event run with zero participant events
+   and no scripting errors. The first attempt silently ran the main
+   worktree's Slice 9 code because the worktree's `bootstrap.lua` fallback
+   root is the main project path — the `[bootstrap] root:` line in
+   `dcs.log` is the authoritative check of which `src/` tree a worktree
+   miz loaded. Evidence: `docs/telemetry/slice-10-asset-evidence.md`.
+- 🧪 Multiplayer rejoin lifecycle fix (branch
+   `fix-multiplayer-rejoin-lifecycle`, commit `a3aa01f`, local only):
+   the 2026-09-03 two-player live drill produced **no
+   `participant.entered` at all** (initial or rejoin) because gameplay and
+   telemetry watchers subscribed to `EVENTS.PlayerEnterUnit`, which the
+   pinned MOOSE documents as not multiplayer-safe; MOOSE instead
+   synthesizes `EVENTS.PlayerEnterAircraft` one second after a human
+   enters an aircraft, with the real `Ini*` fields. The fix switches
+   gameplay + participant + asset lifecycle to `PlayerEnterAircraft`,
+   normalizes the MOOSE `Ini*` event fields (with protected raw-DCS
+   fallbacks), corrects the aircraft category constants
+   (airplane=0/helicopter=1 accepted, ground=2 rejected), stops
+   manufacturing participant identity from mock-only unit methods
+   (`IniPlayerUCID` only), and strongly retains the gameplay watchers
+   (MOOSE keeps subscribers in weak-key tables). A hard disconnect still
+   cannot emit `participant.left` (DCS drops leave events without an
+   initiator) — documented limitation. 74 pure-Lua tests + stylua pass;
+   live human-in-seat validation pending (checklist:
+   `docs/telemetry/rejoin-fix-evidence.md` §6).
 
 ## 5. What's known to be broken / limited
 
@@ -381,17 +418,35 @@ exercise enter, leave, rejoin, slot change, and mission restart to validate the
    `docs/telemetry/slice-9-participant-evidence.md`.
 
 Slice 10 (approved and completed 2026-09-03 on branch
-`slice-10-tracked-instances`, committed, not pushed) added tracked aircraft
-instances: `asset.spawned` capture for roster wave and player groups,
-generation-based `asset_key` identity that survives group-name reuse,
-`ordnance.fired` attribution through the asset registry, and intentional
-`asset.despawned` emission on wave cleanup. Automated Lua/web/collector gates
-and a 90-second unattended dedicated-server run passed with one
-`asset.spawned` and one attributed `ordnance.fired` in a gapless 6-event run,
-zero participant events, and no scripting errors. The human-in-seat
-validation (player asset identity, incarnation generation across rejoin and
-restart, and intentional despawn) is the combined follow-up with Slice 9.
-Evidence: `docs/telemetry/slice-10-asset-evidence.md`.
+ `slice-10-tracked-instances`, committed `efa5621` and pushed 2026-09-04)
+ added tracked aircraft
+ instances: `asset.spawned` capture for roster wave and player groups,
+ generation-based `asset_key` identity that survives group-name reuse,
+ `ordnance.fired` attribution through the asset registry, and intentional
+ `asset.despawned` emission on wave cleanup. Automated Lua/web/collector gates
+ and a 90-second unattended dedicated-server run passed with one
+ `asset.spawned` and one attributed `ordnance.fired` in a gapless 6-event run,
+ zero participant events, and no scripting errors. The human-in-seat
+ validation (player asset identity, incarnation generation across rejoin and
+ restart, and intentional despawn) is the combined follow-up with Slice 9.
+ Evidence: `docs/telemetry/slice-10-asset-evidence.md`.
+
+ The first two-player live drill (2026-09-03, run
+ `run-20260903T184502Z-0758ed75`, 105 events delivered, run `ended` in
+ production) validated the Slice 10 bandit side (waves g1–g5, full bandit
+ ordnance attribution) but exposed the multiplayer participant/asset
+ lifecycle gap: no `participant.entered` for either player (initial or
+ rejoin) and no new asset incarnation on a hard-disconnect/rejoin, leaving
+ the rejoining player's later shots unresolved. The root cause and fix are
+ documented in `docs/telemetry/rejoin-fix-evidence.md` (branch
+ `fix-multiplayer-rejoin-lifecycle`, commit `a3aa01f`, local only):
+ `PlayerEnterUnit` is not multiplayer-safe in the pinned MOOSE; the
+ multiplayer-safe `PlayerEnterAircraft` (synthesized with real `Ini*`
+ fields) is what the fix subscribes to, with `Ini*`-first normalization,
+ corrected aircraft categories, `IniPlayerUCID`-only participant identity,
+ and strong retention of the gameplay watchers. 74 pure-Lua tests + stylua
+ pass; the live human-in-seat rejoin drill is the outstanding gate (same doc,
+ §6). Raw drill evidence is archived locally (PII, not in the repo).
 
 Telemetry now has priority over the optional MIST respawn work.
 
@@ -401,10 +456,11 @@ Telemetry now has priority over the optional MIST respawn work.
 
 1. Pull / read the project, read this file and
    `docs/spec-duel-dynamic.md`.
-2. Verify the env: `MissionScripting.lua` is **stock** in both
-   installs (verified 2026-08-31; both have
-   `MissionScripting.lua.orig` backups for verification). If you
-   want to re-enter dev mode, patch it per `docs/dev-setup.md §2`.
+2. Verify the env: see §2 — `MissionScripting.lua` on the dedicated-server
+   install is currently **de-sanitized** (dev mode); restore it from its
+   `MissionScripting.lua.orig` backup (stock) before any shipping build or
+   untrusted mission/server. To re-enter dev mode, patch per
+   `docs/dev-setup.md §2`.
 3. Start the dedicated server, WebGUI → Restart `duel-dynamic`.
 4. Sanity check: the log shows the init sequence from
    `spec-duel-dynamic.md §7`. The bandit spawns. F10 menu works.
