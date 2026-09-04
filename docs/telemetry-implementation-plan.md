@@ -1109,14 +1109,29 @@ plan, not a code migration.
      mission-agnostic directory; each mission opts in with one load plus one
      config table (mission name/version, roster, coalitions, asset
      semantics).
-   - (b) **DCS MOD:** what can a MOD actually provide — `Scripts/` host
-     environment on a dedicated server, hooks, `net.dostring_in("mission",
-     ...)` injection (version-sensitive; known ED return-value pass-through
-     bugs, see the hook-bridge history in AGENTS.md)? Can a MOD load code
-     into an arbitrary mission's *mission environment* without editing the
-     mission file? Build a trivial probe MOD on the local dedicated server
-     and record what environment it runs in and what it can see/call
-     (read-only feasibility probe, the Slice 3 spike pattern).
+   - (b) **DCS MOD (ground truth: Tacview, SRS):** MODs ship `Scripts/`
+      that run per-mission with full sim access — Tacview records every
+      unit, shot, and player in *any* mission with zero mission edits, and
+      SRS hooks radio/sound globally — so “can a MOD run code in the mission
+      env” is settled (yes). What is *not* yet settled for *our* telemetry,
+      and what the probe must record: (i) which exact environment MOD
+      `Scripts/` execute in (host vs. mission env; client vs. dedicated
+      server) and what `io`/`lfs`/file access it exposes — the load-bearing
+      question, since `ndjson_sink` must get bytes off the machine the same
+      way Tacview writes `.acmi`; (ii) whether our event set (`EVENTS.Shot`,
+      `PlayerEnterAircraft`, player join/leave) is visible from there without
+      the mission loading MOOSE — i.e. does the MOD bring its own
+      `Moose_.lua`, or drop to raw `SIMULATED_EVENT` /
+      `world.addEventHandler` like Tacview does; (iii) whether
+      `net.dostring_in("mission", ...)`, hooks, or `a_do_script` (version-
+      sensitive; known ED return-value pass-through bugs — see AGENTS.md)
+      add anything a plain MOD `Scripts/` load does not. For a mission we do
+      not author the policy becomes *record-all + filter in the web* (pairs
+      with the Slice 15 mission/asset filters) — there is no per-mission
+      roster config to thread. Build a trivial probe MOD on the local
+      dedicated server that loads the telemetry core and records its
+      environment, file access, and visible event set (read-only feasibility
+      probe, the Slice 3 spike pattern).
    - (c) **Loader `.miz` pattern:** generalize the dev "dumb loader" —
      telemetry ships as a wrapper mission; assess whether an arbitrary
      third-party `.miz` can be wrapped at all (verify; likely not).
