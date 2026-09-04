@@ -62,7 +62,7 @@ Raw evidence (PII — local archive only, not in the repo):
    (`Moose_.lua:8427`), so a hard disconnect can never emit
    `participant.left`. This is not fixable in mission code.
 
-## 3. Fix (commit `a3aa01f`)
+## 3. Fix (commit `f4d35f3`)
 
 - `src/missions/duel-dynamic/main.lua` — gameplay player watcher now
   subscribes to `EVENTS.PlayerEnterAircraft` (`PlayerLeaveUnit` retained

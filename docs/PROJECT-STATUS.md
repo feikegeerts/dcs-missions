@@ -1,7 +1,7 @@
 # Project status
 
-**Last updated:** 2026-09-04 (rejoin lifecycle fix committed locally; live
-validation pending). Read this first when coming back.
+**Last updated:** 2026-09-04 (rejoin lifecycle fix pushed to `main`, live
+validation still pending — open point). Read this first when coming back.
 
 This is a snapshot of where the project is, what's known to work, what's
 known to be broken, and what still needs to happen before the mission
@@ -214,8 +214,8 @@ multiplayer drill remains the explicit follow-up. Evidence:
    root is the main project path — the `[bootstrap] root:` line in
    `dcs.log` is the authoritative check of which `src/` tree a worktree
    miz loaded. Evidence: `docs/telemetry/slice-10-asset-evidence.md`.
-- 🧪 Multiplayer rejoin lifecycle fix (branch
-   `fix-multiplayer-rejoin-lifecycle`, commit `a3aa01f`, local only):
+- 🧪 Multiplayer rejoin lifecycle fix (**open point**: merged to `main` as
+   commit `f4d35f3`, pushed, live validation pending):
    the 2026-09-03 two-player live drill produced **no
    `participant.entered` at all** (initial or rejoin) because gameplay and
    telemetry watchers subscribed to `EVENTS.PlayerEnterUnit`, which the
@@ -440,8 +440,8 @@ Slice 10 (approved and completed 2026-09-03 on branch
  lifecycle gap: no `participant.entered` for either player (initial or
  rejoin) and no new asset incarnation on a hard-disconnect/rejoin, leaving
  the rejoining player's later shots unresolved. The root cause and fix are
- documented in `docs/telemetry/rejoin-fix-evidence.md` (branch
- `fix-multiplayer-rejoin-lifecycle`, commit `a3aa01f`, local only):
+documented in `docs/telemetry/rejoin-fix-evidence.md` (merged to `main` as
+  commit `f4d35f3`, pushed; live validation still pending):
  `PlayerEnterUnit` is not multiplayer-safe in the pinned MOOSE; the
  multiplayer-safe `PlayerEnterAircraft` (synthesized with real `Ini*`
  fields) is what the fix subscribes to, with `Ini*`-first normalization,
@@ -449,6 +449,21 @@ Slice 10 (approved and completed 2026-09-03 on branch
  and strong retention of the gameplay watchers. 74 pure-Lua tests + stylua
  pass; the live human-in-seat rejoin drill is the outstanding gate (same doc,
  §6). Raw drill evidence is archived locally (PII, not in the repo).
+
+ Slice 11 was re-scoped (2026-09-04, user decision) from "valuation
+ catalogue for the configured loadouts" to **loadout and ordnance type
+ coverage**: telemetry must be robust to any type DCS can emit — player
+ rearm at airbases, swapped planes, future bandit airframe/loadout
+ changes — so a broad in-game matrix (all blue and red AAM variants, A/G
+ samples, guns policy, swap-in bandit airframes) is established first via
+ the deterministic unattended knobs, keyed on the exact `dcs_type` strings
+ DCS emits; the versioned catalogue (name/category/value/source) absorbs
+ the old Slice 11 scope and gates Slice 12. New **Slice 19** (last in the
+ plan): a Sol study on decoupling telemetry from the mission — shared
+ mission-side library vs DCS MOD vs server-side collection — with a probe
+ MOD feasibility spike. Mission identity (`mission_name`/`missionVersion`)
+ is already in the contract and the run store; the dashboard mission
+ filter is a Slice 15 view.
 
 Telemetry now has priority over the optional MIST respawn work.
 

@@ -1,6 +1,10 @@
 # DCS Telemetry Implementation Plan
 
-**Status:** Implementation in progress. Slices 1–6 are complete; every later
+**Status:** Implementation in progress. Slices 1–10 are complete. The
+2026-09-03 multiplayer rejoin lifecycle fix (commit `f4d35f3`, pushed to
+`main`) is implemented and unit-tested but is **not yet live-validated** —
+the human-in-seat rejoin drill is parked, so it remains an open point, not a
+completed slice (see `docs/telemetry/rejoin-fix-evidence.md` §6). Every later
 slice still requires its own Gate E approval.
 
 This plan turns the duel-dynamic mission into a telemetry producer and adds a
@@ -820,26 +824,86 @@ a confirmed player-aircraft replacement, and scripted despawn versus loss.
 aircraft incarnation. Ground, ship, static, and unrelated aircraft discovery is
 not required.
 
-### Slice 11: Valuation catalogue and research data
+### Slice 11: Loadout and ordnance type coverage
 
-**Recommended model:** GPT-5.6 Luna Xhigh, with human review of selected values.
+**Recommended model:** GPT-5.6 Sol High for the policy and catalogue decisions;
+GPT-5.6 Luna Xhigh for the matrix runs and catalogue data entry.
 
-**Why:** Inventory and source collection are structured, mechanical work once
-the tracked loadouts and catalogue shape are fixed.
+**Why:** Version one captures `dcs_type` strings from DCS pass-through, but only
+two weapon types (AIM-120C, AIM-9X) and two aircraft types
+(FA-18C_hornet, F-16C_50 — the second observed incidentally in the 2026-09-03
+live drill) have been observed at all. The mission's loadouts are not fixed:
+the production aircraft pair is undecided, the bandit airframe may be swapped,
+and a human player can rearm with different missiles at an airbase or swap to a
+different plane. The valuation catalogue must be keyed on the exact strings
+DCS emits, so the string set must be established before any pricing.
 
-**Purpose:** Introduce versioned estimated USD values without coupling them to
-capture.
+**Purpose:** Establish the authoritative set of `dcs_type` strings DCS can emit
+for tracked aircraft and fired ordnance, verify capture handles each one
+correctly, and produce the versioned type catalogue that expenditure,
+drilldown, and the dashboard depend on. This slice absorbs the previous
+"Valuation catalogue and research data" slice (same slot number, so later
+slice numbers are unchanged).
 
-**Scope:** Inventory the configured aircraft and every discrete ordnance type in
-their configured mission loadouts, research one value per supported type,
-create catalogue tables or seed data, retain source notes, and leave unknown
-types unpriced.
+**Scope:**
 
-**Tests:** A known item resolves to one value, an unknown item remains unpriced,
-and a new catalogue does not alter an existing run's catalogue.
+1. **Type inventory (researched from the DCS wiki; in-game presence confirmed
+   by the sweep):**
+   - Blue A/A: AIM-9L, AIM-9M, AIM-9P, AIM-9X, AIM-120B, AIM-120C (F-16C wiki
+     page "Implemented" list). AIM-7M appears in the wiki threat guide; likely
+     not implemented in DCS — confirm.
+   - Red A/A: R-60, R-73, R-77, R-27ER, R-27ET, R-24R, R-24T. R-27R/T and R-33
+     appear in the wiki threat guide; in-game presence to confirm.
+   - Blue A/G sample: AGM-65 (D/G/H/K), AGM-88C HARM, AGM-154 JSOW, GBU-10/12,
+     GBU-31/38 JDAM, CBU-87/97, Mk-82/84 (plain/LGB/JDAM), HYDRA-70
+     (M261, FFAR, M151, M152).
+   - Red A/G sample: KAB and FAB families, S-5/S-8 rockets (in-game variants
+     to confirm).
+   - Guns: M61A1 20 mm, GSh-30-1, GAU-8 30 mm, 23 mm, 25 mm. The fixed
+     decision that machine-gun round counting is not version one means the
+     sweep must first answer whether DCS/MOOSE emits `S_EVENT_SHOT` for guns at
+     all (hypothesis: no — the live drill recorded 33 missile shots and zero
+     gun shots across ~30 minutes of sim time with guns loaded). If guns do
+     emit events, the gate decides capture as unpriced `other-discrete` or
+     filter at the adapter.
+   - Aircraft: the blue slot airframes a player can occupy (FA-18C, F-16C, and
+     other blue fighters they might swap to: F-14A, F-15C, F-5E, FC F-86F —
+     confirm), and the bandit airframes the spawner could use (Su-33 current;
+     Su-25, MiG-29, MiG-21 candidates — confirm). Roster filtering is
+     unchanged: the catalogue covers types that can be tracked, not world
+     discovery.
+2. **Extend the deterministic unattended loop:** widen `TEST_COMBAT_MISSILE`
+   to the full AAM list (one pinned AAM per run; blue clone for blue AAMs, red
+   bandit for red AAMs) and add a bandit-airframe knob that pins the bandit
+   template to one airframe per run.
+3. **For each matrix cell**, record the exact `dcs_type` DCS emits and verify:
+   one `ordnance.fired` per launch with the correct `dcs_type`;
+   `weapon.category` maps correctly (missile/bomb/rocket/other-discrete/
+   unknown); the aircraft `dcs_type` is correct in `asset.spawned` and on the
+   ordnance initiator.
+4. **Produce the type catalogue** keyed on the verified `dcs_type` strings:
+   display name (human-readable, distinct from the raw DCS string), faction,
+   category, one estimated USD value with source notes, and a catalogue
+   version. Unknown types remain explicitly unpriced. No contract change:
+   `dcs_type` stays a pass-through string; the catalogue resolves names and
+   prices on the web side.
 
-**Exit criteria:** Catalogue versions can change without changing historical
-cost entries.
+**Tests:** pure-Lua category mapping tests (including unknown-to-unknown, and
+gun-to-other-discrete if that policy is chosen); deterministic runs assert one
+`ordnance.fired` with the expected `dcs_type` per pinned missile and one
+`asset.spawned` with the expected `dcs_type` per bandit airframe; a known item
+resolves to exactly one value, an unknown item remains unpriced, and a new
+catalogue version does not alter existing runs' catalogue references.
+
+**DCS validation:** Fully unattended — matrix runs via the deterministic knobs
+on the dedicated server, no human seat needed. A human reviews the researched
+values and the final catalogue.
+
+**Exit criteria:** The catalogue covers the full in-game type set for the
+configured loadouts plus the swap/rearm matrix, keyed on DCS-emitted strings;
+the unattended matrix runs pass with zero unknown `dcs_type` for catalogued
+types; the catalogue is versioned per run and catalogue changes never rewrite
+historical cost entries.
 
 ### Slice 12: Ordnance expenditure and participant drilldown
 
@@ -996,6 +1060,95 @@ private runs, participant views, and protected catalogue editing.
 
 **Constraint:** Do not allow this deferred slice to complicate version-one
 ingestion or dashboard work.
+
+### Slice 19: Mission-agnostic telemetry architecture (Sol study)
+
+**Recommended model:** GPT-5.6 Sol High.
+
+**Why:** Version one telemetry is embedded in one mission. The `duel-dynamic`
+wiring (`src/missions/duel-dynamic/main.lua`, `telemetry/development.lua`)
+hardcodes the mission identity (`mission_name = "duel-dynamic"`,
+`source_version = "duel-dynamic-telemetry-v1"`), brands globals and log lines
+(`_G.duel_telemetry_runtime`, `__duel_dynamic_telemetry_run_counter`,
+`[duel-dynamic][telemetry]`), and mixes dev-only test knobs into the mission
+script. The stated future is different multiplayer missions with changing
+loadouts (player rearm at airbases, swapped aircraft — see the Slice 11
+coverage matrix), and telemetry should be usable on them without rewriting
+mission code. Whether telemetry belongs in the mission script at all (as
+opposed to a DCS MOD or server-side collection) is an architectural question
+that moves the DCS/server boundary — Sol's domain.
+
+**Purpose:** Decide how telemetry is loaded and configured so it can be reused
+across multiplayer missions, and confirm that mission identity (name and
+version) flows end-to-end so the dashboard can filter by mission.
+
+**This is a study slice.** It ends with a decision doc and an implementation
+plan, not a code migration.
+
+**Scope:**
+
+1. **Coupling audit (verified as of this writing):**
+   - Mission-agnostic already: the contract, `envelope.lua`,
+     `lifecycle.lua`, `json.lua`, `ndjson_sink.lua`, `event_id.lua`, the
+     `participant`/`asset`/`shot` adapters (they receive rosters and
+     coalitions as config), the collector, and the web.
+   - Mission-coupled today: `main.lua`'s wiring block (hardcoded
+     `mission_name`/`source_version`, `_G.duel_telemetry_runtime`,
+     `TELEMETRY_DEVELOPMENT_ENABLED` gating, the development sink path),
+     `development.lua` (branded log prefix, run-counter key), the
+     `MY_SCRIPTS_ROOT` bootstrap global, and the mission-specific adapter
+     config (roster names, coalitions, the bandit `#NNN` suffix rule).
+   - Mission identity: the contract already requires `mission_name` in
+     `mission.started`, and the run store already carries
+     `missionName`/`missionVersion`/`mapName` (visible in the public runs
+     API). The only producer gap today is the hardcoded string instead of a
+     configured value.
+2. **Candidate loading architectures, evaluated with verified facts rather
+   than assumptions:**
+   - (a) **Shared mission-side library:** move the telemetry modules to a
+     mission-agnostic directory; each mission opts in with one load plus one
+     config table (mission name/version, roster, coalitions, asset
+     semantics).
+   - (b) **DCS MOD:** what can a MOD actually provide — `Scripts/` host
+     environment on a dedicated server, hooks, `net.dostring_in("mission",
+     ...)` injection (version-sensitive; known ED return-value pass-through
+     bugs, see the hook-bridge history in AGENTS.md)? Can a MOD load code
+     into an arbitrary mission's *mission environment* without editing the
+     mission file? Build a trivial probe MOD on the local dedicated server
+     and record what environment it runs in and what it can see/call
+     (read-only feasibility probe, the Slice 3 spike pattern).
+   - (c) **Loader `.miz` pattern:** generalize the dev "dumb loader" —
+     telemetry ships as a wrapper mission; assess whether an arbitrary
+     third-party `.miz` can be wrapped at all (verify; likely not).
+   - (d) **Mission-file trigger injection:** a packer adds a telemetry
+     `DO SCRIPT` trigger plus embedded payload to the mission `.miz` at
+     packaging time (extend the `pack-shipping-miz.ps1` pattern to arbitrary
+     missions); the mission author writes no code.
+   - (e) **Out-of-process collection** (DCS-gRPC / DCSServerBot): no mission
+     code at all; assess event-coverage limits (shot/weapon identity, MOOSE
+     event visibility) against what the contract requires.
+3. **Decision record (ADR-style):** which option; what moves into the
+   mission-agnostic library and what stays per-mission; how
+   `mission_name`/`mission_version` are supplied (config, never hardcoded);
+   the `source_version` naming scheme; the relationship to the Slice 17
+   shipping bridge (the telemetry payload must work inside a stock shipping
+   `.miz`); the `duel-dynamic` upgrade path.
+4. **Implementation plan** for the chosen option, split into slices at the
+   size and with the model routing used elsewhere in this plan.
+5. **No contract change in this slice.** `mission_name` already exists in
+   the contract and the run store, and the dashboard mission filter belongs
+   to the Slice 15 views. If the study concludes a contract change is
+   needed, stop and route it back as a new slice.
+
+**Tests:** None in this slice beyond recording the probe MOD's observed
+behavior (environment, visibility, call surface).
+
+**DCS validation:** The probe MOD experiment on the local dedicated server
+(read-only: no mission files edited, no shipped artifacts changed).
+
+**Exit criteria:** A decision doc exists in which every option is supported
+by verified facts, mission identity flows from config end-to-end in the
+chosen design, and the implementation plan is approved.
 
 ### Post-version-one expansion
 
