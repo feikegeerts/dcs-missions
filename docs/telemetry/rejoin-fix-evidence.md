@@ -1,8 +1,8 @@
 # Rejoin lifecycle fix — evidence
 
-**Date:** 2026-09-04. **Branch:** `fix-multiplayer-rejoin-lifecycle` (commit
-`a3aa01f`), based on `efa5621` (Slice 10). **Status:** committed locally,
-**not pushed**, live validation pending (checklist at the bottom).
+**Date:** 2026-09-04. **Commits:** `f4d35f3` (fix) + `d1ec6d3` (docs) on
+`main`, pushed to `origin` 2026-09-04. **Status:** code merged and pushed;
+**live validation parked** (no human-in-seat drill time this week).
 
 ## 1. Failure (live drill, 2026-09-03)
 
@@ -119,30 +119,32 @@ telemetry event contract is untouched.
 
 ## 6. Manual validation (human-in-seat, needed before this counts as done)
 
-1. Push `fix-multiplayer-rejoin-lifecycle` to `origin` (or merge to `main`
-   first) after reviewing commit `a3aa01f` and this doc.
-2. Start the dedicated server and load the dev `duel-dynamic` mission
-   (dev loader → `C:\Projects\dcs-missions\src\bootstrap.lua`; after the
-   merge, the main worktree already contains the fix).
-3. Two players join Aerial-1/Aerial-2. Expect, per player:
+> **Parked 2026-09-04:** pushed to `origin/main`; the drill is deferred
+> until a two-player window opens. The checklist is unchanged and remains
+> the gate before distribution (the shipped gameplay code is the same path).
+
+1. Start the dedicated server and load the dev `duel-dynamic` mission
+   (dev loader → `C:\Projects\dcs-missions\src\bootstrap.lua`; the main
+   worktree already contains the fix).
+2. Two players join Aerial-1/Aerial-2. Expect, per player:
    `participant.entered` (with real UCID) **and** `asset.spawned`
    `aerial-N.u1.g1` within a couple of seconds of joining.
-4. One player hard-disconnects (close the client) and rejoins the same
+3. One player hard-disconnects (close the client) and rejoins the same
    slot. Expect: a fresh `participant.entered`, a new `asset.spawned` with
    generation `g2` for that slot, and subsequent `ordnance.fired` from
    that player resolving to the `g2` `asset_key` (no unknown references).
-5. Optional: a graceful client exit should still emit
+4. Optional: a graceful client exit should still emit
    `participant.left`; a hard disconnect should not (known limitation).
-6. Collect + deliver the drill run; confirm it reaches `ended` on the
+5. Collect + deliver the drill run; confirm it reaches `ended` on the
    production site (`https://dcs-missions.vercel.app/`).
-7. Open the 2026-09-03 host Tacview recording from the local archive
+6. Open the 2026-09-03 host Tacview recording from the local archive
    (`Tacview-20260903-204549-DCS-Host-duel-dynamic.zip.acmi`) and visually
    sanity-check the engagement (bandit waves, player rejoin path).
-8. Environment safety: `D:\DCS World Server\Scripts\MissionScripting.lua`
+7. Environment safety: `D:\DCS World Server\Scripts\MissionScripting.lua`
    is currently **de-sanitized** for dev. Restore it from its `.orig`
    backup (SHA-1 `FB54471ECE4DB968AED4A55A1806B25EA5116452`) before any
    shipping build or joining untrusted servers.
-9. Once validated, rebuild the shipping `.miz`
+8. Once validated, rebuild the shipping `.miz`
    (`build/pack-shipping-miz.ps1`) — the current shipping build predates
    the telemetry work and this lifecycle fix — and run the stock-runtime
    check per `docs/shipping-duel-dynamic.md`.

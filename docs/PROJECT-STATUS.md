@@ -11,11 +11,13 @@ is shippable. If you change anything, update the relevant section.
 
 ## 0. Do this first (2026-09-04)
 
-1. **Push is pending:** `main` is one commit ahead of `origin/main`
-   (worktrees convention), and branch `fix-multiplayer-rejoin-lifecycle`
-   (commit `a3aa01f`, the multiplayer rejoin lifecycle fix) is committed
-   locally, unpushed, and awaiting review + live validation. Checklist:
-   `docs/telemetry/rejoin-fix-evidence.md` §6.
+1. **Pushed:** `main` == `origin/main` @ `d1ec6d3` (includes the
+   multiplayer rejoin lifecycle fix `f4d35f3` and the worktrees
+   convention). The live human-in-seat rejoin drill is **parked**
+   (no time this week) — its checklist is unchanged at
+   `docs/telemetry/rejoin-fix-evidence.md` §6. Run it before
+   distributing the mission; it validates the same gameplay code path
+   the shipping build embeds.
 2. **The DCS env is DE-SANITIZED again** (see §2) — restore stock before
    shipping or untrusted servers.
 
