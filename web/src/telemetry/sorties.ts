@@ -88,3 +88,69 @@ export function deriveSorties(events: ParticipantEventInput[]): Sortie[] {
     (left, right) => left.entered_sequence - right.entered_sequence,
   );
 }
+
+/**
+ * Minimal stored-row shape for sortie mapping. Structural (not the store's
+ * EventRow) so this helper stays import-cycle free and unit testable.
+ */
+export type StoredEventRowInput = {
+  eventSequence: number;
+  eventType: string;
+  simTime: number;
+  eventJson: unknown;
+};
+
+function nullableString(record: Record<string, unknown>, field: string) {
+  const candidate = record[field];
+  return typeof candidate === "string" ? candidate : null;
+}
+
+/**
+ * Map one stored event row to a sortie input. Returns null for anything that
+ * is not a participant enter/leave observation; `deriveSorties` itself skips
+ * entries with no slot name.
+ */
+export function eventRowToSortieInput(
+  row: StoredEventRowInput,
+): ParticipantEventInput | null {
+  if (
+    row.eventType !== "participant.entered" &&
+    row.eventType !== "participant.left"
+  ) {
+    return null;
+  }
+  const json =
+    typeof row.eventJson === "object" && row.eventJson !== null
+      ? (row.eventJson as Record<string, unknown>)
+      : null;
+  const participantJson =
+    json !== null &&
+    typeof json.participant === "object" &&
+    json.participant !== null
+      ? (json.participant as Record<string, unknown>)
+      : null;
+  const assetJson =
+    json !== null && typeof json.asset === "object" && json.asset !== null
+      ? (json.asset as Record<string, unknown>)
+      : null;
+  return {
+    event_sequence: row.eventSequence,
+    event_type: row.eventType,
+    sim_time: row.simTime,
+    participant:
+      participantJson === null
+        ? null
+        : {
+            participant_id: nullableString(participantJson, "participant_id"),
+            display_name: nullableString(participantJson, "display_name"),
+            callsign: nullableString(participantJson, "callsign"),
+          },
+    asset:
+      assetJson === null
+        ? null
+        : {
+            dcs_name: nullableString(assetJson, "dcs_name"),
+            dcs_type: nullableString(assetJson, "dcs_type"),
+          },
+  };
+}

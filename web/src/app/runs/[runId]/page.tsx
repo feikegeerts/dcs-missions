@@ -5,6 +5,7 @@ import {
   aggregateExpenditures,
   type ParticipantLabel,
 } from "@/telemetry/expenditures";
+import { deriveSorties, eventRowToSortieInput } from "@/telemetry/sorties";
 import { NeonTelemetryStore } from "@/telemetry/store";
 
 export const dynamic = "force-dynamic";
@@ -112,6 +113,22 @@ export default async function RunPage({
       page <= 1
         ? `/runs/${encodeURIComponent(run.runKey)}`
         : `/runs/${encodeURIComponent(run.runKey)}?eventsPage=${page}`;
+    // Crew sorties derive from every participant enter/leave observation in
+    // the run, not just the timeline page above: a sortie opened on another
+    // page must still resolve. Bounded at 1000 events; revisit with a
+    // server-side event-type query if runs ever grow past that.
+    const sortieInputs = (
+      await store.listEvents(run.producerId, run.runKey, 1000, 0)
+    ).flatMap((event) => {
+      const input = eventRowToSortieInput({
+        eventSequence: event.eventSequence,
+        eventType: event.eventType,
+        simTime: event.simTime,
+        eventJson: event.eventJson,
+      });
+      return input === null ? [] : [input];
+    });
+    const sorties = deriveSorties(sortieInputs);
     return (
       <main>
         <p className="hud-back">
@@ -249,6 +266,52 @@ export default async function RunPage({
               )}
             </>
           )}
+          <section className="hud-panel col-12">
+            <h2>Crew sorties</h2>
+            {sorties.length === 0 ? (
+              <p className="hud-subtitle">
+                No participant enter/leave events in this run yet — sorties
+                appear once crew occupy slots.
+              </p>
+            ) : (
+              <table className="hud-table expandable">
+                <thead>
+                  <tr>
+                    <th>Slot</th>
+                    <th>Participant</th>
+                    <th>Entered</th>
+                    <th>Left</th>
+                    <th>Sim window</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sorties.map((sortie) => (
+                    <tr
+                      key={`${sortie.slot_dcs_name}|${sortie.entered_sequence}`}
+                    >
+                      <td className="hud-mono">{sortie.slot_dcs_name}</td>
+                      <td className="hud-mono">
+                        {sortie.participant_id ?? "unknown"}
+                      </td>
+                      <td className="hud-mono">#{sortie.entered_sequence}</td>
+                      <td className="hud-mono">
+                        {sortie.left_sequence === null
+                          ? "—"
+                          : `#${sortie.left_sequence}`}
+                      </td>
+                      <td className="hud-mono">
+                        {sortie.sim_ended === null
+                          ? `${sortie.sim_started} → …`
+                          : `${sortie.sim_started} → ${sortie.sim_ended}`}
+                      </td>
+                      <td className="hud-mono">{sortie.status}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </section>
           <section className="hud-panel col-12">
             <h2>Event timeline</h2>
             <div className="hud-pager" style={{ marginBottom: "0.6rem" }}>

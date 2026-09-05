@@ -8,6 +8,12 @@ import {
   displayRunStatus,
   type DisplayRunStatus,
 } from "@/telemetry/run-status";
+import {
+  matchesClassification,
+  parseClassificationFilter,
+  parsePageNumber,
+  type ClassificationFilter,
+} from "@/telemetry/run-filters";
 import { NeonTelemetryStore } from "@/telemetry/store";
 
 export const dynamic = "force-dynamic";
@@ -23,10 +29,23 @@ const ALL_STATUSES = ["all", "active", "stale", "ended"] as const;
 
 type StatusFilter = (typeof ALL_STATUSES)[number];
 
+const ALL_CLASSIFICATIONS: readonly ClassificationFilter[] = [
+  "all",
+  "test",
+  "historical",
+];
+
+const RUNS_PER_PAGE = 20;
+
 export default async function HomePage({
   searchParams,
 }: {
-  searchParams: Promise<{ status?: string; mission?: string }>;
+  searchParams: Promise<{
+    status?: string;
+    mission?: string;
+    classification?: string;
+    runsPage?: string;
+  }>;
 }) {
   try {
     const params = await searchParams;
@@ -37,13 +56,26 @@ export default async function HomePage({
         ? params.status
         : "all";
     const missionFilter = (params.mission ?? "").trim().toLowerCase();
+    const classificationFilter = parseClassificationFilter(
+      params.classification,
+    );
+    const runsPage = parsePageNumber(params.runsPage);
+    const runsOffset = (runsPage - 1) * RUNS_PER_PAGE;
 
     const store = new NeonTelemetryStore();
     const now = new Date();
     // Liveness is display-only: storage keeps `active` until an explicit
     // `mission.ended`, and authoritative stale/aborted classification is
     // parked Slice 16 work. Runs with no recent heartbeat render `stale`.
-    const runs = (await store.listRuns(100))
+    // Fleet + scope counts cover every matching run (capped at 100, the
+    // pre-existing list limit); only the runs table itself is paged.
+    const matching = (
+      await store.listRuns(
+        100,
+        0,
+        classificationFilter === "all" ? null : classificationFilter,
+      )
+    )
       .map((run) => ({
         run,
         display:
@@ -55,8 +87,18 @@ export default async function HomePage({
         ({ run, display }) =>
           (statusFilter === "all" || display === statusFilter) &&
           (missionFilter === "" ||
-            (run.missionName ?? "").toLowerCase().includes(missionFilter)),
+            (run.missionName ?? "").toLowerCase().includes(missionFilter)) &&
+          matchesClassification(run.runClassification, classificationFilter),
       );
+    const runs = matching;
+    const pageWindow = matching.slice(
+      runsOffset,
+      runsOffset + RUNS_PER_PAGE + 1,
+    );
+    const hasNextRunsPage = pageWindow.length > RUNS_PER_PAGE;
+    const pageRuns = hasNextRunsPage
+      ? pageWindow.slice(0, RUNS_PER_PAGE)
+      : pageWindow;
 
     // Fleet totals aggregate per-run expenditure rows already projected at
     // ingest; no new queries beyond the existing per-run reads. At current
@@ -116,17 +158,35 @@ export default async function HomePage({
             ),
           );
 
-    const filterHref = (status: string) => {
+    const buildHref = (overrides: {
+      status?: string;
+      classification?: string;
+      runsPage?: number;
+    }) => {
       const search = new URLSearchParams();
+      const status = overrides.status ?? statusFilter;
+      const classification = overrides.classification ?? classificationFilter;
+      const page = overrides.runsPage ?? 1;
       if (status !== "all") {
         search.set("status", status);
       }
       if (missionFilter !== "") {
         search.set("mission", missionFilter);
       }
+      if (classification !== "all") {
+        search.set("classification", classification);
+      }
+      if (page > 1) {
+        search.set("runsPage", String(page));
+      }
       const query = search.toString();
       return query === "" ? "/" : `/?${query}`;
     };
+
+    const filterHref = (status: string) => buildHref({ status });
+    const classificationHref = (classification: string) =>
+      buildHref({ classification });
+    const runsHref = (page: number) => buildHref({ runsPage: page });
 
     return (
       <main>
@@ -153,6 +213,24 @@ export default async function HomePage({
                     href={filterHref(status)}
                   >
                     {status}
+                  </Link>
+                ),
+              )}
+              {ALL_CLASSIFICATIONS.map((classification) =>
+                classification === classificationFilter ? (
+                  <span
+                    key={classification}
+                    className="hud-chip hud-chip-active"
+                  >
+                    {classification === "all" ? "all data" : classification}
+                  </span>
+                ) : (
+                  <Link
+                    key={classification}
+                    className="hud-chip"
+                    href={classificationHref(classification)}
+                  >
+                    {classification === "all" ? "all data" : classification}
                   </Link>
                 ),
               )}
@@ -222,6 +300,17 @@ export default async function HomePage({
           )}
           <section className="hud-panel col-8">
             <h2>Runs</h2>
+            <div className="hud-pager" style={{ marginBottom: "0.6rem" }}>
+              <span>
+                Page {runsPage} · {pageRuns.length} of {runs.length} in scope
+              </span>
+              {runsPage > 1 && (
+                <Link href={runsHref(runsPage - 1)}>← Prev</Link>
+              )}
+              {hasNextRunsPage && (
+                <Link href={runsHref(runsPage + 1)}>Next →</Link>
+              )}
+            </div>
             {runs.length === 0 ? (
               <div className="hud-empty">NO RUNS MATCH THESE FILTERS</div>
             ) : (
@@ -236,7 +325,7 @@ export default async function HomePage({
                   </tr>
                 </thead>
                 <tbody>
-                  {runs.map(({ run, display }) => (
+                  {pageRuns.map(({ run, display }) => (
                     <tr key={`${run.producerId}:${run.runKey}`}>
                       <td className="hud-mono">
                         <Link href={`/runs/${encodeURIComponent(run.runKey)}`}>

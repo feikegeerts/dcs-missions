@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   deriveSorties,
+  eventRowToSortieInput,
   type ParticipantEventInput,
 } from "../src/telemetry/sorties";
 
@@ -132,5 +133,60 @@ describe("deriveSorties", () => {
 
   it("returns an empty result for empty input", () => {
     expect(deriveSorties([])).toEqual([]);
+  });
+});
+
+describe("eventRowToSortieInput", () => {
+  it("maps stored enter/leave rows through the full event JSON", () => {
+    expect(
+      eventRowToSortieInput({
+        eventSequence: 7,
+        eventType: "participant.entered",
+        simTime: 70,
+        eventJson: {
+          participant: {
+            participant_id: "ucid-one",
+            display_name: "Pilot",
+            callsign: "Aerial 1-1",
+          },
+          asset: { dcs_name: "Aerial-1-1", dcs_type: "FA-18C_hornet" },
+        },
+      }),
+    ).toEqual({
+      event_sequence: 7,
+      event_type: "participant.entered",
+      sim_time: 70,
+      participant: {
+        participant_id: "ucid-one",
+        display_name: "Pilot",
+        callsign: "Aerial 1-1",
+      },
+      asset: { dcs_name: "Aerial-1-1", dcs_type: "FA-18C_hornet" },
+    });
+  });
+
+  it("returns null for non-participant rows and tolerates missing JSON", () => {
+    expect(
+      eventRowToSortieInput({
+        eventSequence: 2,
+        eventType: "ordnance.fired",
+        simTime: 20,
+        eventJson: { weapon: { dcs_type: "AIM_120C" } },
+      }),
+    ).toBeNull();
+    expect(
+      eventRowToSortieInput({
+        eventSequence: 3,
+        eventType: "participant.left",
+        simTime: 30,
+        eventJson: null,
+      }),
+    ).toEqual({
+      event_sequence: 3,
+      event_type: "participant.left",
+      sim_time: 30,
+      participant: null,
+      asset: null,
+    });
   });
 });

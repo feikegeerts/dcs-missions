@@ -4,6 +4,18 @@
 applied to Neon and verified; all live/collector testing parked by owner
 decision). Read this first when coming back.
 
+**Night shift 2026-09-06 (free-mode, uncommitted unless noted):** Slice 15
+Increment B + HUD reskin committed `d8d901b` and pushed (ordnance-by-type,
+update timestamps, event pagination, command-HUD theme, demo seed script;
+evidence: `docs/telemetry/slice-15-dashboard-increment-b-evidence.md`).
+Demo runs verified complete in Neon (blue-ahead $2,547,093.00, unpriced
+partial, 61-event pagination run; migration 0002 confirmed applied there).
+Slice 15 Increment C implemented offline, **uncommitted** (runs pagination,
+test/historical classification filter, crew-sortie panel; 71 web tests green;
+evidence: `docs/telemetry/slice-15-dashboard-increment-c-evidence.md`).
+Kill/loss/efficiency still parked behind Slices 13–14 (SOL). Live viewing of
+B/C, commit/push of C, and any DB deletes await owner review.
+
 This is a snapshot of where the project is, what's known to work, what's
 known to be broken, and what still needs to happen before the mission
 is shippable. If you change anything, update the relevant section.

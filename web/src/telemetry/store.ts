@@ -51,7 +51,11 @@ export interface TelemetryStore {
     expenditure: ExpenditureProjection,
   ): Promise<"inserted" | "existing">;
   upsertRunParticipant(participant: RunParticipantUpsert): Promise<void>;
-  listRuns(limit?: number): Promise<RunRow[]>;
+  listRuns(
+    limit?: number,
+    offset?: number,
+    classification?: "test" | "historical" | null,
+  ): Promise<RunRow[]>;
   getRunByRunKey(runKey: string): Promise<RunRow | null>;
   listEvents(
     producerId: string,
@@ -274,12 +278,22 @@ export class NeonTelemetryStore implements TelemetryStore {
       });
   }
 
-  async listRuns(limit = 100): Promise<RunRow[]> {
+  async listRuns(
+    limit = 100,
+    offset = 0,
+    classification: "test" | "historical" | null = null,
+  ): Promise<RunRow[]> {
     return getDb()
       .select()
       .from(missionRuns)
+      .where(
+        classification === null
+          ? undefined
+          : eq(missionRuns.runClassification, classification),
+      )
       .orderBy(desc(missionRuns.updatedAt))
-      .limit(limit);
+      .limit(limit)
+      .offset(offset);
   }
 
   async getRunByRunKey(runKey: string): Promise<RunRow | null> {
