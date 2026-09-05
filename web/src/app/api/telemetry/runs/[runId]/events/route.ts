@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { eventsToCsv } from "@/telemetry/export";
 import { NeonTelemetryStore } from "@/telemetry/store";
 
 export const dynamic = "force-dynamic";
@@ -40,6 +41,26 @@ export async function GET(
       limit,
       offset,
     );
+    if (searchParams.get("format") === "csv") {
+      return new NextResponse(
+        eventsToCsv(
+          events.map((event) => ({
+            eventSequence: event.eventSequence,
+            eventType: event.eventType,
+            simTime: event.simTime,
+            weaponDcsType: event.weaponDcsType,
+            initiatorParticipantId: event.initiatorParticipantId,
+            coalition: event.coalition,
+          })),
+        ),
+        {
+          headers: {
+            "content-type": "text/csv; charset=utf-8",
+            "content-disposition": `attachment; filename="${run.runKey}-events.csv"`,
+          },
+        },
+      );
+    }
     return NextResponse.json({
       runId,
       limit,
