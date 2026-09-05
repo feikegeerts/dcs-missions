@@ -31,12 +31,14 @@ ordinal index of the Lua payload array. The expected runtime value is the
 weapon table's `name` field. This table records the researched expectations;
 the live-run results, confirmed deviations, and final verdicts are in
 [Results](#results) below.
-For readability, `...\` in a source cell expands to the full common prefix
-`D:\DCS World Server\CoreMods\aircraft\`.
+For readability, `...\` in a source cell expands to the portable common prefix
+`<DCS install>\CoreMods\aircraft\`. The matrix was run against the dedicated
+server installation present on 2026-09-04; an installation path is not part of
+the evidence or the catalogue identity.
 
 | Airframe | Weapon key | Pylon | CLSID | Expected runtime `dcs_type` | Livery used | Verification/source |
 |---|---|---:|---|---|---|---|
-| `FA-18C_hornet` | AIM-120C | 2 | `LAU-115_2*LAU-127_AIM-120C` | `AIM_120C` | `Australia 75 Sqn RAAF` | `D:\DCS World Server\CoreMods\aircraft\FA-18C\UnitPayloads\FA-18C_hornet.lua`; `...\AircraftWeaponPack\aim120_family.lua` (`name="AIM_120C"`); live-proven |
+| `FA-18C_hornet` | AIM-120C | 2 | `LAU-115_2*LAU-127_AIM-120C` | `AIM_120C` | `Australia 75 Sqn RAAF` | `...\FA-18C\UnitPayloads\FA-18C_hornet.lua`; `...\AircraftWeaponPack\aim120_family.lua` (`name="AIM_120C"`); live-proven |
 | `FA-18C_hornet` | AIM-9L | 1 | `{AIM-9L}` | `AIM-9L` | `Australia 75 Sqn RAAF` | CLSID/station: `...\FA-18C\FA-18C.lua`; weapon name: `...\AircraftWeaponPack\aim9_family.lua`; **UNVERIFIED (UnitPayloads has no explicit AIM-9L payload; live run is the arbiter)** |
 | `FA-18C_hornet` | AIM-9M | 1 | `{6CEB49FC-DED8-4DED-B053-E1F033FF72D3}` | `AIM_9` | `Australia 75 Sqn RAAF` | `...\FA-18C\FA-18C.lua`; `...\AircraftWeaponPack\aim9_family.lua` (`name="AIM_9"`); **UNVERIFIED (no explicit hornet AIM-9M station-1 entry in the current UnitPayloads)** |
 | `FA-18C_hornet` | AIM-9P | 1 | `{9BFD8C90-F7AE-4e90-833B-BFD0CED0E536}` | `AIM-9P` | `Australia 75 Sqn RAAF` | `...\FA-18C\FA-18C.lua`; `...\AircraftWeaponPack\aim9_family.lua`; **UNVERIFIED (no explicit hornet AIM-9P payload)** |
@@ -207,7 +209,7 @@ even in the no-shot cells.
 
 1. **F-15ESE "AIM-120B" loadouts are actually the AIM-120C model** (b10,
    observed `AIM_120C`). In
-   `D:\DCS World Server\CoreMods\aircraft\F-15E\UnitPayloads\F-15ESE.lua` the
+   `...\F-15E\UnitPayloads\F-15ESE.lua` the
    loadouts named "CATM-9M x 3, AIM-120B" (line 297) and "AIM-9M x 4,
    AIM-120B x 4, TGP, NVP, Fuel Tanks x 2" (line 333) both use CLSID
    `{40EF17B7-F508-45de-8566-6FFECC0C1AB8}` — the same CLSID the file's

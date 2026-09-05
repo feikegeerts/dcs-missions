@@ -1,9 +1,14 @@
+import { sql } from "drizzle-orm";
 import {
   bigint,
+  check,
+  date,
   doublePrecision,
+  foreignKey,
   index,
   integer,
   jsonb,
+  numeric,
   pgTable,
   primaryKey,
   smallint,
@@ -98,5 +103,69 @@ export const missionRuns = pgTable(
   ],
 );
 
+export const valuationCatalogues = pgTable(
+  "valuation_catalogues",
+  {
+    catalogue: text("catalogue").notNull(),
+    version: integer("version").notNull(),
+    effectiveDate: date("effective_date", { mode: "string" }).notNull(),
+    currency: text("currency").notNull(),
+    pricingConvention: text("pricing_convention").notNull(),
+    typeKeySource: text("type_key_source").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.catalogue, table.version] }),
+    check("valuation_catalogues_version_positive", sql`${table.version} > 0`),
+    index("valuation_catalogues_effective_date_idx").on(table.effectiveDate),
+  ],
+);
+
+export const valuationItems = pgTable(
+  "valuation_items",
+  {
+    catalogue: text("catalogue").notNull(),
+    catalogueVersion: integer("catalogue_version").notNull(),
+    dcsType: text("dcs_type").notNull(),
+    displayName: text("display_name").notNull(),
+    faction: text("faction").notNull(),
+    category: text("category").notNull(),
+    usdValue: numeric("usd_value", { precision: 14, scale: 2 }).notNull(),
+    valueBasis: text("value_basis").notNull(),
+    source: text("source").notNull(),
+    matrixStatus: text("matrix_status").notNull(),
+    matrixEvidence: text("matrix_evidence").notNull(),
+    notes: text("notes").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.catalogue, table.catalogueVersion, table.dcsType],
+    }),
+    foreignKey({
+      columns: [table.catalogue, table.catalogueVersion],
+      foreignColumns: [
+        valuationCatalogues.catalogue,
+        valuationCatalogues.version,
+      ],
+      name: "valuation_items_catalogue_version_fk",
+    }).onDelete("restrict"),
+    check("valuation_items_usd_value_positive", sql`${table.usdValue} > 0`),
+    index("valuation_items_dcs_type_idx").on(table.dcsType),
+    index("valuation_items_faction_category_idx").on(
+      table.faction,
+      table.category,
+    ),
+  ],
+);
+
 export type TelemetryEventRow = typeof telemetryEvents.$inferSelect;
 export type MissionRunRow = typeof missionRuns.$inferSelect;
+export type ValuationCatalogueRow = typeof valuationCatalogues.$inferSelect;
+export type NewValuationCatalogueRow = typeof valuationCatalogues.$inferInsert;
+export type ValuationItemRow = typeof valuationItems.$inferSelect;
+export type NewValuationItemRow = typeof valuationItems.$inferInsert;

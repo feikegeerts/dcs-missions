@@ -1,7 +1,8 @@
 # Project status
 
-**Last updated:** 2026-09-04 (rejoin lifecycle fix pushed to `main`, live
-validation still pending — open point). Read this first when coming back.
+**Last updated:** 2026-09-05 (Slice 11 local catalogue checkpoint implemented;
+database migration and seed intentionally not run remotely). Read this first
+when coming back.
 
 This is a snapshot of where the project is, what's known to work, what's
 known to be broken, and what still needs to happen before the mission
@@ -231,6 +232,20 @@ multiplayer drill remains the explicit follow-up. Evidence:
    initiator) — documented limitation. 74 pure-Lua tests + stylua pass;
    live human-in-seat validation pending (checklist:
    `docs/telemetry/rejoin-fix-evidence.md` §6).
+- ✅ Telemetry Slice 11 local catalogue checkpoint: the completed unattended
+  AAM/airframe matrix now feeds immutable `ordnance` catalogue version 1 with
+  exactly 24 scoped keys (16 missiles, 8 aircraft). Unknown keys stay
+  unpriced. AIM-9X uses the FY 2026 Navy recurring AUR unit-cost field; all
+  other missiles and all aircraft are explicitly labeled score estimates.
+  Drizzle schema/migration adds composite-versioned `valuation_catalogues` and
+  `valuation_items`; the seed prefers existing process configuration and falls
+  back to the same local `web/.env.local` convention as existing scripts. It
+  inserts missing rows but rejects any attempt to rewrite an existing version.
+  Local web tests,
+  typecheck, lint, formatting, migration generation, and `git diff --check`
+  pass. No migration or seed was run against Neon. Research and limits:
+  `docs/telemetry/ordnance-catalogue-v1-research.md`; runtime evidence:
+  `docs/telemetry/slice-11-ordnance-matrix.md`.
 
 ## 5. What's known to be broken / limited
 
@@ -461,7 +476,10 @@ documented in `docs/telemetry/rejoin-fix-evidence.md` (merged to `main` as
  mission-side library vs DCS MOD vs server-side collection — with a probe
  MOD feasibility spike. Mission identity (`mission_name`/`missionVersion`)
  is already in the contract and the run store; the dashboard mission
- filter is a Slice 15 view.
+ filter is a Slice 15 view. The scoped AAM/airframe matrix and local immutable
+ catalogue checkpoint were completed on 2026-09-05. The generated database
+ migration and seed have not been run remotely; Slice 12 still requires human
+ approval.
 
 Telemetry now has priority over the optional MIST respawn work.
 
@@ -479,7 +497,8 @@ Telemetry now has priority over the optional MIST respawn work.
 3. Start the dedicated server, WebGUI → Restart `duel-dynamic`.
 4. Sanity check: the log shows the init sequence from
    `spec-duel-dynamic.md §7`. The bandit spawns. F10 menu works.
-5. For telemetry, review Slice 6 evidence and approve Slice 7 explicitly before
-   implementation. Other work
-   remains in §6.1, §6.2, and §6.4. §6.3 builds a self-contained `.miz`;
-   final QA on a stock install remains.
+5. For telemetry, review the Slice 11 matrix and catalogue research, then
+   explicitly approve Slice 12 before implementation. The Slice 11 database
+   migration/seed also remains a separate manual deployment action. Other work
+   remains in §6.1, §6.2, and §6.4. §6.3 builds a self-contained `.miz`; final
+   QA on a stock install remains.

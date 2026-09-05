@@ -15,7 +15,8 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "drizzle-kit migrate"
+    "db:migrate": "drizzle-kit migrate",
+    "db:seed:catalogue-v1": "tsx scripts/seed-catalogue-v1.ts"
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.1.0",
