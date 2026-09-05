@@ -1,8 +1,8 @@
 # Project status
 
-**Last updated:** 2026-09-05 (closure run recorded; offline hardening review
-complete; latest hardening still not live-validated and live follow-up parked).
-Slice 12 is approved to proceed. Read this first when coming back.
+**Last updated:** 2026-09-05 (Slice 12 implemented offline; migration 0002
+applied to Neon and verified; all live/collector testing parked by owner
+decision). Read this first when coming back.
 
 This is a snapshot of where the project is, what's known to work, what's
 known to be broken, and what still needs to happen before the mission
@@ -12,7 +12,19 @@ is shippable. If you change anything, update the relevant section.
 
 ## 0. Do this first (2026-09-05)
 
-1. **Rejoin closure evidence recorded 2026-09-05.** The live run
+1. **Slice 12 is implemented and offline-verified; migration 0002 is
+   applied.** Expenditure projection/persistence, participant labels, the
+   run-page drilldown, and 15 new web tests are in the tree (see
+   `docs/telemetry/slice-12-expenditure-evidence.md`). `drizzle-kit
+   migrate` applied `0002_flaky_makkari` to Neon and the new tables,
+   columns, and checks were verified by schema inspection (0
+   expenditures / 0 participants so far; catalogue v1 present). No live
+   ingest, no UI-against-DB check, no deployment performed.
+2. **All testing is parked by owner decision 2026-09-05:** the round-4
+   live flight, collector verification, live ingest/UI checks, and
+   shipping final QA. Nothing in the sections below should be read as
+   claiming checks that have not run.
+3. **Rejoin closure evidence recorded 2026-09-05.** The live run
    `run-20260905T145313Z-51ff9bff` had 28 gapless events, ended at sequence 28,
    and observed post-crash retirement, a `g2` player asset, and an attributed
    AIM-120C shot. It was direct production ingest, not collector verification;
