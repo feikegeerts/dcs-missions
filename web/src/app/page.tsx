@@ -1,6 +1,10 @@
 import Link from "next/link";
 
 import { aggregateExpenditures } from "@/telemetry/expenditures";
+import {
+  displayRunStatus,
+  type DisplayRunStatus,
+} from "@/telemetry/run-status";
 import { NeonTelemetryStore } from "@/telemetry/store";
 
 export const dynamic = "force-dynamic";
@@ -12,7 +16,9 @@ function formatUsd(cents: number): string {
   })}`;
 }
 
-const ALL_STATUSES = ["all", "active", "ended"] as const;
+const ALL_STATUSES = ["all", "active", "stale", "ended"] as const;
+
+type StatusFilter = (typeof ALL_STATUSES)[number];
 
 export default async function HomePage({
   searchParams,
@@ -21,19 +27,33 @@ export default async function HomePage({
 }) {
   try {
     const params = await searchParams;
-    const statusFilter =
-      params.status === "active" || params.status === "ended"
+    const statusFilter: StatusFilter =
+      params.status === "active" ||
+      params.status === "stale" ||
+      params.status === "ended"
         ? params.status
         : "all";
     const missionFilter = (params.mission ?? "").trim().toLowerCase();
 
     const store = new NeonTelemetryStore();
-    const runs = (await store.listRuns(100)).filter(
-      (run) =>
-        (statusFilter === "all" || run.status === statusFilter) &&
-        (missionFilter === "" ||
-          (run.missionName ?? "").toLowerCase().includes(missionFilter)),
-    );
+    const now = new Date();
+    // Liveness is display-only: storage keeps `active` until an explicit
+    // `mission.ended`, and authoritative stale/aborted classification is
+    // parked Slice 16 work. Runs with no recent heartbeat render `stale`.
+    const runs = (await store.listRuns(100))
+      .map((run) => ({
+        run,
+        display:
+          run.status === "active" || run.status === "ended"
+            ? displayRunStatus(run.status, run.updatedAt, now)
+            : ("active" as DisplayRunStatus),
+      }))
+      .filter(
+        ({ run, display }) =>
+          (statusFilter === "all" || display === statusFilter) &&
+          (missionFilter === "" ||
+            (run.missionName ?? "").toLowerCase().includes(missionFilter)),
+      );
 
     // Fleet totals aggregate per-run expenditure rows already projected at
     // ingest; no new queries beyond the existing per-run reads. At current
@@ -41,7 +61,9 @@ export default async function HomePage({
     // summary table if run volume ever makes the fan-out expensive.
     const fleetExpenditures = (
       await Promise.all(
-        runs.map((run) => store.listExpenditures(run.producerId, run.runKey)),
+        runs.map(({ run }) =>
+          store.listExpenditures(run.producerId, run.runKey),
+        ),
       )
     ).flat();
     const fleet = aggregateExpenditures(
@@ -111,12 +133,13 @@ export default async function HomePage({
           <p>No runs match these filters.</p>
         ) : (
           <ul>
-            {runs.map((run) => (
+            {runs.map(({ run, display }) => (
               <li key={`${run.producerId}:${run.runKey}`}>
                 <Link href={`/runs/${encodeURIComponent(run.runKey)}`}>
                   {run.runKey}
                 </Link>{" "}
-                — {run.missionName ?? "unknown mission"}, {run.status},{" "}
+                — {run.missionName ?? "unknown mission"}, {display}
+                {display === "stale" ? " (no recent heartbeat)" : ""},{" "}
                 {run.eventCount} events, last sequence {run.lastSequence} (
                 <a
                   href={`/api/telemetry/runs/${encodeURIComponent(run.runKey)}/events?format=csv`}
