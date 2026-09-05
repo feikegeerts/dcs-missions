@@ -181,10 +181,36 @@ local function read_observation(config, unit, group_name, event_data)
     local descriptor = first_method(config, raw, "getDesc", "GetDesc")
     category = read_field(config, descriptor, "category")
   end
+  -- Live 2026-09-05: entry and ordnance events can carry different
+  -- representations of the same aircraft (recycled MOOSE wrapper in one
+  -- field, fresh native object in another) while DCS reuses the runtime
+  -- ID. Collect every representation so resolution hits whichever one a
+  -- later event carries.
+  local aliases = {}
+  local seen_alias = {}
+  if unit ~= nil then
+    seen_alias[unit] = true
+  end
+  for _, field_name in ipairs({ "IniDCSUnit", "initiator", "IniUnit" }) do
+    local candidate = read_field(config, event_data, field_name)
+    if type(candidate) == "table" and not seen_alias[candidate] then
+      seen_alias[candidate] = true
+      local candidate_raw = call_method(config, candidate, "GetDCSObject") or candidate
+      local candidate_id = first_method(config, candidate_raw, "getID", "GetID")
+      if candidate_id == nil and candidate_raw ~= candidate then
+        candidate_id = first_method(config, candidate, "GetID", "getID")
+      end
+      if type(candidate_id) ~= "number" and type(candidate_id) ~= "string" then
+        candidate_id = nil
+      end
+      aliases[#aliases + 1] = { object = candidate, raw = candidate_raw, id = candidate_id }
+    end
+  end
   return {
     unit = unit,
     raw = raw,
     identity_id = identity_id,
+    aliases = aliases,
     group_name = group_name or event_group_name or read_group_name(config, raw),
     dcs_name = dcs_name,
     dcs_type = dcs_type,
@@ -260,6 +286,35 @@ local function confirms_replacement(active, observation)
     and (type(active.identity_id) ~= type(observation.identity_id) or active.identity_id ~= observation.identity_id)
 end
 
+-- Live 2026-09-05: MOOSE recycles the unit wrapper per unit name and the
+-- runtime IDs are reused across a death + rejoin, so object/id comparison
+-- alone can mistake a recreated aircraft for the same incarnation (the
+-- rejoin then emits no asset.spawned and later ordnance resolves unknown).
+-- A dead previous incarnation is always a replacement, whatever the
+-- recycled wrapper claims. Missing liveness methods mean "unknown", which
+-- defaults to alive so long-lived mock-only paths keep their behavior.
+local function instance_alive(config, instance)
+  if instance == nil then
+    return true
+  end
+  local candidates = {}
+  if instance.observation then
+    candidates[#candidates + 1] = instance.observation.unit
+    candidates[#candidates + 1] = instance.observation.raw
+  end
+  candidates[#candidates + 1] = instance.unit_object
+  candidates[#candidates + 1] = instance.identity_object
+  for _, candidate in ipairs(candidates) do
+    if candidate ~= nil then
+      local alive = first_method(config, candidate, "IsAlive", "isExist")
+      if alive == false then
+        return false
+      end
+    end
+  end
+  return true
+end
+
 local function event_time(config, value)
   if is_finite_number(value) and value >= 0 then
     return value
@@ -282,6 +337,9 @@ function M.new(config)
   end
   if type(config.EVENTS) ~= "table" or config.EVENTS.PlayerEnterAircraft == nil then
     return nil, "asset requires EVENTS.PlayerEnterAircraft"
+  end
+  if config.EVENTS.Dead == nil or config.EVENTS.Crash == nil then
+    return nil, "asset requires EVENTS.Dead and EVENTS.Crash for player incarnation retirement"
   end
 
   local player_roster, player_error = build_roster(config.player_group_names, "player")
@@ -323,6 +381,18 @@ function M.new(config)
     if id_key then
       adapter.instances_by_id[id_key] = instance
     end
+    for _, alias in ipairs(observation.aliases or {}) do
+      if alias.object ~= nil then
+        adapter.instances_by_object[alias.object] = instance
+      end
+      if alias.raw ~= nil then
+        adapter.instances_by_object[alias.raw] = instance
+      end
+      local alias_key = identity_map_key(alias.id)
+      if alias_key then
+        adapter.instances_by_id[alias_key] = instance
+      end
+    end
   end
 
   local function remove_identity(instance)
@@ -335,6 +405,18 @@ function M.new(config)
     local id_key = identity_map_key(instance.identity_id)
     if id_key and adapter.instances_by_id[id_key] == instance then
       adapter.instances_by_id[id_key] = nil
+    end
+    for _, alias in ipairs(instance.aliases or {}) do
+      if alias.object and adapter.instances_by_object[alias.object] == instance then
+        adapter.instances_by_object[alias.object] = nil
+      end
+      if alias.raw and adapter.instances_by_object[alias.raw] == instance then
+        adapter.instances_by_object[alias.raw] = nil
+      end
+      local alias_key = identity_map_key(alias.id)
+      if alias_key and adapter.instances_by_id[alias_key] == instance then
+        adapter.instances_by_id[alias_key] = nil
+      end
     end
   end
 
@@ -379,6 +461,7 @@ function M.new(config)
       unit_object = observation.unit,
       identity_object = observation.raw,
       identity_id = observation.identity_id,
+      aliases = observation.aliases or {},
       dcs_name = observation.dcs_name or observation.group_name,
       dcs_type = observation.dcs_type,
       coalition = map_coalition(observation.coalition),
@@ -416,10 +499,21 @@ function M.new(config)
     end
 
     local active = self.active_players[observation.group_name]
+    if active and active.active and not instance_alive(self.config, active) then
+      log_message(
+        self.config,
+        "warning",
+        "previous " .. observation.group_name .. " incarnation no longer alive — advancing generation"
+      )
+      active.active = false
+      remove_identity(active)
+      active = nil
+    end
     if active and active.active and same_identity(active, observation) then
       return reference(active), false, active
     end
     if active and active.active and not confirms_replacement(active, observation) then
+      log_message(self.config, "warning", "player aircraft replacement identity is unavailable")
       return nil, "player aircraft replacement identity is unavailable"
     end
     if active and active.active then
@@ -544,11 +638,23 @@ function M.new(config)
       return nil
     end
     local raw, id = read_identity(self.config, unit)
+    -- A reference to a retired incarnation stays dead: it is genuinely
+    -- stale, so it must never be re-resolved through the reused ID below.
     local instance = self.instances_by_object[unit] or self.instances_by_object[raw]
-    if not instance and raw == nil then
-      local id_key = identity_map_key(id)
-      instance = id_key and self.instances_by_id[id_key] or nil
+    if instance then
+      if not instance.active then
+        return nil
+      end
+      return reference(instance), instance
     end
+    -- Prefer the precise object match when it is still live. Fall back to
+    -- the runtime ID: DCS reuses it across a death + respawn while handing
+    -- out fresh objects, so the ID is what survives wrapper recycling. The
+    -- ID map always points at the latest registration and resolution
+    -- requires a live incarnation, so a retired generation can never
+    -- shadow its replacement; distinct live units never share an ID.
+    local id_key = identity_map_key(id)
+    instance = (id_key and self.instances_by_id[id_key]) or nil
     if not instance or not instance.active then
       return nil
     end
@@ -601,6 +707,43 @@ function M.new(config)
     return self:observe_player_unit(unit, read_field(self.config, event_data, "time"), group_name, event_data)
   end
 
+  -- Live 2026-09-05: neither the recycled MOOSE wrapper nor the reused
+  -- runtime IDs distinguish a recreated player aircraft from the same
+  -- incarnation, so entry-time comparison alone keeps a stale g1 and later
+  -- ordnance resolves unknown. The death itself is the reliable signal —
+  -- DCS always emits pilot-dead/crash for the destroyed aircraft — so the
+  -- tracked incarnation retires here and the next entry unconditionally
+  -- opens g2. Player groups hold exactly one aircraft, therefore any
+  -- Dead/Crash inside a tracked player group ends its active incarnation.
+  -- No asset.despawned is emitted: death is not scripted cleanup, and the
+  -- web sortie derivation pairs control periods from participant events.
+  local function retire_player_death(event_data, reason)
+    if type(event_data) ~= "table" then
+      return nil, "player lifecycle event data is unavailable"
+    end
+    local group_name = non_empty_string(read_field(config, event_data, "IniGroupName"))
+      or non_empty_string(read_field(config, event_data, "IniDCSGroupName"))
+    if not group_name or not adapter.player_roster.lookup[group_name] then
+      return false
+    end
+    local active = adapter.active_players[group_name]
+    if not active or not active.active then
+      return false
+    end
+    active.active = false
+    remove_identity(active)
+    log_message(config, "info", "retired " .. active.asset_key .. " (" .. reason .. ")")
+    return true
+  end
+
+  function adapter:OnEventDead(event_data)
+    return retire_player_death(event_data, "dead")
+  end
+
+  function adapter:OnEventCrash(event_data)
+    return retire_player_death(event_data, "crashed")
+  end
+
   function adapter:start()
     if self.watcher then
       return self.watcher
@@ -614,12 +757,20 @@ function M.new(config)
     function watcher:OnEventPlayerEnterAircraft(event_data)
       return adapter:OnEventPlayerEnterAircraft(event_data)
     end
+    function watcher:OnEventDead(event_data)
+      return adapter:OnEventDead(event_data)
+    end
+    function watcher:OnEventCrash(event_data)
+      return adapter:OnEventCrash(event_data)
+    end
     local handled, handle_error = pcall(function()
       watcher:HandleEvent(self.config.EVENTS.PlayerEnterAircraft)
+      watcher:HandleEvent(self.config.EVENTS.Dead)
+      watcher:HandleEvent(self.config.EVENTS.Crash)
     end)
     if not handled then
-      log_error(self.config, "registering EVENTS.PlayerEnterAircraft failed: " .. tostring(handle_error))
-      return nil, "registering EVENTS.PlayerEnterAircraft failed"
+      log_error(self.config, "registering player lifecycle events failed: " .. tostring(handle_error))
+      return nil, "registering player lifecycle events failed"
     end
     self.watcher = watcher
     return watcher
@@ -633,10 +784,12 @@ function M.new(config)
     self.watcher = nil
     local ok, stop_error = pcall(function()
       watcher:UnHandleEvent(self.config.EVENTS.PlayerEnterAircraft)
+      watcher:UnHandleEvent(self.config.EVENTS.Dead)
+      watcher:UnHandleEvent(self.config.EVENTS.Crash)
     end)
     if not ok then
-      log_error(self.config, "unregistering EVENTS.PlayerEnterAircraft failed: " .. tostring(stop_error))
-      return nil, "unregistering EVENTS.PlayerEnterAircraft failed"
+      log_error(self.config, "unregistering player lifecycle events failed: " .. tostring(stop_error))
+      return nil, "unregistering player lifecycle events failed"
     end
     return true
   end

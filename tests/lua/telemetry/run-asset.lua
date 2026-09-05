@@ -143,6 +143,9 @@ local function new_unit(options)
   function unit:GetPlayerName()
     return options.player_name
   end
+  function unit:IsAlive()
+    return options.alive
+  end
   return unit, raw
 end
 
@@ -169,7 +172,7 @@ local function new_asset_adapter(controller, base)
     controller = controller,
     envelope = envelope,
     BASE = base or new_base(),
-    EVENTS = { PlayerEnterAircraft = 20 },
+    EVENTS = { PlayerEnterAircraft = 20, Dead = 21, Crash = 22 },
     player_group_names = { "Aerial-1", "Aerial-2", "Aerial-3", "Aerial-4" },
     bandit_group_names = { "Bandit-1", "Bandit-2", "Bandit-3" },
     player_coalition = 2,
@@ -238,11 +241,17 @@ succeeds("asset adapter subscribes to multiplayer aircraft entry and cleans up",
   local adapter = new_asset_adapter(controller, base)
   local watcher, start_error = adapter:start()
   check(watcher ~= nil, start_error)
+  equal(#watcher.handled, 3)
   equal(watcher.handled[1], 20)
+  equal(watcher.handled[2], 21)
+  equal(watcher.handled[3], 22)
   check(adapter.watcher == watcher, "adapter did not retain its watcher")
   local stopped, stop_error = adapter:stop()
   check(stopped, stop_error)
+  equal(#watcher.unhandled, 3)
   equal(watcher.unhandled[1], 20)
+  equal(watcher.unhandled[2], 21)
+  equal(watcher.unhandled[3], 22)
   check(adapter.watcher == nil, "adapter retained its stopped watcher")
 end)
 
@@ -405,8 +414,163 @@ succeeds("a confirmed player aircraft replacement advances the generation", func
   equal(first.asset_key, "aerial-1.u1.g1")
   equal(replacement.asset_key, "aerial-1.u1.g2")
   equal(count_type(events, "asset.spawned"), 2)
-  equal(adapter:resolve_unit(first_raw), nil)
+  -- DCS reuses the runtime ID across the respawn, so the retired object's
+  -- ID now addresses the live incarnation (stale references to retired
+  -- incarnations still resolve nil only when their ID is untracked).
+  equal(adapter:resolve_unit(first_raw).asset_key, replacement.asset_key)
   equal(adapter:resolve_unit(replacement_raw).asset_key, replacement.asset_key)
+end)
+
+succeeds("a live incarnation is reused but a dead one advances the generation on wrapper reuse", function()
+  -- Live 2026-09-05: graceful rejoin re-enters the same live aircraft (keep
+  -- g1), then the aircraft crashes while the operator is alt-tabbed and the
+  -- rejoin carries the recycled MOOSE wrapper with reused IDs (must emit g2).
+  local controller, events = new_controller("player-death-replacement")
+  local adapter = new_asset_adapter(controller)
+  local watcher = adapter:start()
+  local wrapper_options = {
+    id = 701,
+    group_name = "Aerial-1",
+    name = "Aerial-1-1",
+    coalition = 2,
+    player_name = "Viper",
+    callsign = "Aerial 1-1",
+    alive = true,
+  }
+  local wrapper = new_unit(wrapper_options)
+  local function enter(time)
+    return player_enter_event(wrapper, { time = time })
+  end
+  local first, created = watcher:OnEventPlayerEnterAircraft(enter(10))
+  check(first ~= nil)
+  equal(created, true)
+  equal(first.asset_key, "aerial-1.u1.g1")
+
+  local again, duplicate_created = watcher:OnEventPlayerEnterAircraft(enter(20))
+  check(again ~= nil)
+  equal(duplicate_created, false)
+  equal(again.asset_key, "aerial-1.u1.g1")
+  equal(count_type(events, "asset.spawned"), 1)
+
+  wrapper_options.alive = false
+  local replacement, replacement_created = watcher:OnEventPlayerEnterAircraft(enter(30))
+  check(replacement ~= nil)
+  equal(replacement_created, true)
+  equal(replacement.asset_key, "aerial-1.u1.g2")
+  equal(count_type(events, "asset.spawned"), 2)
+  equal(adapter:resolve_unit(wrapper).asset_key, "aerial-1.u1.g2")
+end)
+
+succeeds("a dead player incarnation retires so the recycled-wrapper rejoin opens g2", function()
+  -- Live 2026-09-05: the rejoin after a crash carries the recycled wrapper
+  -- with reused IDs, so entry-time comparison keeps the stale g1. The death
+  -- itself retires the incarnation; the next entry then opens g2.
+  local controller, events = new_controller("player-death-retirement")
+  local adapter = new_asset_adapter(controller)
+  local watcher = adapter:start()
+  local wrapper_options = {
+    id = 801,
+    group_name = "Aerial-1",
+    name = "Aerial-1-1",
+    coalition = 2,
+    player_name = "Viper",
+    callsign = "Aerial 1-1",
+    alive = true,
+  }
+  local wrapper = new_unit(wrapper_options)
+  local first, created = watcher:OnEventPlayerEnterAircraft(player_enter_event(wrapper, { time = 10 }))
+  check(first ~= nil)
+  equal(created, true)
+  equal(first.asset_key, "aerial-1.u1.g1")
+
+  local function death_event()
+    return {
+      IniGroupName = "Aerial-1",
+      IniDCSGroupName = "Aerial-1",
+      IniDCSUnitName = "Aerial-1-1",
+      IniUnitName = "Aerial-1-1",
+      IniDCSUnit = wrapper,
+      IniCoalition = 2,
+      time = 15,
+    }
+  end
+  local retired = watcher:OnEventDead(death_event())
+  equal(retired, true)
+  check(adapter:resolve_unit(wrapper) == nil, "dead incarnation still resolves")
+  -- A bandit death inside another group retires nothing.
+  local bandit_retired = watcher:OnEventCrash({
+    IniGroupName = "Bandit-1#001",
+    IniDCSGroupName = "Bandit-1#001",
+    IniDCSUnitName = "Bandit-1#001-01",
+    time = 16,
+  })
+  equal(bandit_retired, false)
+
+  local replacement, replacement_created =
+    watcher:OnEventPlayerEnterAircraft(player_enter_event(wrapper, { time = 20 }))
+  check(replacement ~= nil)
+  equal(replacement_created, true)
+  equal(replacement.asset_key, "aerial-1.u1.g2")
+  equal(count_type(events, "asset.spawned"), 2)
+  equal(adapter:resolve_unit(wrapper).asset_key, "aerial-1.u1.g2")
+end)
+
+succeeds("shots resolve across recycled representations through aliases and the reused ID", function()
+  -- Live 2026-09-05 seq16-18: the entry carries the stale recycled wrapper
+  -- plus the fresh native object in another field, while the shot arrives
+  -- on yet another fresh table carrying the reused runtime ID.
+  local controller, events = new_controller("identity-aliasing")
+  local adapter = new_asset_adapter(controller)
+  local watcher = adapter:start()
+  local stale_raw = new_raw_unit({ id = 901, name = "Aerial-1-1", coalition = 2 })
+  local fresh_native = new_raw_unit({ id = 901, name = "Aerial-1-1", coalition = 2 })
+  local wrapper = new_unit({
+    raw = stale_raw,
+    name = "Aerial-1-1",
+    coalition = 2,
+    player_name = "Viper",
+    callsign = "Aerial 1-1",
+    alive = true,
+  })
+  local function enter(time)
+    return {
+      IniDCSUnit = wrapper,
+      initiator = fresh_native,
+      IniUnit = wrapper,
+      IniGroupName = "Aerial-1",
+      IniDCSGroupName = "Aerial-1",
+      IniDCSUnitName = "Aerial-1-1",
+      IniTypeName = "FA-18C_hornet",
+      IniCoalition = 2,
+      IniCategory = 0,
+      IniPlayerName = "Viper",
+      IniPlayerUCID = "ucid-viper",
+      time = time,
+    }
+  end
+  local first, created = watcher:OnEventPlayerEnterAircraft(enter(10))
+  check(first ~= nil)
+  equal(created, true)
+  equal(first.asset_key, "aerial-1.u1.g1")
+  -- The aliased fresh representation resolves without any ID fallback.
+  equal(adapter:resolve_unit(fresh_native).asset_key, "aerial-1.u1.g1")
+  -- A completely fresh table with only the reused ID still resolves.
+  local shot_shape = new_raw_unit({ id = 901, name = "Aerial-1-1", coalition = 2 })
+  equal(adapter:resolve_unit(shot_shape).asset_key, "aerial-1.u1.g1")
+
+  local retired = watcher:OnEventDead({ IniGroupName = "Aerial-1", IniDCSUnitName = "Aerial-1-1", time = 15 })
+  equal(retired, true)
+  -- Stale references stay dead even though the ID is still tracked.
+  check(adapter:resolve_unit(stale_raw) == nil, "retired incarnation resolved")
+
+  local replacement, replacement_created = watcher:OnEventPlayerEnterAircraft(enter(20))
+  check(replacement ~= nil)
+  equal(replacement_created, true)
+  equal(replacement.asset_key, "aerial-1.u1.g2")
+  -- The live seq18 shape: fresh shot object, reused ID, live g2.
+  equal(adapter:resolve_unit(shot_shape).asset_key, "aerial-1.u1.g2")
+  equal(adapter:resolve_unit(wrapper).asset_key, "aerial-1.u1.g2")
+  equal(count_type(events, "asset.spawned"), 2)
 end)
 
 succeeds("scripted removal emits intentional despawn before gameplay removal", function()
@@ -493,7 +657,9 @@ succeeds("shots resolve only registered incarnations and otherwise remain explic
   local replacement = asset_watcher:OnEventPlayerEnterAircraft(player_enter_event(replacement_raw, { time = 15 }))
   check(replacement ~= nil)
   equal(replacement.asset_key, "aerial-1.u1.g2")
-  equal(registry:resolve_unit(first_raw), nil)
+  -- The retired object's reused runtime ID now addresses the live
+  -- incarnation; only genuinely untracked identities resolve unknown.
+  equal(registry:resolve_unit(first_raw).asset_key, "aerial-1.u1.g2")
   local tracked_shot, tracked_error = watcher:OnEventShot(shot_event(replacement_unit, replacement_raw, "Aerial-1", 20))
   check(tracked_shot ~= nil, tracked_error)
   equal(tracked_shot.asset.status, "known")

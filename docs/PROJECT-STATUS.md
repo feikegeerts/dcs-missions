@@ -1,7 +1,8 @@
 # Project status
 
-**Last updated:** 2026-09-05 (Slice 11 catalogue migration deployed and
-immutable version 1 seeded in Neon). Read this first when coming back.
+**Last updated:** 2026-09-05 (3 solo rejoin drills done — graceful path
+validated, post-death incarnation + resolve fixes in working tree, round-4
+live validation pending; dev window open). Read this first when coming back.
 
 This is a snapshot of where the project is, what's known to work, what's
 known to be broken, and what still needs to happen before the mission
@@ -11,13 +12,18 @@ is shippable. If you change anything, update the relevant section.
 
 ## 0. Do this first (2026-09-04)
 
-1. **Pushed:** `main` == `origin/main` @ `d1ec6d3` (includes the
-   multiplayer rejoin lifecycle fix `f4d35f3` and the worktrees
-   convention). The live human-in-seat rejoin drill is **parked**
-   (no time this week) — its checklist is unchanged at
-   `docs/telemetry/rejoin-fix-evidence.md` §6. Run it before
-   distributing the mission; it validates the same gameplay code path
-   the shipping build embeds.
+1. **Rejoin drill: 3 solo rounds flown 2026-09-05** (was parked; the
+   `f4d35f3` fix is now live-validated for initial join + graceful
+   leave/rejoin). Death + hard-disconnect exposed two follow-on gaps,
+   both fixed in the working tree (see
+   `docs/telemetry/rejoin-fix-evidence.md` §7–§9): retirement of the
+   tracked incarnation on `Dead`/`Crash`, and alias + reused-ID
+   resolution across recycled unit representations. Pure-Lua green
+   (13/13 asset incl. stash negative controls, all suites + stylua).
+   Remaining gate: **round-4 live validation** — WebGUI Restart →
+   join → die → hard-kill → rejoin → one missile, expecting
+   `asset.spawned aerial-1.u1.g2` with an attributed shot. The checklist
+   at `rejoin-fix-evidence.md` §6 still gates distribution.
 2. **The DCS env is DE-SANITIZED again** (see §2) — restore stock before
    shipping or untrusted servers.
 
