@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { ordnanceCatalogueV1 } from "../src/telemetry/catalogue";
 import {
+  aggregateByWeapon,
   aggregateExpenditures,
   catalogueForAssignment,
   currentOrdnanceAssignment,
@@ -243,6 +244,63 @@ describe("expenditure drilldown", () => {
     const drilldown = aggregateExpenditures(expenditure, labels);
     expect(drilldown.groups).toHaveLength(1);
     expect(drilldown.groups[0]?.participantDisplayName).toBe("Viper-actual");
+  });
+});
+
+describe("ordnance by weapon", () => {
+  it("rolls shots up by weapon type with exact subtotals", () => {
+    const expenditure = projections([
+      firedEvent({ sequence: 1, weaponDcsType: "AIM_120C" }),
+      firedEvent({ sequence: 2, weaponDcsType: "AIM_120C" }),
+      firedEvent({ sequence: 3, weaponDcsType: "AIM_9X" }),
+      firedEvent({ sequence: 4, weaponDcsType: "FUTURE_MISSILE_X" }),
+    ]);
+    const summary = aggregateByWeapon(expenditure);
+    expect(summary.expenditureCount).toBe(4);
+    expect(summary.knownSubtotalCents).toBe(254709300);
+    expect(summary.unpricedCount).toBe(1);
+    expect(summary.partial).toBe(true);
+    expect(
+      summary.weapons.map((weapon) => [
+        weapon.weaponDcsType,
+        weapon.expenditureCount,
+        weapon.knownSubtotalCents,
+        weapon.unpricedCount,
+      ]),
+    ).toEqual([
+      ["AIM_120C", 2, 210000000, 0],
+      ["AIM_9X", 1, 44709300, 0],
+      ["FUTURE_MISSILE_X", 1, 0, 1],
+    ]);
+  });
+
+  it("covers blue spending more while remaining ahead", () => {
+    const expenditure = projections([
+      firedEvent({
+        sequence: 1,
+        weaponDcsType: "AIM_120C",
+        participantId: "ucid-blue-1",
+        coalition: "blue",
+      }),
+      firedEvent({
+        sequence: 2,
+        weaponDcsType: "AIM_120C",
+        participantId: "ucid-blue-1",
+        coalition: "blue",
+      }),
+      firedEvent({
+        sequence: 3,
+        weaponDcsType: "AIM_9X",
+        participantId: "ucid-red-1",
+        displayName: "BanditOps",
+        coalition: "red",
+      }),
+    ]);
+    const summary = aggregateByWeapon(expenditure);
+    expect(summary.expenditureCount).toBe(3);
+    // Blue fired the expensive pair; the view must still show both sides.
+    expect(summary.knownSubtotalCents).toBe(254709300);
+    expect(summary.weapons).toHaveLength(2);
   });
 });
 

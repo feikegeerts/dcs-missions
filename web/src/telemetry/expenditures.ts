@@ -97,6 +97,23 @@ export type ExpenditureDrilldown = {
   groups: ExpenditureGroup[];
 };
 
+export type WeaponRollup = {
+  weaponDcsType: string | null;
+  weaponDisplayName: string | null;
+  expenditureCount: number;
+  knownSubtotalCents: number;
+  unpricedCount: number;
+  partial: boolean;
+};
+
+export type WeaponSummary = {
+  expenditureCount: number;
+  knownSubtotalCents: number;
+  unpricedCount: number;
+  partial: boolean;
+  weapons: WeaponRollup[];
+};
+
 type ExpenditureAggregateInput = ExpenditureProjection;
 
 function objectOrNull(value: unknown): Record<string, unknown> | null {
@@ -329,6 +346,79 @@ export function aggregateExpenditures(
         const rest: Record<string, unknown> = { ...group };
         delete rest.firstEventSequence;
         return rest as ExpenditureGroup;
+      }),
+  };
+}
+
+/**
+ * Roll ordnance expenditures up by weapon type. Pure display helper for the
+ * Slice 15 ordnance-by-type view: no catalogue lookup, no pricing, just exact
+ * cent addition over already-projected rows. Unknown weapons stay grouped
+ * under a null key and mark the totals partial.
+ */
+export function aggregateByWeapon(
+  expenditures: readonly ExpenditureAggregateInput[],
+): WeaponSummary {
+  let knownSubtotalCents = 0;
+  let unpricedCount = 0;
+  const weapons = new Map<
+    string,
+    WeaponRollup & { firstEventSequence: number }
+  >();
+
+  for (const expenditure of expenditures) {
+    if (expenditure.unitCostCents === null) {
+      unpricedCount += 1;
+    } else {
+      knownSubtotalCents = addCents(
+        knownSubtotalCents,
+        expenditure.unitCostCents,
+      );
+    }
+    const key = JSON.stringify([expenditure.weaponDcsType]);
+    let rollup = weapons.get(key);
+    if (!rollup) {
+      rollup = {
+        weaponDcsType: expenditure.weaponDcsType,
+        weaponDisplayName: expenditure.weaponDisplayName,
+        expenditureCount: 0,
+        knownSubtotalCents: 0,
+        unpricedCount: 0,
+        partial: false,
+        firstEventSequence: expenditure.eventSequence,
+      };
+      weapons.set(key, rollup);
+    }
+    rollup.expenditureCount += 1;
+    if (expenditure.unitCostCents === null) {
+      rollup.unpricedCount += 1;
+      rollup.partial = true;
+    } else {
+      rollup.knownSubtotalCents = addCents(
+        rollup.knownSubtotalCents,
+        expenditure.unitCostCents,
+      );
+    }
+    // Prefer a known display name when one appears for the same type.
+    if (
+      rollup.weaponDisplayName == null &&
+      expenditure.weaponDisplayName != null
+    ) {
+      rollup.weaponDisplayName = expenditure.weaponDisplayName;
+    }
+  }
+
+  return {
+    expenditureCount: expenditures.length,
+    knownSubtotalCents,
+    unpricedCount,
+    partial: unpricedCount > 0,
+    weapons: [...weapons.values()]
+      .sort((left, right) => left.firstEventSequence - right.firstEventSequence)
+      .map((rollup) => {
+        const rest: Record<string, unknown> = { ...rollup };
+        delete rest.firstEventSequence;
+        return rest as WeaponRollup;
       }),
   };
 }

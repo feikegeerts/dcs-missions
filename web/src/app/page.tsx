@@ -1,6 +1,9 @@
 import Link from "next/link";
 
-import { aggregateExpenditures } from "@/telemetry/expenditures";
+import {
+  aggregateByWeapon,
+  aggregateExpenditures,
+} from "@/telemetry/expenditures";
 import {
   displayRunStatus,
   type DisplayRunStatus,
@@ -85,6 +88,33 @@ export default async function HomePage({
         unitCostCents: expenditure.unitCostCents,
       })),
     );
+    const fleetByWeapon = aggregateByWeapon(
+      fleetExpenditures.map((expenditure) => ({
+        sourceEventId: expenditure.sourceEventId,
+        producerId: expenditure.producerId,
+        runKey: expenditure.runKey,
+        eventSequence: expenditure.eventSequence,
+        participantId: expenditure.participantId,
+        participantDisplayName: expenditure.participantDisplayName,
+        participantCallsign: expenditure.participantCallsign,
+        assetKey: expenditure.assetKey,
+        aircraftDcsType: expenditure.aircraftDcsType,
+        coalition: expenditure.coalition,
+        weaponDcsType: expenditure.weaponDcsType,
+        weaponDisplayName: expenditure.weaponDisplayName,
+        catalogue: expenditure.catalogue,
+        catalogueVersion: expenditure.catalogueVersion,
+        unitCostCents: expenditure.unitCostCents,
+      })),
+    );
+    const fleetUpdatedAt =
+      runs.length === 0
+        ? null
+        : new Date(
+            Math.max(
+              ...runs.map(({ run }) => new Date(run.updatedAt).getTime()),
+            ),
+          );
 
     const filterHref = (status: string) => {
       const search = new URLSearchParams();
@@ -100,70 +130,155 @@ export default async function HomePage({
 
     return (
       <main>
-        <h1>DCS telemetry runs</h1>
-        <p>
-          Status:{" "}
-          {ALL_STATUSES.map((status, index) => (
-            <span key={status}>
-              {index > 0 ? " | " : ""}
-              {status === statusFilter ? (
-                <strong>{status}</strong>
-              ) : (
-                <Link href={filterHref(status)}>{status}</Link>
-              )}
-            </span>
-          ))}
-          {missionFilter !== "" && (
-            <>
-              {" "}
-              | mission contains “{missionFilter}” (
-              <Link href={filterHref(statusFilter)}>clear</Link>)
-            </>
-          )}
-        </p>
-        <h2>Fleet ordnance expenditure</h2>
-        <p>
-          Shots: {fleet.expenditureCount}; known subtotal:{" "}
-          {formatUsd(fleet.knownSubtotalCents)}
-          {fleet.partial
-            ? `; ${fleet.unpricedCount} unpriced — total partial`
+        <h1 className="hud-title">Theater overview</h1>
+        <p className="hud-subtitle">
+          {runs.length} run{runs.length === 1 ? "" : "s"} in scope
+          {fleetUpdatedAt !== null
+            ? ` · updated ${fleetUpdatedAt.toISOString()}`
             : ""}
         </p>
-        {runs.length === 0 ? (
-          <p>No runs match these filters.</p>
-        ) : (
-          <ul>
-            {runs.map(({ run, display }) => (
-              <li key={`${run.producerId}:${run.runKey}`}>
-                <Link href={`/runs/${encodeURIComponent(run.runKey)}`}>
-                  {run.runKey}
-                </Link>{" "}
-                — {run.missionName ?? "unknown mission"}, {display}
-                {display === "stale" ? " (no recent heartbeat)" : ""},{" "}
-                {run.eventCount} events, last sequence {run.lastSequence} (
-                <a
-                  href={`/api/telemetry/runs/${encodeURIComponent(run.runKey)}/events?format=csv`}
-                >
-                  events CSV
-                </a>{" "}
-                |{" "}
-                <a
-                  href={`/api/telemetry/runs/${encodeURIComponent(run.runKey)}/expenditures?format=csv`}
-                >
-                  expenditures CSV
-                </a>
-                )
-              </li>
-            ))}
-          </ul>
-        )}
+        <div className="hud-grid" style={{ marginTop: "1rem" }}>
+          <section className="hud-panel col-12">
+            <h2>Filters</h2>
+            <div className="hud-filters">
+              {ALL_STATUSES.map((status) =>
+                status === statusFilter ? (
+                  <span key={status} className="hud-chip hud-chip-active">
+                    {status}
+                  </span>
+                ) : (
+                  <Link
+                    key={status}
+                    className="hud-chip"
+                    href={filterHref(status)}
+                  >
+                    {status}
+                  </Link>
+                ),
+              )}
+              {missionFilter !== "" && (
+                <span className="hud-stat-sub">
+                  mission ∋ “{missionFilter}” (
+                  <Link href={filterHref(statusFilter)}>clear</Link>)
+                </span>
+              )}
+            </div>
+          </section>
+          <section className="hud-panel col-4">
+            <h2>Fleet shots</h2>
+            <div className="hud-stat">{fleet.expenditureCount}</div>
+            <div className="hud-stat-sub">
+              {fleet.partial ? (
+                <span className="hud-warning">
+                  {fleet.unpricedCount} unpriced — total partial
+                </span>
+              ) : (
+                "all priced"
+              )}
+            </div>
+          </section>
+          <section className="hud-panel col-4">
+            <h2>Known subtotal</h2>
+            <div className="hud-stat">
+              {formatUsd(fleet.knownSubtotalCents)}
+            </div>
+            <div className="hud-stat-sub">exact cents, no rounding</div>
+          </section>
+          <section className="hud-panel col-4">
+            <h2>Coverage</h2>
+            <div className="hud-stat">{fleetByWeapon.weapons.length}</div>
+            <div className="hud-stat-sub">weapon types tracked</div>
+          </section>
+          {fleetByWeapon.weapons.length > 0 && (
+            <section className="hud-panel col-4">
+              <h2>Ordnance by type // fleet</h2>
+              <table className="hud-table">
+                <thead>
+                  <tr>
+                    <th>Weapon</th>
+                    <th>Shots</th>
+                    <th>Value</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {fleetByWeapon.weapons.map((weapon) => (
+                    <tr key={weapon.weaponDcsType ?? "unknown"}>
+                      <td className="hud-mono">
+                        {weapon.weaponDisplayName ??
+                          weapon.weaponDcsType ??
+                          "unknown"}
+                      </td>
+                      <td className="hud-mono">{weapon.expenditureCount}</td>
+                      <td className="hud-mono">
+                        {weapon.unpricedCount === 0
+                          ? formatUsd(weapon.knownSubtotalCents)
+                          : `${formatUsd(weapon.knownSubtotalCents)} + ${weapon.unpricedCount} unpriced`}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </section>
+          )}
+          <section className="hud-panel col-8">
+            <h2>Runs</h2>
+            {runs.length === 0 ? (
+              <div className="hud-empty">NO RUNS MATCH THESE FILTERS</div>
+            ) : (
+              <table className="hud-table">
+                <thead>
+                  <tr>
+                    <th>Run</th>
+                    <th>Mission</th>
+                    <th>Status</th>
+                    <th>Events</th>
+                    <th>Export</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {runs.map(({ run, display }) => (
+                    <tr key={`${run.producerId}:${run.runKey}`}>
+                      <td className="hud-mono">
+                        <Link href={`/runs/${encodeURIComponent(run.runKey)}`}>
+                          {run.runKey}
+                        </Link>
+                      </td>
+                      <td>{run.missionName ?? "unknown"}</td>
+                      <td>
+                        <span className={`status-${display}`}>
+                          {display}
+                          {display === "stale" ? " ◌" : ""}
+                        </span>
+                      </td>
+                      <td className="hud-mono">
+                        {run.eventCount} ev · #{run.lastSequence}
+                      </td>
+                      <td className="hud-mono">
+                        <a
+                          href={`/api/telemetry/runs/${encodeURIComponent(run.runKey)}/events?format=csv`}
+                        >
+                          events
+                        </a>{" "}
+                        <a
+                          href={`/api/telemetry/runs/${encodeURIComponent(run.runKey)}/expenditures?format=csv`}
+                        >
+                          costs
+                        </a>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </section>
+        </div>
       </main>
     );
   } catch {
     return (
       <main>
-        <h1>DCS telemetry runs</h1>
-        <p>The telemetry database is currently unavailable.</p>
+        <h1 className="hud-title">Theater overview</h1>
+        <div className="hud-empty">TELEMETRY DATABASE UNAVAILABLE</div>
       </main>
     );
   }

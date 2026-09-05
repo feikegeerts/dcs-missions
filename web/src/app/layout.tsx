@@ -1,8 +1,10 @@
 import type { Metadata } from "next";
 
+import "./globals.css";
+
 export const metadata: Metadata = {
-  title: "DCS Telemetry",
-  description: "Raw DCS mission telemetry",
+  title: "DCS Telemetry // Command",
+  description: "DCS mission telemetry command dashboard",
 };
 
 export default function RootLayout({
@@ -10,8 +12,16 @@ export default function RootLayout({
 }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="en">
-      <body style={{ fontFamily: "sans-serif", margin: "2rem" }}>
-        {children}
+      <body>
+        <div className="hud-shell">
+          <header className="hud-topbar">
+            <div className="hud-brand">
+              DCS // Telemetry Command<small>ops display · duel-dynamic</small>
+            </div>
+            <div className="hud-clock">UNCLASSIFIED // DEMO DISPLAY</div>
+          </header>
+          {children}
+        </div>
       </body>
     </html>
   );
