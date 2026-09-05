@@ -1,11 +1,11 @@
 # DCS Telemetry Implementation Plan
 
-**Status:** Implementation in progress. Slices 1–10 are complete. The
-2026-09-03 multiplayer rejoin lifecycle fix (commit `f4d35f3`, pushed to
-`main`) is implemented and unit-tested but is **not yet live-validated** —
-the human-in-seat rejoin drill is parked, so it remains an open point, not a
-completed slice (see `docs/telemetry/rejoin-fix-evidence.md` §6). Every later
-slice still requires its own Gate E approval.
+**Status:** Implementation in progress. Slices 1–11 are complete for their
+approved scopes. The rejoin hardening has an observed live-run closure record,
+but the latest six-file hardening change set has only offline verification:
+85 Lua tests pass and live validation is parked. Slice 12 is approved to
+proceed after the offline hardening review; it still requires its own Gate E
+review at completion. See `docs/telemetry/rejoin-fix-evidence.md` §10.
 
 This plan turns the duel-dynamic mission into a telemetry producer and adds a
 public read-only dashboard backed by a protected ingestion API. Work is split
@@ -60,6 +60,25 @@ reinterpret:
 - The implementation uses at-least-once delivery and idempotent ingestion.
 - The mission emits source events only. Losses, attributed kills, assists, and
   costs are derived by the web system and remain rebuildable from source events.
+
+### Approved decisions — 2026-09-05
+
+The following decisions authorize the Slice 12 handoff and are not open for
+the implementation agent to reinterpret:
+
+- Existing historical runs remain unassigned and unpriced. Slice 12 must not
+  retroactively assign a catalogue or backfill historical expenditure rows.
+- Expenditure grouping uses both the aircraft incarnation and its airframe;
+  a participant-only or display-name-only grouping is insufficient.
+- Within one run, the latest observed participant name is the current run
+  label, while each source event retains its original name/callsign snapshot.
+- The current aircraft AAM gaps are the first catalogue expansion priority.
+  The reviewed version-one values remain immutable; new values require a new
+  catalogue version.
+- The production map and aircraft pair remain undecided and are not selected
+  by Slice 12.
+- The repo-owned `duel-1v1` source and superseded spec are deleted. External
+  Saved Games mission files are outside this cleanup and were not modified.
 
 ## 2. Goals And Non-Goals
 
@@ -905,6 +924,11 @@ the unattended matrix runs pass with zero unknown `dcs_type` for catalogued
 types; the catalogue is versioned per run and catalogue changes never rewrite
 historical cost entries.
 
+**Review outcome (2026-09-05):** The current-aircraft AAM-gap priority and the
+version-one values were reviewed. The production map and aircraft pair remain
+undecided. Existing runs remain unassigned and unpriced; no retroactive
+catalogue assignment is authorized.
+
 ### Slice 12: Ordnance expenditure and participant drilldown
 
 **Recommended model:** GPT-5.6 Luna Xhigh.
@@ -915,8 +939,11 @@ lookups, and already-defined partial-total rules.
 **Purpose:** Turn `ordnance.fired` into the first cost metric.
 
 **Scope:** Derive one expenditure per firing, select the run's catalogue value,
-record the selected value and catalogue version, group by participant, aircraft,
-and coalition, and add a minimal drilldown.
+record the selected value and catalogue version, group by participant, aircraft
+incarnation, airframe, and coalition, and add a minimal drilldown. Use the
+latest participant name observed in the run for current run-level labels while
+preserving the name/callsign snapshot on every source event. Existing
+historical runs remain unassigned and unpriced; do not backfill them.
 
 **Tests:** Two AIM-120C and one AIM-9X produce three expenditures and the correct
 known subtotal; a miss still costs the weapon; an unknown value remains null,
@@ -925,6 +952,10 @@ does not double cost.
 
 **Exit criteria:** The dashboard can explain which participant fired what, the
 known subtotal, and any unpriced remainder.
+
+**Approval:** Slice 12 may begin after the offline hardening review. The live
+rejoin validation remains parked and is not a prerequisite claim for this
+approval.
 
 ### Slice 13: Aircraft losses and deduplicated loss costs
 

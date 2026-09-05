@@ -1,8 +1,8 @@
 # Project status
 
-**Last updated:** 2026-09-05 (3 solo rejoin drills done — graceful path
-validated, post-death incarnation + resolve fixes in working tree, round-4
-live validation pending; dev window open). Read this first when coming back.
+**Last updated:** 2026-09-05 (closure run recorded; offline hardening review
+complete; latest hardening still not live-validated and live follow-up parked).
+Slice 12 is approved to proceed. Read this first when coming back.
 
 This is a snapshot of where the project is, what's known to work, what's
 known to be broken, and what still needs to happen before the mission
@@ -10,22 +10,20 @@ is shippable. If you change anything, update the relevant section.
 
 ---
 
-## 0. Do this first (2026-09-04)
+## 0. Do this first (2026-09-05)
 
-1. **Rejoin drill: 3 solo rounds flown 2026-09-05** (was parked; the
-   `f4d35f3` fix is now live-validated for initial join + graceful
-   leave/rejoin). Death + hard-disconnect exposed two follow-on gaps,
-   both fixed in the working tree (see
-   `docs/telemetry/rejoin-fix-evidence.md` §7–§9): retirement of the
-   tracked incarnation on `Dead`/`Crash`, and alias + reused-ID
-   resolution across recycled unit representations. Pure-Lua green
-   (13/13 asset incl. stash negative controls, all suites + stylua).
-   Remaining gate: **round-4 live validation** — WebGUI Restart →
-   join → die → hard-kill → rejoin → one missile, expecting
-   `asset.spawned aerial-1.u1.g2` with an attributed shot. The checklist
-   at `rejoin-fix-evidence.md` §6 still gates distribution.
-2. **The DCS env is DE-SANITIZED again** (see §2) — restore stock before
-   shipping or untrusted servers.
+1. **Rejoin closure evidence recorded 2026-09-05.** The live run
+   `run-20260905T145313Z-51ff9bff` had 28 gapless events, ended at sequence 28,
+   and observed post-crash retirement, a `g2` player asset, and an attributed
+   AIM-120C shot. It was direct production ingest, not collector verification;
+   the disconnect was selected from the menu and followed by quitting to the
+   desktop, so it is **not** evidence of a verified hard-kill path. The latest
+   six-file hardening change set has 85 offline Lua tests plus stylua green,
+   but is not claimed live-validated. Live follow-up is parked; see
+   `docs/telemetry/rejoin-fix-evidence.md` §10.
+2. **The DCS env is STOCK again** (see §2) — de-sanitize only for the
+   development loader, then restore stock before shipping or untrusted
+   servers.
 
 ---
 
@@ -36,24 +34,27 @@ checking the spec at `docs/spec-duel-dynamic.md`.
 
 `.miz` files in the server's Missions folder:
 - `Saved Games\DCS.dcs_serverrelease\Missions\duel-dynamic.miz`
-- `Saved Games\DCS.dcs_serverrelease\Missions\duel-1v1.miz` (legacy)
-
-Both `.miz` files contain the same generic loader trigger; only the
-`missions/<name>/main.lua` they load differs.
+Any legacy `duel-1v1.miz` outside the repository is an unsupported external
+artifact. It was not modified or deleted. The active repository mission is
+`duel-dynamic`.
 
 ---
 
 ## 2. Environment status
 
-> **DCS environment is currently STOCK** (restored 2026-09-04 after the
-> Slice 11 ordnance-matrix run). The dedicated-server install
+> **DCS environment is currently STOCK** (restored after the closure run).
+> The dedicated-server install
 > (`D:\DCS World Server`) `MissionScripting.lua` is the stock file (live
 > SHA-1 `FB54471ECE4DB968AED4A55A1806B25EA5116452`, identical to the
 > `MissionScripting.lua.orig` backup); the dev-window de-sanitized variant
 > is preserved as `MissionScripting.lua.telemetry-dev-backup` (SHA-1
 > `33977AAD2B3FE7A39E15374839C813E164BF0929`; the exact live de-sanitized
 > file used during the Slice 11 dev window had SHA-1
-> `D0069384E34331079A2513D84AE474C9BF5A8843`). `DCS_server` is stopped.
+> `D0069384E34331079A2513D84AE474C9BF5A8843`). `DCS_server` is stopped by
+> the orchestrator. `MissionScripting.lua` remains byte-identical to
+> `MissionScripting.lua.orig` at SHA-1
+> `FB54471ECE4DB968AED4A55A1806B25EA5116452`; `src/bootstrap.lua` was
+> restored with `TEST_COMBAT_ENABLED=true`.
 >
 > To re-enter dev mode (required for the dynamic `src/` dev loader): patch
 > the file again per `docs/dev-setup.md §2`. Keep it stock before any
@@ -83,21 +84,14 @@ C:\Projects\dcs-missions\
 │   │   ├── Moose.lua                   # full annotated MOOSE (for IDE)
 │   │   └── Moose_.lua                  # comment-stripped build (what ships)
 │   └── missions\
-│       ├── duel-dynamic\
-│       │   ├── main.lua                # ★ active, well-tested
-│       │   └── score.lua               # ★ active
-│       └── duel-1v1\
-│           ├── main.lua                # ⚠ INCOMPLETE — has duplicate top-level
-│           │                           #   code from a half-done edit. Don't
-│           │                           #   switch .current-mission to this
-│           │                           #   without cleanup first.
-│           └── score.lua               # ⚠ still logs "[duel-1v1] score module loaded"
+│       └── duel-dynamic\
+│           ├── main.lua                # ★ active, well-tested
+│           └── score.lua               # ★ active
 ├── lib\moose-src\                       # MOOSE source tree (for IDE only)
 ├── build\pack-miz.ps1                  # zips missions\<name>\ → out\<name>.miz
 ├── docs\
 │   ├── dev-setup.md                    # ★ read first, very thorough
 │   ├── mission-loader.md               # dev loader pattern
-│   ├── spec-duel-1v1.md                # ⚠ superseded — see spec-duel-dynamic.md
 │   ├── spec-duel-dynamic.md            # ★ current mission spec
 │   ├── PROJECT-STATUS.md               # ★ this file
 │   └── shipping-duel-dynamic.md        # ★ packaging checklist (see §6 below)
@@ -218,8 +212,8 @@ multiplayer drill remains the explicit follow-up. Evidence:
    root is the main project path — the `[bootstrap] root:` line in
    `dcs.log` is the authoritative check of which `src/` tree a worktree
    miz loaded. Evidence: `docs/telemetry/slice-10-asset-evidence.md`.
-- 🧪 Multiplayer rejoin lifecycle fix (**open point**: merged to `main` as
-   commit `f4d35f3`, pushed, live validation pending):
+- 🧪 Multiplayer rejoin lifecycle fix and follow-on hardening (**open point**:
+   the latest hardening remains offline-only):
    the 2026-09-03 two-player live drill produced **no
    `participant.entered` at all** (initial or rejoin) because gameplay and
    telemetry watchers subscribed to `EVENTS.PlayerEnterUnit`, which the
@@ -232,11 +226,13 @@ multiplayer drill remains the explicit follow-up. Evidence:
    (airplane=0/helicopter=1 accepted, ground=2 rejected), stops
    manufacturing participant identity from mock-only unit methods
    (`IniPlayerUCID` only), and strongly retains the gameplay watchers
-   (MOOSE keeps subscribers in weak-key tables). A hard disconnect still
-   cannot emit `participant.left` (DCS drops leave events without an
-   initiator) — documented limitation. 74 pure-Lua tests + stylua pass;
-   live human-in-seat validation pending (checklist:
-   `docs/telemetry/rejoin-fix-evidence.md` §6).
+   (MOOSE keeps subscribers in weak-key tables). The tested disconnect path
+   supplied no `participant.left` when DCS supplied no initiator; treat that
+   as a limitation, not a guarantee about every disconnect method. The
+   closure run is recorded in `docs/telemetry/rejoin-fix-evidence.md` §10, but
+   the latest six-file
+   hardening change set is only offline-verified: 85 pure-Lua tests + stylua
+   pass. Do not treat the live run as validation of that latest change set.
 - ✅ Telemetry Slice 11 local catalogue checkpoint: the completed unattended
   AAM/airframe matrix now feeds immutable `ordnance` catalogue version 1 with
   exactly 24 scoped keys (16 missiles, 8 aircraft). Unknown keys stay
@@ -249,10 +245,12 @@ multiplayer drill remains the explicit follow-up. Evidence:
   Local web tests,
   typecheck, lint, formatting, migration generation, and `git diff --check`
   pass. The additive migration was applied to Neon on 2026-09-05; the first
-  seed inserted and verified all 24 items, and an immediate second seed
-  verified the same immutable rows with 0 inserts. Research and limits:
-  `docs/telemetry/ordnance-catalogue-v1-research.md`; runtime evidence:
-  `docs/telemetry/slice-11-ordnance-matrix.md`.
+   seed inserted and verified all 24 items, and an immediate second seed
+   verified the same immutable rows with 0 inserts. Research and limits:
+   `docs/telemetry/ordnance-catalogue-v1-research.md`; runtime evidence:
+   `docs/telemetry/slice-11-ordnance-matrix.md`. The current-aircraft AAM-gap
+   priority and values were reviewed; Slice 12 is approved. Existing runs
+   remain unassigned and unpriced.
 
 ## 5. What's known to be broken / limited
 
@@ -270,9 +268,6 @@ These are DCS-imposed limitations, not bugs in the Lua. Documented in
   new coord. The current package-wave lifecycle has no player-death handler and
   does not call `Teleport`. Workaround: load MIST and use
   `mist.teleportToPoint({action="respawn"})` — see §6.
-- ⚠️ **`duel-1v1` is in a broken intermediate state.** Has duplicate
-  top-level code from a half-done edit. Do not switch
-  `.current-mission` back to it without cleanup. See spec §10.
 - ⚠️ **Package-wave behavior is not yet real-DCS validated.** The plain-Lua
   regression test verifies the lifecycle and MOOSE calls, but Tacview must
   confirm that `SPAWN:InitGrouping` produces the intended 2/3/4-ship formation
@@ -303,18 +298,15 @@ To get the player teleporting to a new position on death, we need
    position, not the ME position.
 6. Update `spec-duel-dynamic.md §6.2` to reflect the new behaviour.
 
-### 6.2 Clean up `duel-1v1`
+### 6.2 Telemetry next step: Slice 12
 
-Decide whether to:
-- (a) delete it, or
-- (b) fix the duplicate top-level code (lines 152–189 and 203–225 of
-  `missions/duel-1v1/main.lua` are duplicates of the inner SCHEDULER
-  block at lines 97–150; delete the duplicates and the file should
-  work again).
-
-The original 1v1 mission was used to prove the bootstrap → MOOSE → F10
-menu → event pipeline; with `duel-dynamic` covering that and more,
-deleting is probably the right call. Verify with the user first.
+Slice 12 is approved after the offline hardening review. Implement expenditure
+projection and participant drilldown with grouping by participant, aircraft
+incarnation, airframe, and coalition. Use the latest participant name within a
+run while preserving event-level name/callsign snapshots. Existing historical
+runs remain unassigned and unpriced; do not backfill them. The live rejoin
+validation is parked and is not being represented as complete. The production
+map and aircraft pair remain undecided.
 
 ### 6.3 Ship the mission (static mode)
 
@@ -374,7 +366,7 @@ how to verify, and `docs/dev-setup.md §8` for the build/QA loop.
       for telemetry Slice 14.
 - [x] Replace per-player bandit resets with whole-package waves. Partial red
       losses are held; the 30-second timer starts after the final red loss.
-- [ ] Validate 1v1, 2v2, 3v3, and 4v4 package geometry/tasking on the dedicated
+- [ ] Validate 2v2, 3v3, and 4v4 package geometry/tasking on the dedicated
       server and inspect the result in Tacview.
 - [x] Install/configure Tacview for
       `Saved Games\DCS.dcs_serverrelease` before that validation run.
@@ -458,17 +450,19 @@ Slice 10 (approved and completed 2026-09-03 on branch
  production) validated the Slice 10 bandit side (waves g1–g5, full bandit
  ordnance attribution) but exposed the multiplayer participant/asset
  lifecycle gap: no `participant.entered` for either player (initial or
- rejoin) and no new asset incarnation on a hard-disconnect/rejoin, leaving
- the rejoining player's later shots unresolved. The root cause and fix are
-documented in `docs/telemetry/rejoin-fix-evidence.md` (merged to `main` as
-  commit `f4d35f3`, pushed; live validation still pending):
+  rejoin) and no new asset incarnation on a disconnect/rejoin, leaving
+  the rejoining player's later shots unresolved. The observed failure and
+  working hypothesis are documented in `docs/telemetry/rejoin-fix-evidence.md`
+  (merged to `main` as
+  commit `f4d35f3`, pushed; closure evidence is recorded, but the latest
+  hardening remains live-unvalidated):
  `PlayerEnterUnit` is not multiplayer-safe in the pinned MOOSE; the
  multiplayer-safe `PlayerEnterAircraft` (synthesized with real `Ini*`
  fields) is what the fix subscribes to, with `Ini*`-first normalization,
  corrected aircraft categories, `IniPlayerUCID`-only participant identity,
- and strong retention of the gameplay watchers. 74 pure-Lua tests + stylua
- pass; the live human-in-seat rejoin drill is the outstanding gate (same doc,
- §6). Raw drill evidence is archived locally (PII, not in the repo).
+  and strong retention of the gameplay watchers. The latest six-file hardening
+  set passes 85 offline Lua tests + stylua; the live follow-up is parked. Raw
+  drill evidence is archived locally (PII, not in the repo).
 
  Slice 11 was re-scoped (2026-09-04, user decision) from "valuation
  catalogue for the configured loadouts" to **loadout and ordnance type
@@ -486,7 +480,8 @@ documented in `docs/telemetry/rejoin-fix-evidence.md` (merged to `main` as
  filter is a Slice 15 view. The scoped AAM/airframe matrix and local immutable
  catalogue checkpoint were completed on 2026-09-05. The generated database
  migration and immutable v1 seed were deployed to Neon and verified
- idempotent; Slice 12 still requires human approval.
+  idempotent; the current-aircraft AAM-gap priority and values were reviewed,
+  and Slice 12 is approved. Existing runs remain unassigned and unpriced.
 
 Telemetry now has priority over the optional MIST respawn work.
 
@@ -505,7 +500,7 @@ Telemetry now has priority over the optional MIST respawn work.
 4. Sanity check: the log shows the init sequence from
    `spec-duel-dynamic.md §7`. The bandit spawns. F10 menu works.
 5. For telemetry, review the Slice 11 matrix and catalogue research, then
-   explicitly approve Slice 12 before implementation. The Slice 11 catalogue
-   schema and immutable version 1 are already deployed in Neon. Other work
-   remains in §6.1, §6.2, and §6.4. §6.3 builds a self-contained `.miz`; final
-   QA on a stock install remains.
+   implement the approved Slice 12 scope. The Slice 11 catalogue schema and
+   immutable version 1 are already deployed in Neon. Other work remains in
+   §6.1, §6.2, and §6.4. §6.3 builds a self-contained `.miz`; final QA on a
+   stock install remains.
