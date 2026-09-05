@@ -1092,6 +1092,18 @@ private runs, participant views, and protected catalogue editing.
 **Constraint:** Do not allow this deferred slice to complicate version-one
 ingestion or dashboard work.
 
+### Slice 18.5: Automatic collector delivery (notes only, unscoped)
+
+**Status:** Notes only — not approved, not scoped, no implementation.
+See `docs/telemetry/slice-18-5-auto-push-notes.md` for the full analysis.
+
+**Why:** The owner asked whether a live mission-to-Neon connection is possible,
+or at least an automatic push when the server stops a mission, instead of the
+manual `collect` + `deliver` CLI step. The notes record the answer (no live push
+from mission Lua; standalone poller outside DCS is the recommended shape) and
+the five open host/URL/token/lag/backlog decisions. Do not implement from this
+pointer alone — this slice needs scoping first.
+
 ### Slice 19: Mission-agnostic telemetry architecture (Sol study)
 
 **Recommended model:** GPT-5.6 Sol High.
