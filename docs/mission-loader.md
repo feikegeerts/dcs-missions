@@ -101,7 +101,7 @@ The dispatcher, framework, and loader code are shared. Nothing in
 
 ## Switching missions (no restart of the server, no editor trip)
 
-Edit `src/.current-mission` (one line, e.g. `duel-1v1` → `4v4-bvr`), save, restart
+Edit `src/.current-mission` (one line, e.g. `duel-dynamic` → `<another-mission>`), save, restart
 the running mission. The .miz file itself doesn't change. The trigger code
 inside it doesn't change. Only the pointer file does.
 

@@ -6,8 +6,7 @@ group spawned in close formation 60+ statute miles from the blue-player
 centroid. It receives a shared MOOSE CAP task so multiplayer produces one
 package fight rather than unrelated paired duels.
 
-This is a test bed for the dynamic-spawn pipeline. It supersedes `duel-1v1`
-(see §10).
+This is the active test bed for the dynamic-spawn pipeline.
 
 **Shipping status:** the self-contained `.miz` is built and verified on a stock,
 sanitized dedicated server. See `docs/shipping-duel-dynamic.md`.
@@ -27,9 +26,9 @@ src/
   .current-mission                   # contains the string "duel-dynamic"
 ```
 
-Both `.miz` files (`duel-1v1.miz` and `duel-dynamic.miz`) currently share the
-same generic loader trigger. Only the contents of `missions/<name>/` differ.
-Switch active mission by editing `.current-mission` and restarting.
+The active `.miz` uses the generic loader trigger. Switch the active source
+mission by editing `.current-mission` and restarting. Mission archives are
+environment artifacts, not tracked source files in this repository.
 
 ---
 
@@ -343,13 +342,3 @@ Caucasus missions generate ~1 MB of `.acmi` per minute.
   complete group should appear 30 seconds after the final red loss.
 
 ---
-
-## 10. Superseded mission: duel-1v1
-
-`src/missions/duel-1v1/` is the original 1-vs-1 test mission. It still
-exists in the repo for reference, but it is **incomplete** — see
-`docs/PROJECT-STATUS.md` §3. Don't switch back to it without first
-finishing the cleanup; the spec at `docs/spec-duel-1v1.md` describes
-the old single-bandit design.
-
-`duel-dynamic` is the mission that's actively developed and tested.
