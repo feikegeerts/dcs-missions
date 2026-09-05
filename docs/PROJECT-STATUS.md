@@ -1,8 +1,7 @@
 # Project status
 
-**Last updated:** 2026-09-05 (Slice 11 local catalogue checkpoint implemented;
-database migration and seed intentionally not run remotely). Read this first
-when coming back.
+**Last updated:** 2026-09-05 (Slice 11 catalogue migration deployed and
+immutable version 1 seeded in Neon). Read this first when coming back.
 
 This is a snapshot of where the project is, what's known to work, what's
 known to be broken, and what still needs to happen before the mission
@@ -243,7 +242,9 @@ multiplayer drill remains the explicit follow-up. Evidence:
   inserts missing rows but rejects any attempt to rewrite an existing version.
   Local web tests,
   typecheck, lint, formatting, migration generation, and `git diff --check`
-  pass. No migration or seed was run against Neon. Research and limits:
+  pass. The additive migration was applied to Neon on 2026-09-05; the first
+  seed inserted and verified all 24 items, and an immediate second seed
+  verified the same immutable rows with 0 inserts. Research and limits:
   `docs/telemetry/ordnance-catalogue-v1-research.md`; runtime evidence:
   `docs/telemetry/slice-11-ordnance-matrix.md`.
 
@@ -478,8 +479,8 @@ documented in `docs/telemetry/rejoin-fix-evidence.md` (merged to `main` as
  is already in the contract and the run store; the dashboard mission
  filter is a Slice 15 view. The scoped AAM/airframe matrix and local immutable
  catalogue checkpoint were completed on 2026-09-05. The generated database
- migration and seed have not been run remotely; Slice 12 still requires human
- approval.
+ migration and immutable v1 seed were deployed to Neon and verified
+ idempotent; Slice 12 still requires human approval.
 
 Telemetry now has priority over the optional MIST respawn work.
 
@@ -498,7 +499,7 @@ Telemetry now has priority over the optional MIST respawn work.
 4. Sanity check: the log shows the init sequence from
    `spec-duel-dynamic.md §7`. The bandit spawns. F10 menu works.
 5. For telemetry, review the Slice 11 matrix and catalogue research, then
-   explicitly approve Slice 12 before implementation. The Slice 11 database
-   migration/seed also remains a separate manual deployment action. Other work
+   explicitly approve Slice 12 before implementation. The Slice 11 catalogue
+   schema and immutable version 1 are already deployed in Neon. Other work
    remains in §6.1, §6.2, and §6.4. §6.3 builds a self-contained `.miz`; final
    QA on a stock install remains.
