@@ -15,6 +15,13 @@
       "when": 1788615466803,
       "tag": "0001_clever_the_stranger",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1788626981284,
+      "tag": "0002_flaky_makkari",
+      "breakpoints": true
     }
   ]
 }

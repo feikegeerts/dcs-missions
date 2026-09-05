@@ -1,5 +1,12 @@
 import type { TelemetryStore } from "./store";
 import type { TelemetryEvent } from "./types";
+import {
+  catalogueForAssignment,
+  currentOrdnanceAssignment,
+  deriveExpenditure,
+  participantObservation,
+  type CatalogueAssignment,
+} from "./expenditures";
 import { validateBatch } from "./validate";
 
 type IngestResult = {
@@ -89,6 +96,23 @@ export async function processIngest(
 
   const events = validation.events.map(({ event }) => event);
   const fields = runFields(events);
+
+  // Catalogue assignment is pinned at run creation: a run row that does
+  // not exist yet is explicitly assigned the current catalogue, while a
+  // pre-existing row keeps whatever it has (including nothing — historical
+  // runs are never retroactively priced). The same assignment prices every
+  // expenditure projected from this batch, so a run can never mix versions.
+  const preExistingRun = await store.getRunByRunKey(validation.runKey);
+  const assignment: CatalogueAssignment | null = preExistingRun
+    ? preExistingRun.valuationCatalogue != null &&
+      preExistingRun.valuationCatalogueVersion != null
+      ? {
+          catalogue: preExistingRun.valuationCatalogue,
+          version: preExistingRun.valuationCatalogueVersion,
+        }
+      : null
+    : currentOrdnanceAssignment();
+
   await store.upsertRun({
     producerId: validation.producerId,
     runKey: validation.runKey,
@@ -96,6 +120,8 @@ export async function processIngest(
     missionVersion: fields.missionVersion,
     mapName: fields.mapName,
     runClassification: fields.runClassification,
+    valuationCatalogue: assignment?.catalogue ?? null,
+    valuationCatalogueVersion: assignment?.version ?? null,
     firstSequence: fields.firstSequence,
     lastSequence: fields.lastSequence,
     acceptedDelta: accepted,
@@ -103,6 +129,49 @@ export async function processIngest(
     endedAt: fields.endedAt,
     status: fields.status,
   });
+
+  // Derived facts are projected after the run row exists (foreign keys).
+  // Both newly accepted and duplicate source events are projected: a
+  // duplicate re-pass repairs a projection that failed to persist, and
+  // every projection insert is idempotent, so replays never double-charge.
+  if (catalogueForAssignment(assignment) !== null) {
+    for (let index = 0; index < validation.events.length; index += 1) {
+      const result = validation.events[index];
+      if (!result.valid) {
+        continue;
+      }
+      const outcome = results[index]?.status;
+      if (outcome !== "accepted" && outcome !== "duplicate") {
+        continue;
+      }
+      const expenditure = deriveExpenditure(result.event, assignment);
+      if (expenditure !== null) {
+        await store.insertExpenditure(expenditure);
+      }
+    }
+  }
+  for (let index = 0; index < validation.events.length; index += 1) {
+    const result = validation.events[index];
+    if (!result.valid) {
+      continue;
+    }
+    const outcome = results[index]?.status;
+    if (outcome !== "accepted" && outcome !== "duplicate") {
+      continue;
+    }
+    const observation = participantObservation(result.event);
+    if (observation !== null) {
+      await store.upsertRunParticipant({
+        producerId: observation.producerId,
+        runKey: observation.runKey,
+        participantId: observation.participantId,
+        displayName: observation.displayName,
+        callsign: observation.callsign,
+        coalition: observation.coalition,
+        eventSequence: observation.eventSequence,
+      });
+    }
+  }
 
   return {
     httpStatus: 200,

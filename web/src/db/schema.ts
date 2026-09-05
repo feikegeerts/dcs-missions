@@ -71,6 +71,26 @@ export const telemetryEvents = pgTable(
   ],
 );
 
+export const valuationCatalogues = pgTable(
+  "valuation_catalogues",
+  {
+    catalogue: text("catalogue").notNull(),
+    version: integer("version").notNull(),
+    effectiveDate: date("effective_date", { mode: "string" }).notNull(),
+    currency: text("currency").notNull(),
+    pricingConvention: text("pricing_convention").notNull(),
+    typeKeySource: text("type_key_source").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.catalogue, table.version] }),
+    check("valuation_catalogues_version_positive", sql`${table.version} > 0`),
+    index("valuation_catalogues_effective_date_idx").on(table.effectiveDate),
+  ],
+);
+
 export const missionRuns = pgTable(
   "mission_runs",
   {
@@ -80,6 +100,8 @@ export const missionRuns = pgTable(
     missionVersion: text("mission_version"),
     mapName: text("map_name"),
     runClassification: text("run_classification"),
+    valuationCatalogue: text("valuation_catalogue"),
+    valuationCatalogueVersion: integer("valuation_catalogue_version"),
     firstSequence: bigint("first_sequence", { mode: "number" })
       .notNull()
       .default(1),
@@ -99,27 +121,19 @@ export const missionRuns = pgTable(
   },
   (table) => [
     primaryKey({ columns: [table.producerId, table.runKey] }),
+    foreignKey({
+      columns: [table.valuationCatalogue, table.valuationCatalogueVersion],
+      foreignColumns: [
+        valuationCatalogues.catalogue,
+        valuationCatalogues.version,
+      ],
+      name: "mission_runs_valuation_catalogue_version_fk",
+    }).onDelete("restrict"),
+    check(
+      "mission_runs_valuation_assignment_complete",
+      sql`(${table.valuationCatalogue} IS NULL AND ${table.valuationCatalogueVersion} IS NULL) OR (${table.valuationCatalogue} IS NOT NULL AND ${table.valuationCatalogueVersion} IS NOT NULL)`,
+    ),
     index("mission_runs_run_key_idx").on(table.runKey),
-  ],
-);
-
-export const valuationCatalogues = pgTable(
-  "valuation_catalogues",
-  {
-    catalogue: text("catalogue").notNull(),
-    version: integer("version").notNull(),
-    effectiveDate: date("effective_date", { mode: "string" }).notNull(),
-    currency: text("currency").notNull(),
-    pricingConvention: text("pricing_convention").notNull(),
-    typeKeySource: text("type_key_source").notNull(),
-    createdAt: timestamp("created_at", { withTimezone: true })
-      .notNull()
-      .defaultNow(),
-  },
-  (table) => [
-    primaryKey({ columns: [table.catalogue, table.version] }),
-    check("valuation_catalogues_version_positive", sql`${table.version} > 0`),
-    index("valuation_catalogues_effective_date_idx").on(table.effectiveDate),
   ],
 );
 
@@ -163,9 +177,107 @@ export const valuationItems = pgTable(
   ],
 );
 
+export const runParticipants = pgTable(
+  "run_participants",
+  {
+    producerId: text("producer_id").notNull(),
+    runKey: text("run_key").notNull(),
+    participantId: text("participant_id").notNull(),
+    displayName: text("display_name"),
+    displayNameSequence: bigint("display_name_sequence", { mode: "number" }),
+    callsign: text("callsign"),
+    callsignSequence: bigint("callsign_sequence", { mode: "number" }),
+    coalition: text("coalition"),
+    latestEventSequence: bigint("latest_event_sequence", {
+      mode: "number",
+    }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.producerId, table.runKey, table.participantId],
+    }),
+    foreignKey({
+      columns: [table.producerId, table.runKey],
+      foreignColumns: [missionRuns.producerId, missionRuns.runKey],
+      name: "run_participants_mission_run_fk",
+    }).onDelete("cascade"),
+    index("run_participants_run_idx").on(table.producerId, table.runKey),
+  ],
+);
+
+export const ordnanceExpenditures = pgTable(
+  "ordnance_expenditures",
+  {
+    sourceEventId: text("source_event_id").primaryKey(),
+    producerId: text("producer_id").notNull(),
+    runKey: text("run_key").notNull(),
+    eventSequence: bigint("event_sequence", { mode: "number" }).notNull(),
+    participantId: text("participant_id"),
+    participantDisplayName: text("participant_display_name"),
+    participantCallsign: text("participant_callsign"),
+    assetKey: text("asset_key"),
+    aircraftDcsType: text("aircraft_dcs_type"),
+    coalition: text("coalition"),
+    weaponDcsType: text("weapon_dcs_type"),
+    weaponDisplayName: text("weapon_display_name"),
+    catalogue: text("catalogue").notNull(),
+    catalogueVersion: integer("catalogue_version").notNull(),
+    unitCostCents: bigint("unit_cost_cents", { mode: "number" }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.sourceEventId],
+      foreignColumns: [telemetryEvents.eventId],
+      name: "ordnance_expenditures_source_event_fk",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.producerId, table.runKey],
+      foreignColumns: [missionRuns.producerId, missionRuns.runKey],
+      name: "ordnance_expenditures_mission_run_fk",
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.catalogue, table.catalogueVersion],
+      foreignColumns: [
+        valuationCatalogues.catalogue,
+        valuationCatalogues.version,
+      ],
+      name: "ordnance_expenditures_catalogue_version_fk",
+    }).onDelete("restrict"),
+    check(
+      "ordnance_expenditures_unit_cost_positive",
+      sql`${table.unitCostCents} IS NULL OR ${table.unitCostCents} > 0`,
+    ),
+    index("ordnance_expenditures_run_sequence_idx").on(
+      table.producerId,
+      table.runKey,
+      table.eventSequence,
+    ),
+    index("ordnance_expenditures_group_idx").on(
+      table.producerId,
+      table.runKey,
+      table.participantId,
+      table.assetKey,
+      table.aircraftDcsType,
+      table.coalition,
+    ),
+    index("ordnance_expenditures_weapon_dcs_type_idx").on(table.weaponDcsType),
+  ],
+);
+
 export type TelemetryEventRow = typeof telemetryEvents.$inferSelect;
 export type MissionRunRow = typeof missionRuns.$inferSelect;
 export type ValuationCatalogueRow = typeof valuationCatalogues.$inferSelect;
 export type NewValuationCatalogueRow = typeof valuationCatalogues.$inferInsert;
 export type ValuationItemRow = typeof valuationItems.$inferSelect;
 export type NewValuationItemRow = typeof valuationItems.$inferInsert;
+export type RunParticipantRow = typeof runParticipants.$inferSelect;
+export type OrdnanceExpenditureRow = typeof ordnanceExpenditures.$inferSelect;

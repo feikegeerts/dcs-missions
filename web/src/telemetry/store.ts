@@ -1,11 +1,19 @@
 import { and, asc, desc, eq, sql } from "drizzle-orm";
 
 import { getDb } from "@/db/client";
-import { missionRuns, telemetryEvents } from "@/db/schema";
+import {
+  missionRuns,
+  ordnanceExpenditures,
+  runParticipants,
+  telemetryEvents,
+} from "@/db/schema";
+import type { ExpenditureProjection } from "./expenditures";
 import type { TelemetryEvent } from "./types";
 
 export type RunRow = typeof missionRuns.$inferSelect;
 export type EventRow = typeof telemetryEvents.$inferSelect;
+export type ExpenditureRow = typeof ordnanceExpenditures.$inferSelect;
+export type RunParticipantRow = typeof runParticipants.$inferSelect;
 
 export interface RunUpsertInput {
   producerId: string;
@@ -14,6 +22,8 @@ export interface RunUpsertInput {
   missionVersion?: string | null;
   mapName?: string | null;
   runClassification?: string | null;
+  valuationCatalogue?: string | null;
+  valuationCatalogueVersion?: number | null;
   firstSequence: number;
   lastSequence: number;
   acceptedDelta: number;
@@ -22,11 +32,25 @@ export interface RunUpsertInput {
   status: "active" | "ended";
 }
 
+export interface RunParticipantUpsert {
+  producerId: string;
+  runKey: string;
+  participantId: string;
+  displayName: string | null;
+  callsign: string | null;
+  coalition: string | null;
+  eventSequence: number;
+}
+
 export interface TelemetryStore {
   insertEvent(
     event: TelemetryEvent,
   ): Promise<"accepted" | "duplicate" | "rejected">;
   upsertRun(run: RunUpsertInput): Promise<void>;
+  insertExpenditure(
+    expenditure: ExpenditureProjection,
+  ): Promise<"inserted" | "existing">;
+  upsertRunParticipant(participant: RunParticipantUpsert): Promise<void>;
   listRuns(limit?: number): Promise<RunRow[]>;
   getRunByRunKey(runKey: string): Promise<RunRow | null>;
   listEvents(
@@ -35,6 +59,14 @@ export interface TelemetryStore {
     limit: number,
     offset: number,
   ): Promise<EventRow[]>;
+  listExpenditures(
+    producerId: string,
+    runKey: string,
+  ): Promise<ExpenditureRow[]>;
+  listRunParticipants(
+    producerId: string,
+    runKey: string,
+  ): Promise<RunParticipantRow[]>;
 }
 
 function nullableObjectField(
@@ -144,6 +176,8 @@ export class NeonTelemetryStore implements TelemetryStore {
         missionVersion: input.missionVersion ?? null,
         mapName: input.mapName ?? null,
         runClassification: input.runClassification ?? null,
+        valuationCatalogue: input.valuationCatalogue ?? null,
+        valuationCatalogueVersion: input.valuationCatalogueVersion ?? null,
         firstSequence: input.firstSequence,
         lastSequence: input.lastSequence,
         eventCount: input.acceptedDelta,
@@ -164,6 +198,77 @@ export class NeonTelemetryStore implements TelemetryStore {
           missionVersion: sql`COALESCE(EXCLUDED.mission_version, ${missionRuns.missionVersion})`,
           mapName: sql`COALESCE(EXCLUDED.map_name, ${missionRuns.mapName})`,
           runClassification: sql`COALESCE(EXCLUDED.run_classification, ${missionRuns.runClassification})`,
+          // A run's catalogue assignment is pinned at creation and never
+          // rewritten: existing assignments win, and runs that predate
+          // catalogue assignment stay unassigned (no retroactive pricing).
+          valuationCatalogue: sql`COALESCE(${missionRuns.valuationCatalogue}, EXCLUDED.valuation_catalogue)`,
+          valuationCatalogueVersion: sql`COALESCE(${missionRuns.valuationCatalogueVersion}, EXCLUDED.valuation_catalogue_version)`,
+          updatedAt: sql`now()`,
+        },
+      });
+  }
+
+  async insertExpenditure(
+    expenditure: ExpenditureProjection,
+  ): Promise<"inserted" | "existing"> {
+    const rows = await getDb()
+      .insert(ordnanceExpenditures)
+      .values({
+        sourceEventId: expenditure.sourceEventId,
+        producerId: expenditure.producerId,
+        runKey: expenditure.runKey,
+        eventSequence: expenditure.eventSequence,
+        participantId: expenditure.participantId,
+        participantDisplayName: expenditure.participantDisplayName,
+        participantCallsign: expenditure.participantCallsign,
+        assetKey: expenditure.assetKey,
+        aircraftDcsType: expenditure.aircraftDcsType,
+        coalition: expenditure.coalition,
+        weaponDcsType: expenditure.weaponDcsType,
+        weaponDisplayName: expenditure.weaponDisplayName,
+        catalogue: expenditure.catalogue,
+        catalogueVersion: expenditure.catalogueVersion,
+        unitCostCents: expenditure.unitCostCents,
+      })
+      .onConflictDoNothing({
+        target: ordnanceExpenditures.sourceEventId,
+      })
+      .returning({ sourceEventId: ordnanceExpenditures.sourceEventId });
+    return rows.length > 0 ? "inserted" : "existing";
+  }
+
+  async upsertRunParticipant(input: RunParticipantUpsert): Promise<void> {
+    const db = getDb();
+    await db
+      .insert(runParticipants)
+      .values({
+        producerId: input.producerId,
+        runKey: input.runKey,
+        participantId: input.participantId,
+        displayName: input.displayName,
+        displayNameSequence:
+          input.displayName != null ? input.eventSequence : null,
+        callsign: input.callsign,
+        callsignSequence: input.callsign != null ? input.eventSequence : null,
+        coalition: input.coalition,
+        latestEventSequence: input.eventSequence,
+      })
+      .onConflictDoUpdate({
+        target: [
+          runParticipants.producerId,
+          runParticipants.runKey,
+          runParticipants.participantId,
+        ],
+        set: {
+          // Labels advance monotonically by event sequence: a replayed or
+          // out-of-order observation never overwrites a newer label, and a
+          // null label never clears a known one.
+          displayName: sql`CASE WHEN EXCLUDED.display_name_sequence IS NOT NULL AND EXCLUDED.display_name_sequence >= COALESCE(${runParticipants.displayNameSequence}, -1) THEN EXCLUDED.display_name ELSE ${runParticipants.displayName} END`,
+          displayNameSequence: sql`CASE WHEN EXCLUDED.display_name_sequence IS NOT NULL AND EXCLUDED.display_name_sequence >= COALESCE(${runParticipants.displayNameSequence}, -1) THEN EXCLUDED.display_name_sequence ELSE ${runParticipants.displayNameSequence} END`,
+          callsign: sql`CASE WHEN EXCLUDED.callsign_sequence IS NOT NULL AND EXCLUDED.callsign_sequence >= COALESCE(${runParticipants.callsignSequence}, -1) THEN EXCLUDED.callsign ELSE ${runParticipants.callsign} END`,
+          callsignSequence: sql`CASE WHEN EXCLUDED.callsign_sequence IS NOT NULL AND EXCLUDED.callsign_sequence >= COALESCE(${runParticipants.callsignSequence}, -1) THEN EXCLUDED.callsign_sequence ELSE ${runParticipants.callsignSequence} END`,
+          coalition: sql`COALESCE(EXCLUDED.coalition, ${runParticipants.coalition})`,
+          latestEventSequence: sql`GREATEST(${runParticipants.latestEventSequence}, EXCLUDED.latest_event_sequence)`,
           updatedAt: sql`now()`,
         },
       });
@@ -204,5 +309,37 @@ export class NeonTelemetryStore implements TelemetryStore {
       .orderBy(asc(telemetryEvents.eventSequence))
       .limit(limit)
       .offset(offset);
+  }
+
+  async listExpenditures(
+    producerId: string,
+    runKey: string,
+  ): Promise<ExpenditureRow[]> {
+    return getDb()
+      .select()
+      .from(ordnanceExpenditures)
+      .where(
+        and(
+          eq(ordnanceExpenditures.producerId, producerId),
+          eq(ordnanceExpenditures.runKey, runKey),
+        ),
+      )
+      .orderBy(asc(ordnanceExpenditures.eventSequence));
+  }
+
+  async listRunParticipants(
+    producerId: string,
+    runKey: string,
+  ): Promise<RunParticipantRow[]> {
+    return getDb()
+      .select()
+      .from(runParticipants)
+      .where(
+        and(
+          eq(runParticipants.producerId, producerId),
+          eq(runParticipants.runKey, runKey),
+        ),
+      )
+      .orderBy(asc(runParticipants.participantId));
   }
 }
