@@ -130,11 +130,15 @@ local function find_bandit_entry(roster, group_name)
 end
 
 local function raw_unit(config, unit)
-  return call_method(config, unit, "GetDCSObject") or unit
+  local raw = call_method(config, unit, "GetDCSObject")
+  if raw ~= nil then
+    return raw, raw ~= unit
+  end
+  return unit, false
 end
 
 local function read_identity(config, unit)
-  local raw = raw_unit(config, unit)
+  local raw, is_wrapper = raw_unit(config, unit)
   local id = first_method(config, raw, "getID", "GetID")
   if id == nil and raw ~= unit then
     id = first_method(config, unit, "GetID", "getID")
@@ -142,7 +146,7 @@ local function read_identity(config, unit)
   if type(id) ~= "number" and type(id) ~= "string" then
     id = nil
   end
-  return raw, id
+  return raw, id, is_wrapper
 end
 
 local function read_group_name(config, unit)
@@ -155,7 +159,7 @@ local function read_group_name(config, unit)
 end
 
 local function read_observation(config, unit, group_name, event_data)
-  local raw, identity_id = read_identity(config, unit)
+  local raw, identity_id, identity_is_wrapper = read_identity(config, unit)
   local event_group_name = non_empty_string(read_field(config, event_data, "IniGroupName"))
     or non_empty_string(read_field(config, event_data, "IniDCSGroupName"))
   local dcs_name = non_empty_string(read_field(config, event_data, "IniDCSUnitName"))
@@ -195,7 +199,7 @@ local function read_observation(config, unit, group_name, event_data)
     local candidate = read_field(config, event_data, field_name)
     if type(candidate) == "table" and not seen_alias[candidate] then
       seen_alias[candidate] = true
-      local candidate_raw = call_method(config, candidate, "GetDCSObject") or candidate
+      local candidate_raw, candidate_is_wrapper = raw_unit(config, candidate)
       local candidate_id = first_method(config, candidate_raw, "getID", "GetID")
       if candidate_id == nil and candidate_raw ~= candidate then
         candidate_id = first_method(config, candidate, "GetID", "getID")
@@ -203,13 +207,19 @@ local function read_observation(config, unit, group_name, event_data)
       if type(candidate_id) ~= "number" and type(candidate_id) ~= "string" then
         candidate_id = nil
       end
-      aliases[#aliases + 1] = { object = candidate, raw = candidate_raw, id = candidate_id }
+      aliases[#aliases + 1] = {
+        object = candidate,
+        raw = candidate_raw,
+        id = candidate_id,
+        is_wrapper = candidate_is_wrapper,
+      }
     end
   end
   return {
     unit = unit,
     raw = raw,
     identity_id = identity_id,
+    identity_is_wrapper = identity_is_wrapper,
     aliases = aliases,
     group_name = group_name or event_group_name or read_group_name(config, raw),
     dcs_name = dcs_name,
@@ -351,6 +361,7 @@ function M.new(config)
     return nil, bandit_error
   end
 
+  local retired_identity = {}
   local adapter = {
     config = config,
     player_roster = player_roster,
@@ -358,6 +369,7 @@ function M.new(config)
     generations = {},
     active_players = {},
     instances_by_object = {},
+    identity_kind_by_object = {},
     instances_by_id = {},
     bandit_groups = {},
     watcher = nil,
@@ -371,53 +383,196 @@ function M.new(config)
   end
 
   local function add_identity(instance, observation)
+    instance.identity_id_keys = {}
+    instance.identity_objects = {}
+    local seen_id_key = {}
+    local seen_object = {}
+    local function map_object(object, kind)
+      if object ~= nil then
+        adapter.instances_by_object[object] = instance
+        adapter.identity_kind_by_object[object] = kind
+        if not seen_object[object] then
+          seen_object[object] = true
+          instance.identity_objects[#instance.identity_objects + 1] = object
+        end
+      end
+    end
+    local function map_id(id)
+      local id_key = identity_map_key(id)
+      if id_key then
+        adapter.instances_by_id[id_key] = instance
+        if not seen_id_key[id_key] then
+          seen_id_key[id_key] = true
+          instance.identity_id_keys[#instance.identity_id_keys + 1] = id_key
+        end
+      end
+    end
+
     if observation.unit ~= nil then
-      adapter.instances_by_object[observation.unit] = instance
+      map_object(observation.unit, observation.identity_is_wrapper and "wrapper" or "native")
     end
     if observation.raw ~= nil then
-      adapter.instances_by_object[observation.raw] = instance
+      map_object(observation.raw, "native")
     end
-    local id_key = identity_map_key(observation.identity_id)
-    if id_key then
-      adapter.instances_by_id[id_key] = instance
-    end
+    map_id(observation.identity_id)
     for _, alias in ipairs(observation.aliases or {}) do
       if alias.object ~= nil then
-        adapter.instances_by_object[alias.object] = instance
+        map_object(alias.object, alias.is_wrapper and "wrapper" or "native")
       end
-      if alias.raw ~= nil then
-        adapter.instances_by_object[alias.raw] = instance
-      end
-      local alias_key = identity_map_key(alias.id)
-      if alias_key then
-        adapter.instances_by_id[alias_key] = instance
+      -- A recycled MOOSE wrapper can still return the previous native DCS
+      -- object. The wrapper itself follows the current name-based MOOSE
+      -- lifetime, but that stale native object must remain a tombstone for
+      -- its retired incarnation. Only trust an alias raw object when the
+      -- alias is itself native or agrees with the primary native identity.
+      if not alias.is_wrapper or alias.raw == observation.raw then
+        if alias.raw ~= nil then
+          map_object(alias.raw, "native")
+        end
+        map_id(alias.id)
       end
     end
   end
 
   local function remove_identity(instance)
-    if instance.unit_object and adapter.instances_by_object[instance.unit_object] == instance then
-      adapter.instances_by_object[instance.unit_object] = nil
-    end
-    if instance.identity_object and adapter.instances_by_object[instance.identity_object] == instance then
-      adapter.instances_by_object[instance.identity_object] = nil
-    end
-    local id_key = identity_map_key(instance.identity_id)
-    if id_key and adapter.instances_by_id[id_key] == instance then
-      adapter.instances_by_id[id_key] = nil
-    end
-    for _, alias in ipairs(instance.aliases or {}) do
-      if alias.object and adapter.instances_by_object[alias.object] == instance then
-        adapter.instances_by_object[alias.object] = nil
-      end
-      if alias.raw and adapter.instances_by_object[alias.raw] == instance then
-        adapter.instances_by_object[alias.raw] = nil
-      end
-      local alias_key = identity_map_key(alias.id)
-      if alias_key and adapter.instances_by_id[alias_key] == instance then
-        adapter.instances_by_id[alias_key] = nil
+    -- Keep object mappings as per-run tombstones. A late event carrying a
+    -- retired native object must stop at that inactive incarnation instead
+    -- of falling through to a runtime ID that DCS has reused for g2. MOOSE
+    -- wrappers are deliberately remapped by add_identity when a later entry
+    -- proves that the name-based wrapper now represents the new generation.
+    for _, object in ipairs(instance.identity_objects or {}) do
+      if adapter.instances_by_object[object] == instance then
+        adapter.instances_by_object[object] = retired_identity
       end
     end
+    for _, id_key in ipairs(instance.identity_id_keys or {}) do
+      if adapter.instances_by_id[id_key] == instance then
+        adapter.instances_by_id[id_key] = nil
+      end
+    end
+  end
+
+  local function evidence_matches(instance, evidence, require_time, require_snapshot)
+    if type(evidence) ~= "table" then
+      if require_time or require_snapshot then
+        return false, "identity evidence is unavailable"
+      end
+      return true
+    end
+
+    local observed_time = event_time(config, evidence.sim_time)
+    if require_time and (observed_time == nil or instance.spawn_sim_time == nil) then
+      return false, "event time is unavailable"
+    end
+    if observed_time ~= nil and instance.spawn_sim_time ~= nil and observed_time < instance.spawn_sim_time then
+      return false, "event predates the active incarnation"
+    end
+
+    local snapshot_matches = 0
+    local function compare_snapshot(label, observed, expected)
+      observed = non_empty_string(observed)
+      expected = non_empty_string(expected)
+      if observed == nil then
+        return true
+      end
+      if expected == nil or observed ~= expected then
+        return false, label .. " does not match the active incarnation"
+      end
+      snapshot_matches = snapshot_matches + 1
+      return true
+    end
+
+    local matches, mismatch = compare_snapshot("unit name", evidence.dcs_name, instance.dcs_name)
+    if not matches then
+      return false, mismatch
+    end
+    matches, mismatch = compare_snapshot(
+      "group name",
+      evidence.group_name,
+      instance.observation and instance.observation.group_name or nil
+    )
+    if not matches then
+      return false, mismatch
+    end
+    matches, mismatch = compare_snapshot("unit type", evidence.dcs_type, instance.dcs_type)
+    if not matches then
+      return false, mismatch
+    end
+
+    if evidence.coalition ~= nil then
+      local observed_coalition = map_coalition(evidence.coalition)
+      if observed_coalition ~= "unknown" then
+        if instance.coalition ~= observed_coalition then
+          return false, "coalition does not match the active incarnation"
+        end
+        snapshot_matches = snapshot_matches + 1
+      end
+    end
+
+    if require_snapshot and snapshot_matches == 0 then
+      return false, "identity snapshot is unavailable"
+    end
+    return true
+  end
+
+  local function resolve_instance(unit, evidence)
+    if unit == nil then
+      return nil, "unit identity is unavailable"
+    end
+    local raw, id, unit_is_wrapper = read_identity(config, unit)
+    local function active_object_instance(object)
+      local instance = adapter.instances_by_object[object]
+      if instance == retired_identity then
+        return nil, "retired"
+      end
+      if instance == nil then
+        return nil, "untracked"
+      end
+      if not instance.active then
+        return nil, "retired"
+      end
+      return instance
+    end
+
+    local instance, object_status = active_object_instance(unit)
+    if instance then
+      local kind = adapter.identity_kind_by_object[unit]
+      local matches, mismatch = evidence_matches(instance, evidence, kind == "wrapper", kind == "wrapper")
+      if not matches then
+        return nil, mismatch
+      end
+      return instance
+    end
+    if object_status == "retired" and not unit_is_wrapper then
+      return nil, "unit identity belongs to a retired incarnation"
+    end
+
+    if raw ~= unit then
+      instance, object_status = active_object_instance(raw)
+      if instance then
+        local matches, mismatch = evidence_matches(instance, evidence, false, false)
+        if not matches then
+          return nil, mismatch
+        end
+        return instance
+      end
+      -- A wrapper can retain its old native object after its name is reused.
+      -- The wrapper is therefore allowed to continue to the guarded ID path;
+      -- a native object tombstone itself is never bypassed.
+      if object_status == "retired" and not unit_is_wrapper then
+        return nil, "unit identity belongs to a retired incarnation"
+      end
+    end
+
+    local id_key = identity_map_key(id)
+    instance = (id_key and adapter.instances_by_id[id_key]) or nil
+    if not instance or not instance.active then
+      return nil, "runtime ID is not tracked"
+    end
+    local matches, mismatch = evidence_matches(instance, evidence, true, true)
+    if not matches then
+      return nil, mismatch
+    end
+    return instance
   end
 
   local function persist(event_type, instance, observation, sim_time, payload)
@@ -473,6 +628,7 @@ function M.new(config)
       return nil, spawn_error
     end
     adapter.generations[generation_key] = generation
+    instance.spawn_sim_time = event_time(config, spawned.sim_time)
     add_identity(instance, observation)
     return instance, spawned
   end
@@ -633,29 +789,12 @@ function M.new(config)
     return instances, true
   end
 
-  function adapter:resolve_unit(unit)
-    if unit == nil then
-      return nil
-    end
-    local raw, id = read_identity(self.config, unit)
-    -- A reference to a retired incarnation stays dead: it is genuinely
-    -- stale, so it must never be re-resolved through the reused ID below.
-    local instance = self.instances_by_object[unit] or self.instances_by_object[raw]
-    if instance then
-      if not instance.active then
-        return nil
+  function adapter:resolve_unit(unit, evidence)
+    local instance, resolution_error = resolve_instance(unit, evidence)
+    if not instance then
+      if resolution_error and string.find(resolution_error, "runtime ID", 1, true) == nil then
+        log_message(self.config, "warning", "unit resolution rejected: " .. resolution_error)
       end
-      return reference(instance), instance
-    end
-    -- Prefer the precise object match when it is still live. Fall back to
-    -- the runtime ID: DCS reuses it across a death + respawn while handing
-    -- out fresh objects, so the ID is what survives wrapper recycling. The
-    -- ID map always points at the latest registration and resolution
-    -- requires a live incarnation, so a retired generation can never
-    -- shadow its replacement; distinct live units never share an ID.
-    local id_key = identity_map_key(id)
-    instance = (id_key and self.instances_by_id[id_key]) or nil
-    if not instance or not instance.active then
       return nil
     end
     return reference(instance), instance
@@ -710,11 +849,11 @@ function M.new(config)
   -- Live 2026-09-05: neither the recycled MOOSE wrapper nor the reused
   -- runtime IDs distinguish a recreated player aircraft from the same
   -- incarnation, so entry-time comparison alone keeps a stale g1 and later
-  -- ordnance resolves unknown. The death itself is the reliable signal —
-  -- DCS always emits pilot-dead/crash for the destroyed aircraft — so the
-  -- tracked incarnation retires here and the next entry unconditionally
-  -- opens g2. Player groups hold exactly one aircraft, therefore any
-  -- Dead/Crash inside a tracked player group ends its active incarnation.
+  -- ordnance resolves unknown. In the validated rejoin path, Dead/Crash is
+  -- the reliable signal, so the tracked incarnation retires here and the
+  -- next entry opens g2. Runtime IDs and MOOSE wrappers can be reused, so group name
+  -- alone is not sufficient: the death event must resolve to the active
+  -- incarnation with its event-time and identity snapshots.
   -- No asset.despawned is emitted: death is not scripted cleanup, and the
   -- web sortie derivation pairs control periods from participant events.
   local function retire_player_death(event_data, reason)
@@ -728,6 +867,33 @@ function M.new(config)
     end
     local active = adapter.active_players[group_name]
     if not active or not active.active then
+      return false
+    end
+    local unit = read_field(config, event_data, "IniDCSUnit")
+      or read_field(config, event_data, "initiator")
+      or read_field(config, event_data, "IniUnit")
+    if unit == nil then
+      log_message(config, "warning", "death identity unavailable for " .. group_name .. "; active incarnation retained")
+      return false
+    end
+    local observation = read_observation(config, unit, group_name, event_data)
+    local resolved, resolution_error = resolve_instance(unit, {
+      sim_time = read_field(config, event_data, "time"),
+      group_name = observation.group_name,
+      dcs_name = observation.dcs_name,
+      dcs_type = observation.dcs_type,
+      coalition = observation.coalition,
+    })
+    if resolved ~= active then
+      log_message(
+        config,
+        "warning",
+        "death identity rejected for "
+          .. group_name
+          .. "; active incarnation retained ("
+          .. tostring(resolution_error or "different incarnation")
+          .. ")"
+      )
       return false
     end
     active.active = false

@@ -84,7 +84,8 @@ local function new_controller(label, sim_time)
   return controller, events
 end
 
-local function new_adapter(controller, base, logs)
+local function new_adapter(controller, base, logs, options)
+  options = options or {}
   local adapter, adapter_error = participant.new({
     controller = controller,
     envelope = envelope,
@@ -92,6 +93,7 @@ local function new_adapter(controller, base, logs)
     EVENTS = { PlayerEnterAircraft = 20, PlayerLeaveUnit = 21 },
     player_group_names = { "Aerial-1", "Aerial-2", "Aerial-3", "Aerial-4" },
     player_coalition = 2,
+    asset_registry = options.asset_registry,
     log = function(level, message)
       logs[#logs + 1] = level .. " " .. message
     end,
@@ -286,6 +288,55 @@ succeeds("leave preserves stable identity from the slot snapshot and prefers liv
   equal(left.asset.dcs_name, "Aerial-1-live")
   equal(left.asset.dcs_type, "Original Type")
   equal(left.location.status, "unknown")
+end)
+
+succeeds("participant leave resolution receives event-time and identity evidence", function()
+  local base = new_base()
+  local controller = new_controller("leave-asset-evidence")
+  local captured_unit
+  local captured_evidence
+  local registry = {}
+  function registry:observe_player_unit()
+    return {
+      status = "known",
+      kind = "aircraft",
+      asset_key = "aerial-1.u1.g1",
+      dcs_name = "Aerial-1-1",
+      dcs_type = "FA-18C_hornet",
+      coalition = "blue",
+    }
+  end
+  function registry:resolve_unit(unit, evidence)
+    captured_unit = unit
+    captured_evidence = evidence
+    return {
+      status = "known",
+      kind = "aircraft",
+      asset_key = "aerial-1.u1.g1",
+      dcs_name = "Aerial-1-1",
+      dcs_type = "FA-18C_hornet",
+      coalition = "blue",
+    }
+  end
+  local adapter = new_adapter(controller, base, {}, { asset_registry = registry })
+  check(controller:start())
+  local watcher = adapter:start()
+  local unit = new_unit({
+    group_name = "Aerial-1",
+    name = "Aerial-1-1",
+    type_name = "FA-18C_hornet",
+    coalition = 2,
+  })
+  check(watcher:OnEventPlayerEnterAircraft(event(unit, 10)))
+  local left, left_error = watcher:OnEventPlayerLeaveUnit(event(unit, 25))
+  check(left ~= nil, left_error)
+  equal(left.asset.asset_key, "aerial-1.u1.g1")
+  equal(captured_unit, unit)
+  equal(captured_evidence.sim_time, 25)
+  equal(captured_evidence.group_name, "Aerial-1")
+  equal(captured_evidence.dcs_name, "Aerial-1-1")
+  equal(captured_evidence.dcs_type, "FA-18C_hornet")
+  equal(captured_evidence.coalition, 2)
 end)
 
 succeeds("missing UCID emits an explicit unknown participant and warning", function()

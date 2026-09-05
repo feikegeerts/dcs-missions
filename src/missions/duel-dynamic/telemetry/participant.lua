@@ -231,12 +231,18 @@ local function resolve_entered_asset(config, unit, group_name, event_time, event
   return asset
 end
 
-local function resolve_existing_asset(config, unit)
+local function resolve_existing_asset(config, unit, observation, event_time)
   local registry = config.asset_registry
   if type(registry) ~= "table" or type(registry.resolve_unit) ~= "function" then
     return nil
   end
-  local ok, asset = pcall(registry.resolve_unit, registry, unit)
+  local ok, asset = pcall(registry.resolve_unit, registry, unit, {
+    sim_time = event_time,
+    group_name = observation.group_name,
+    dcs_name = observation.dcs_name,
+    dcs_type = observation.dcs_type,
+    coalition = observation.raw_coalition or observation.coalition,
+  })
   if ok then
     return asset
   end
@@ -285,7 +291,7 @@ local function capture(adapter, event_type, event_data)
   if event_type == "participant.entered" then
     asset = resolve_entered_asset(config, unit, group_name, event_time, event_data)
   else
-    asset = resolve_existing_asset(config, unit)
+    asset = resolve_existing_asset(config, unit, observation, event_time)
   end
   local input = {
     event_type = event_type,

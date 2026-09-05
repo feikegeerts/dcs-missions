@@ -114,7 +114,8 @@ local function new_controller(label, fail_call, sim_time)
   end
 end
 
-local function new_adapter(controller, base, logs)
+local function new_adapter(controller, base, logs, options)
+  options = options or {}
   local adapter, creation_error = shot.new({
     controller = controller,
     envelope = envelope,
@@ -126,6 +127,7 @@ local function new_adapter(controller, base, logs)
     weapon_categories = WEAPON_CATEGORY,
     player_coalition = 2,
     bandit_coalition = 1,
+    asset_registry = options.asset_registry,
     log = function(level, message)
       logs[#logs + 1] = level .. " " .. message
     end,
@@ -346,6 +348,52 @@ succeeds("two same-time tracked shots receive consecutive identities and complet
   equal(first.location.y, 7620.5)
   equal(first.location.z, -44000.75)
   equal(first.payload.dcs_event_name, "shot")
+end)
+
+succeeds("tracked shot resolution receives event-time and identity evidence", function()
+  local base = new_base()
+  local controller = new_controller("asset-evidence")
+  local captured_unit
+  local captured_evidence
+  local registry = {}
+  function registry:resolve_unit(unit, evidence)
+    captured_unit = unit
+    captured_evidence = evidence
+    return {
+      status = "known",
+      kind = "aircraft",
+      asset_key = "aerial-1.u1.g2",
+      dcs_name = "Aerial-1-1",
+      dcs_type = "FA-18C_hornet",
+      coalition = "blue",
+    }
+  end
+  local adapter = new_adapter(controller, base, {}, { asset_registry = registry })
+  check(controller:start())
+  local watcher = adapter:start()
+  local unit = new_unit({
+    unit_name = "Aerial-1-1",
+    type_name = "FA-18C_hornet",
+    coalition = 2,
+  })
+  local fired, fired_error = watcher:OnEventShot(new_event({
+    group_name = "Aerial-1",
+    unit_name = "Aerial-1-1",
+    unit = unit,
+    coalition = 2,
+    type_name = "FA-18C_hornet",
+    weapon_name = "weapons.missiles.AIM_120C",
+    weapon = new_weapon(),
+    time = 42.5,
+  }))
+  check(fired ~= nil, fired_error)
+  equal(fired.asset.asset_key, "aerial-1.u1.g2")
+  equal(captured_unit, unit)
+  equal(captured_evidence.sim_time, 42.5)
+  equal(captured_evidence.group_name, "Aerial-1")
+  equal(captured_evidence.dcs_name, "Aerial-1-1")
+  equal(captured_evidence.dcs_type, "FA-18C_hornet")
+  equal(captured_evidence.coalition, 2)
 end)
 
 succeeds("exact player and spawned bandit roster entries are accepted while similar names are rejected", function()

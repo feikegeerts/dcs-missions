@@ -427,10 +427,16 @@ local function make_participant(config, player_name, player_ucid, callsign, coal
   }
 end
 
-local function resolve_asset(config, unit, group_name, dcs_name, dcs_type, coalition)
+local function resolve_asset(config, unit, group_name, dcs_name, dcs_type, coalition, sim_time)
   local registry = config.asset_registry
   if type(registry) == "table" and type(registry.resolve_unit) == "function" then
-    local ok, resolved = pcall(registry.resolve_unit, registry, unit)
+    local ok, resolved = pcall(registry.resolve_unit, registry, unit, {
+      sim_time = sim_time,
+      group_name = group_name,
+      dcs_name = dcs_name,
+      dcs_type = dcs_type,
+      coalition = coalition,
+    })
     if ok and type(resolved) == "table" and resolved.status == "known" then
       return resolved
     end
@@ -498,7 +504,7 @@ local function capture(adapter, event_data)
   end
 
   local dcs_name = unit_name or group_name
-  local asset = resolve_asset(config, unit, group_name, dcs_name, type_name, coalition)
+  local asset = resolve_asset(config, unit, group_name, dcs_name, type_name, coalition, event_time)
   local actor = {
     status = "known",
     kind = "aircraft",
