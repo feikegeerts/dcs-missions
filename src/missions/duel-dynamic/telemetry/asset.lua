@@ -332,6 +332,10 @@ local function event_time(config, value)
   return nil
 end
 
+local function usable_optional_event(value)
+  return type(value) == "number" and value ~= -1
+end
+
 function M.new(config)
   if type(config) ~= "table" then
     return nil, "asset configuration must be a table"
@@ -620,6 +624,7 @@ function M.new(config)
       dcs_name = observation.dcs_name or observation.group_name,
       dcs_type = observation.dcs_type,
       coalition = map_coalition(observation.coalition),
+      is_player = player_roster.lookup[configured_name] ~= nil,
       active = true,
       observation = observation,
     }
@@ -856,25 +861,33 @@ function M.new(config)
   -- incarnation with its event-time and identity snapshots.
   -- No asset.despawned is emitted: death is not scripted cleanup, and the
   -- web sortie derivation pairs control periods from participant events.
-  local function retire_player_death(event_data, reason)
+  local function event_unit(event_data)
+    return read_field(config, event_data, "IniDCSUnit")
+      or read_field(config, event_data, "initiator")
+      or read_field(config, event_data, "IniUnit")
+  end
+
+  local function event_group_name(event_data)
+    return non_empty_string(read_field(config, event_data, "IniGroupName"))
+      or non_empty_string(read_field(config, event_data, "IniDCSGroupName"))
+  end
+
+  local function resolve_event_instance(event_data, warning_label)
     if type(event_data) ~= "table" then
       return nil, "player lifecycle event data is unavailable"
     end
-    local group_name = non_empty_string(read_field(config, event_data, "IniGroupName"))
-      or non_empty_string(read_field(config, event_data, "IniDCSGroupName"))
-    if not group_name or not adapter.player_roster.lookup[group_name] then
-      return false
-    end
-    local active = adapter.active_players[group_name]
-    if not active or not active.active then
-      return false
-    end
-    local unit = read_field(config, event_data, "IniDCSUnit")
-      or read_field(config, event_data, "initiator")
-      or read_field(config, event_data, "IniUnit")
+    local group_name = event_group_name(event_data)
+    local active = group_name and adapter.active_players[group_name] or nil
+    local unit = event_unit(event_data)
     if unit == nil then
-      log_message(config, "warning", "death identity unavailable for " .. group_name .. "; active incarnation retained")
-      return false
+      if active and active.active then
+        log_message(
+          config,
+          "warning",
+          warning_label .. " identity unavailable for " .. group_name .. "; active incarnation retained"
+        )
+      end
+      return nil
     end
     local observation = read_observation(config, unit, group_name, event_data)
     local resolved, resolution_error = resolve_instance(unit, {
@@ -884,30 +897,76 @@ function M.new(config)
       dcs_type = observation.dcs_type,
       coalition = observation.coalition,
     })
-    if resolved ~= active then
+    if not resolved then
+      if active and active.active then
+        log_message(
+          config,
+          "warning",
+          warning_label
+            .. " identity rejected for "
+            .. group_name
+            .. "; active incarnation retained ("
+            .. tostring(resolution_error)
+            .. ")"
+        )
+      end
+      return nil
+    end
+    if active and resolved ~= active then
       log_message(
         config,
         "warning",
-        "death identity rejected for "
+        warning_label
+          .. " identity rejected for "
           .. group_name
           .. "; active incarnation retained ("
-          .. tostring(resolution_error or "different incarnation")
+          .. "different incarnation"
           .. ")"
       )
+      return nil
+    end
+    return resolved, observation
+  end
+
+  local function capture_aircraft_loss(event_data, event_type, reason)
+    local instance, observation = resolve_event_instance(event_data, "death")
+    if not instance then
       return false
     end
-    active.active = false
-    remove_identity(active)
-    log_message(config, "info", "retired " .. active.asset_key .. " (" .. reason .. ")")
+    persist(event_type, instance, observation, read_field(config, event_data, "time"), {})
+    instance.active = false
+    remove_identity(instance)
+    log_message(config, "info", "retired " .. instance.asset_key .. " (" .. reason .. ")")
     return true
   end
 
+  local function capture_pilot_outcome(event_data, event_type)
+    local instance, observation = resolve_event_instance(event_data, "pilot outcome")
+    if not instance or not instance.is_player then
+      return false
+    end
+    local event = persist(event_type, instance, observation, read_field(config, event_data, "time"), {})
+    return event ~= nil
+  end
+
   function adapter:OnEventDead(event_data)
-    return retire_player_death(event_data, "dead")
+    return capture_aircraft_loss(event_data, "asset.dead", "dead")
   end
 
   function adapter:OnEventCrash(event_data)
-    return retire_player_death(event_data, "crashed")
+    return capture_aircraft_loss(event_data, "asset.crashed", "crashed")
+  end
+
+  function adapter:OnEventUnitLost(event_data)
+    return capture_aircraft_loss(event_data, "asset.dead", "unit-lost")
+  end
+
+  function adapter:OnEventPilotDead(event_data)
+    return capture_pilot_outcome(event_data, "pilot.dead")
+  end
+
+  function adapter:OnEventEjection(event_data)
+    return capture_pilot_outcome(event_data, "pilot.ejected")
   end
 
   function adapter:start()
@@ -929,10 +988,28 @@ function M.new(config)
     function watcher:OnEventCrash(event_data)
       return adapter:OnEventCrash(event_data)
     end
+    function watcher:OnEventUnitLost(event_data)
+      return adapter:OnEventUnitLost(event_data)
+    end
+    function watcher:OnEventPilotDead(event_data)
+      return adapter:OnEventPilotDead(event_data)
+    end
+    function watcher:OnEventEjection(event_data)
+      return adapter:OnEventEjection(event_data)
+    end
     local handled, handle_error = pcall(function()
       watcher:HandleEvent(self.config.EVENTS.PlayerEnterAircraft)
       watcher:HandleEvent(self.config.EVENTS.Dead)
       watcher:HandleEvent(self.config.EVENTS.Crash)
+      if usable_optional_event(self.config.EVENTS.UnitLost) then
+        watcher:HandleEvent(self.config.EVENTS.UnitLost)
+      end
+      if usable_optional_event(self.config.EVENTS.PilotDead) then
+        watcher:HandleEvent(self.config.EVENTS.PilotDead)
+      end
+      if usable_optional_event(self.config.EVENTS.Ejection) then
+        watcher:HandleEvent(self.config.EVENTS.Ejection)
+      end
     end)
     if not handled then
       log_error(self.config, "registering player lifecycle events failed: " .. tostring(handle_error))
@@ -952,6 +1029,15 @@ function M.new(config)
       watcher:UnHandleEvent(self.config.EVENTS.PlayerEnterAircraft)
       watcher:UnHandleEvent(self.config.EVENTS.Dead)
       watcher:UnHandleEvent(self.config.EVENTS.Crash)
+      if usable_optional_event(self.config.EVENTS.UnitLost) then
+        watcher:UnHandleEvent(self.config.EVENTS.UnitLost)
+      end
+      if usable_optional_event(self.config.EVENTS.PilotDead) then
+        watcher:UnHandleEvent(self.config.EVENTS.PilotDead)
+      end
+      if usable_optional_event(self.config.EVENTS.Ejection) then
+        watcher:UnHandleEvent(self.config.EVENTS.Ejection)
+      end
     end)
     if not ok then
       log_error(self.config, "unregistering player lifecycle events failed: " .. tostring(stop_error))

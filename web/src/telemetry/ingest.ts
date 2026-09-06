@@ -8,6 +8,11 @@ import {
   type CatalogueAssignment,
 } from "./expenditures";
 import { validateBatch } from "./validate";
+import { reconcileAssetLosts } from "./losses";
+import {
+  reconcileAssistAttributions,
+  reconcileKillAttributions,
+} from "./combat-facts";
 
 type IngestResult = {
   event_id: string;
@@ -171,6 +176,24 @@ export async function processIngest(
         eventSequence: observation.eventSequence,
       });
     }
+  }
+
+  // Reconciliation is run-scoped rather than batch-scoped. One retained-event
+  // read feeds catalogue-gated losses and catalogue-independent combat facts.
+  const retainedEvents = await store.listRunEvents(
+    validation.producerId,
+    validation.runKey,
+  );
+  if (catalogueForAssignment(assignment) !== null) {
+    for (const loss of reconcileAssetLosts(retainedEvents, assignment)) {
+      await store.upsertAssetLoss(loss);
+    }
+  }
+  for (const attribution of reconcileKillAttributions(retainedEvents)) {
+    await store.upsertKillAttribution(attribution);
+  }
+  for (const attribution of reconcileAssistAttributions(retainedEvents)) {
+    await store.upsertAssistAttribution(attribution);
   }
 
   return {

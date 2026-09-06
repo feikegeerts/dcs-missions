@@ -2,18 +2,29 @@ import { and, asc, desc, eq, sql } from "drizzle-orm";
 
 import { getDb } from "@/db/client";
 import {
+  assetLosses,
+  assistAttributions,
+  killAttributions,
   missionRuns,
   ordnanceExpenditures,
   runParticipants,
   telemetryEvents,
 } from "@/db/schema";
 import type { ExpenditureProjection } from "./expenditures";
+import type {
+  AssistAttributionFact,
+  KillAttributionFact,
+} from "./combat-facts";
+import type { AssetLostFact } from "./losses";
 import type { TelemetryEvent } from "./types";
 
 export type RunRow = typeof missionRuns.$inferSelect;
 export type EventRow = typeof telemetryEvents.$inferSelect;
 export type ExpenditureRow = typeof ordnanceExpenditures.$inferSelect;
 export type RunParticipantRow = typeof runParticipants.$inferSelect;
+export type AssetLossRow = typeof assetLosses.$inferSelect;
+export type KillAttributionRow = typeof killAttributions.$inferSelect;
+export type AssistAttributionRow = typeof assistAttributions.$inferSelect;
 
 export interface RunUpsertInput {
   producerId: string;
@@ -50,6 +61,9 @@ export interface TelemetryStore {
   insertExpenditure(
     expenditure: ExpenditureProjection,
   ): Promise<"inserted" | "existing">;
+  upsertAssetLoss(loss: AssetLostFact): Promise<void>;
+  upsertKillAttribution(attribution: KillAttributionFact): Promise<void>;
+  upsertAssistAttribution(attribution: AssistAttributionFact): Promise<void>;
   upsertRunParticipant(participant: RunParticipantUpsert): Promise<void>;
   listRuns(
     limit?: number,
@@ -63,10 +77,20 @@ export interface TelemetryStore {
     limit: number,
     offset: number,
   ): Promise<EventRow[]>;
+  listRunEvents(producerId: string, runKey: string): Promise<TelemetryEvent[]>;
   listExpenditures(
     producerId: string,
     runKey: string,
   ): Promise<ExpenditureRow[]>;
+  listAssetLosses(producerId: string, runKey: string): Promise<AssetLossRow[]>;
+  listKillAttributions(
+    producerId: string,
+    runKey: string,
+  ): Promise<KillAttributionRow[]>;
+  listAssistAttributions(
+    producerId: string,
+    runKey: string,
+  ): Promise<AssistAttributionRow[]>;
   listRunParticipants(
     producerId: string,
     runKey: string,
@@ -241,6 +265,103 @@ export class NeonTelemetryStore implements TelemetryStore {
     return rows.length > 0 ? "inserted" : "existing";
   }
 
+  async upsertAssetLoss(loss: AssetLostFact): Promise<void> {
+    await getDb()
+      .insert(assetLosses)
+      .values({
+        factId: loss.factId,
+        producerId: loss.producerId,
+        runKey: loss.runKey,
+        assetKey: loss.assetKey,
+        aircraftDcsType: loss.dcsType,
+        coalition: loss.coalition,
+        catalogue: loss.catalogue,
+        catalogueVersion: loss.catalogueVersion,
+        unitCostCents: loss.unitCostCents,
+        sourceEventIds: loss.sourceEventIds,
+      })
+      .onConflictDoUpdate({
+        target: [
+          assetLosses.producerId,
+          assetLosses.runKey,
+          assetLosses.assetKey,
+        ],
+        set: {
+          factId: loss.factId,
+          aircraftDcsType: loss.dcsType,
+          coalition: loss.coalition,
+          catalogue: loss.catalogue,
+          catalogueVersion: loss.catalogueVersion,
+          unitCostCents: loss.unitCostCents,
+          sourceEventIds: loss.sourceEventIds,
+          updatedAt: sql`now()`,
+        },
+        // A stale concurrent projection must not replace a fact supported by
+        // a later, larger full-run snapshot.
+        setWhere: sql`jsonb_array_length(EXCLUDED.source_event_ids) >= jsonb_array_length(${assetLosses.sourceEventIds})`,
+      });
+  }
+
+  async upsertKillAttribution(attribution: KillAttributionFact): Promise<void> {
+    await getDb()
+      .insert(killAttributions)
+      .values(attribution)
+      .onConflictDoUpdate({
+        target: [
+          killAttributions.producerId,
+          killAttributions.runKey,
+          killAttributions.targetAssetKey,
+        ],
+        set: {
+          factId: attribution.factId,
+          targetDcsName: attribution.targetDcsName,
+          targetDcsType: attribution.targetDcsType,
+          targetCoalition: attribution.targetCoalition,
+          killerAssetKey: attribution.killerAssetKey,
+          killerDcsName: attribution.killerDcsName,
+          killerDcsType: attribution.killerDcsType,
+          killerCoalition: attribution.killerCoalition,
+          killingBlowSimTime: attribution.killingBlowSimTime,
+          killingBlowEventId: attribution.killingBlowEventId,
+          weaponDcsType: attribution.weaponDcsType,
+          weaponCategory: attribution.weaponCategory,
+          sourceEventIds: attribution.sourceEventIds,
+          updatedAt: sql`now()`,
+        },
+        setWhere: sql`jsonb_array_length(EXCLUDED.source_event_ids) >= jsonb_array_length(${killAttributions.sourceEventIds})`,
+      });
+  }
+
+  async upsertAssistAttribution(
+    attribution: AssistAttributionFact,
+  ): Promise<void> {
+    await getDb()
+      .insert(assistAttributions)
+      .values(attribution)
+      .onConflictDoUpdate({
+        target: [
+          assistAttributions.producerId,
+          assistAttributions.runKey,
+          assistAttributions.targetAssetKey,
+          assistAttributions.attackerAssetKey,
+        ],
+        set: {
+          factId: attribution.factId,
+          attackerDcsName: attribution.attackerDcsName,
+          attackerDcsType: attribution.attackerDcsType,
+          attackerCoalition: attribution.attackerCoalition,
+          targetDcsName: attribution.targetDcsName,
+          targetDcsType: attribution.targetDcsType,
+          targetCoalition: attribution.targetCoalition,
+          representativeHitSimTime: attribution.representativeHitSimTime,
+          representativeHitEventId: attribution.representativeHitEventId,
+          sourceEventIds: attribution.sourceEventIds,
+          updatedAt: sql`now()`,
+        },
+        setWhere: sql`jsonb_array_length(EXCLUDED.source_event_ids) >= jsonb_array_length(${assistAttributions.sourceEventIds})`,
+      });
+  }
+
   async upsertRunParticipant(input: RunParticipantUpsert): Promise<void> {
     const db = getDb();
     await db
@@ -325,6 +446,23 @@ export class NeonTelemetryStore implements TelemetryStore {
       .offset(offset);
   }
 
+  async listRunEvents(
+    producerId: string,
+    runKey: string,
+  ): Promise<TelemetryEvent[]> {
+    const rows = await getDb()
+      .select({ event: telemetryEvents.eventJson })
+      .from(telemetryEvents)
+      .where(
+        and(
+          eq(telemetryEvents.producerId, producerId),
+          eq(telemetryEvents.runKey, runKey),
+        ),
+      )
+      .orderBy(asc(telemetryEvents.eventSequence));
+    return rows.map(({ event }) => event as TelemetryEvent);
+  }
+
   async listExpenditures(
     producerId: string,
     runKey: string,
@@ -339,6 +477,57 @@ export class NeonTelemetryStore implements TelemetryStore {
         ),
       )
       .orderBy(asc(ordnanceExpenditures.eventSequence));
+  }
+
+  async listAssetLosses(
+    producerId: string,
+    runKey: string,
+  ): Promise<AssetLossRow[]> {
+    return getDb()
+      .select()
+      .from(assetLosses)
+      .where(
+        and(
+          eq(assetLosses.producerId, producerId),
+          eq(assetLosses.runKey, runKey),
+        ),
+      )
+      .orderBy(asc(assetLosses.assetKey));
+  }
+
+  async listKillAttributions(
+    producerId: string,
+    runKey: string,
+  ): Promise<KillAttributionRow[]> {
+    return getDb()
+      .select()
+      .from(killAttributions)
+      .where(
+        and(
+          eq(killAttributions.producerId, producerId),
+          eq(killAttributions.runKey, runKey),
+        ),
+      )
+      .orderBy(asc(killAttributions.targetAssetKey));
+  }
+
+  async listAssistAttributions(
+    producerId: string,
+    runKey: string,
+  ): Promise<AssistAttributionRow[]> {
+    return getDb()
+      .select()
+      .from(assistAttributions)
+      .where(
+        and(
+          eq(assistAttributions.producerId, producerId),
+          eq(assistAttributions.runKey, runKey),
+        ),
+      )
+      .orderBy(
+        asc(assistAttributions.targetAssetKey),
+        asc(assistAttributions.attackerAssetKey),
+      );
   }
 
   async listRunParticipants(

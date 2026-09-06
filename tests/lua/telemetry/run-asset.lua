@@ -109,6 +109,9 @@ local function new_raw_unit(options)
     return { category = options.category }
   end
   function raw:getPosition()
+    if options.position_unavailable then
+      return nil
+    end
     return { p = options.position or { x = 100, y = 200, z = 300 } }
   end
   function raw:getCallsign()
@@ -134,6 +137,9 @@ local function new_unit(options)
     return options.coalition
   end
   function unit:GetCoordinate()
+    if options.position_unavailable then
+      return nil
+    end
     return {
       GetVec3 = function()
         return options.position or { x = 100, y = 200, z = 300 }
@@ -173,7 +179,7 @@ local function new_asset_adapter(controller, base, options)
     controller = controller,
     envelope = envelope,
     BASE = base or new_base(),
-    EVENTS = { PlayerEnterAircraft = 20, Dead = 21, Crash = 22 },
+    EVENTS = options.events or { PlayerEnterAircraft = 20, Dead = 21, Crash = 22 },
     player_group_names = { "Aerial-1", "Aerial-2", "Aerial-3", "Aerial-4" },
     bandit_group_names = { "Bandit-1", "Bandit-2", "Bandit-3" },
     player_coalition = 2,
@@ -244,6 +250,23 @@ local function player_enter_event(raw, options)
     IniPlayerName = options.player_name or "Viper",
     IniPlayerUCID = options.player_ucid or "ucid-viper",
     time = options.time or 10,
+  }
+end
+
+local function loss_event(unit, options)
+  options = options or {}
+  local group_name = options.group_name or "Aerial-1"
+  return {
+    initiator = unit,
+    IniDCSUnit = unit,
+    IniUnit = unit,
+    IniGroupName = group_name,
+    IniDCSGroupName = group_name,
+    IniDCSUnitName = options.name or "Aerial-1-1",
+    IniUnitName = options.name or "Aerial-1-1",
+    IniTypeName = options.type_name or "FA-18C_hornet",
+    IniCoalition = options.coalition == nil and 2 or options.coalition,
+    time = options.time or 15,
   }
 end
 
@@ -736,6 +759,239 @@ succeeds("group-only death fails closed and warns without retiring the active in
     string.find(table.concat(messages, "\n"), "death identity unavailable", 1, true) ~= nil,
     "missing death identity did not warn"
   )
+end)
+
+succeeds("player crash emits one loss event and retires the incarnation", function()
+  local controller, events = new_controller("player-crash-loss")
+  local adapter = new_asset_adapter(controller)
+  local watcher = adapter:start()
+  local raw_options = {
+    id = 1001,
+    group_name = "Aerial-1",
+    name = "Aerial-1-1",
+    coalition = 2,
+  }
+  local raw = new_raw_unit(raw_options)
+  local _, _, instance = watcher:OnEventPlayerEnterAircraft(player_enter_event(raw, { time = 10 }))
+
+  raw_options.position_unavailable = true
+  equal(watcher:OnEventCrash(loss_event(raw, { time = 15 })), true)
+  equal(count_type(events, "asset.crashed"), 1)
+  local crashed = events[#events]
+  equal(crashed.event_type, "asset.crashed")
+  equal(crashed.event_sequence, 3)
+  equal(crashed.asset.asset_key, "aerial-1.u1.g1")
+  equal(crashed.coalition, "blue")
+  equal(crashed.initiator, envelope.JSON_NULL)
+  equal(crashed.target, envelope.JSON_NULL)
+  equal(crashed.weapon, envelope.JSON_NULL)
+  equal(crashed.location.status, "unknown")
+  equal(crashed.location.reason, "unavailable")
+  equal(instance.active, false)
+  equal(adapter:resolve_unit(raw), nil)
+
+  equal(watcher:OnEventDead(loss_event(raw, { time = 16 })), false)
+  equal(count_type(events, "asset.crashed") + count_type(events, "asset.dead"), 1)
+end)
+
+succeeds("loss persistence failure does not prevent player retirement", function()
+  local controller, events = new_controller("loss-persist-failure")
+  local adapter = new_asset_adapter(controller)
+  local watcher = adapter:start()
+  local _, raw = player_unit(1004, "Aerial-1", "Aerial-1-1")
+  local _, _, instance = watcher:OnEventPlayerEnterAircraft(player_enter_event(raw, { time = 10 }))
+  local original_record = controller.record
+  function controller:record(input)
+    if input.event_type == "asset.crashed" then
+      return nil, "forced loss persistence failure"
+    end
+    return original_record(self, input)
+  end
+
+  equal(watcher:OnEventCrash(loss_event(raw, { time = 15 })), true)
+  equal(count_type(events, "asset.crashed"), 0)
+  equal(instance.active, false)
+  equal(adapter:resolve_unit(raw), nil)
+end)
+
+succeeds("ejection leaves the player active before a later aircraft loss", function()
+  local controller, events = new_controller("ejection-loss")
+  local adapter = new_asset_adapter(controller, nil, {
+    events = { PlayerEnterAircraft = 20, Dead = 21, Crash = 22, Ejection = 23 },
+  })
+  local watcher = adapter:start()
+  local _, raw = player_unit(1002, "Aerial-1", "Aerial-1-1")
+  local _, _, instance = watcher:OnEventPlayerEnterAircraft(player_enter_event(raw, { time = 10 }))
+
+  equal(watcher:OnEventEjection(loss_event(raw, { time = 12 })), true)
+  equal(count_type(events, "pilot.ejected"), 1)
+  equal(instance.active, true)
+  equal(adapter:resolve_unit(raw).asset_key, "aerial-1.u1.g1")
+  equal(watcher:OnEventCrash(loss_event(raw, { time = 15 })), true)
+  equal(count_type(events, "asset.crashed"), 1)
+  equal(#events, 4)
+  equal(instance.active, false)
+end)
+
+succeeds("pilot death remains separate from a later player aircraft loss", function()
+  local controller, events = new_controller("pilot-death-loss")
+  local adapter = new_asset_adapter(controller, nil, {
+    events = { PlayerEnterAircraft = 20, Dead = 21, Crash = 22, PilotDead = 24 },
+  })
+  local watcher = adapter:start()
+  local _, raw = player_unit(1003, "Aerial-1", "Aerial-1-1")
+  local _, _, instance = watcher:OnEventPlayerEnterAircraft(player_enter_event(raw, { time = 10 }))
+
+  equal(watcher:OnEventPilotDead(loss_event(raw, { time = 12 })), true)
+  equal(count_type(events, "pilot.dead"), 1)
+  equal(instance.active, true)
+  equal(watcher:OnEventDead(loss_event(raw, { time = 15 })), true)
+  equal(count_type(events, "asset.dead"), 1)
+  equal(instance.active, false)
+end)
+
+succeeds("bandit death emits a red loss and retires the tracked instance", function()
+  local controller, events = new_controller("bandit-death-loss")
+  local adapter = new_asset_adapter(controller, nil, {
+    events = { PlayerEnterAircraft = 20, Dead = 21, Crash = 22, PilotDead = 24, Ejection = 23 },
+  })
+  local watcher = adapter:start()
+  local unit = bandit_unit(1101, "Bandit-1#001-01")
+  local instances =
+    adapter:register_bandit_group(new_group({ id = 111, name = "Bandit-1#001", units = { unit } }), "Bandit-1", 10)
+
+  equal(
+    watcher:OnEventPilotDead(loss_event(unit, {
+      group_name = "Bandit-1#001",
+      name = "Bandit-1#001-01",
+      coalition = 1,
+      time = 13,
+    })),
+    false
+  )
+  equal(
+    watcher:OnEventEjection(loss_event(unit, {
+      group_name = "Bandit-1#001",
+      name = "Bandit-1#001-01",
+      coalition = 1,
+      time = 14,
+    })),
+    false
+  )
+  equal(count_type(events, "pilot.dead"), 0)
+  equal(count_type(events, "pilot.ejected"), 0)
+  equal(instances[1].active, true)
+
+  equal(
+    watcher:OnEventDead(loss_event(unit, {
+      group_name = "Bandit-1#001",
+      name = "Bandit-1#001-01",
+      coalition = 1,
+      time = 15,
+    })),
+    true
+  )
+  equal(count_type(events, "asset.dead"), 1)
+  equal(events[#events].asset.asset_key, "bandit-1.u1.g1")
+  equal(events[#events].coalition, "red")
+  equal(instances[1].active, false)
+  equal(adapter:resolve_unit(unit), nil)
+end)
+
+succeeds("bandit name reuse emits distinct losses for distinct generations", function()
+  local controller, events = new_controller("bandit-loss-generations")
+  local adapter = new_asset_adapter(controller)
+  local watcher = adapter:start()
+  local first_unit = bandit_unit(1201, "Bandit-1-Reused")
+  local first = adapter:register_bandit_group(
+    new_group({ id = 121, name = "Bandit-1#001", units = { first_unit } }),
+    "Bandit-1",
+    10
+  )
+  equal(
+    watcher:OnEventDead(loss_event(first_unit, {
+      group_name = "Bandit-1#001",
+      name = "Bandit-1-Reused",
+      coalition = 1,
+      time = 15,
+    })),
+    true
+  )
+
+  local second_unit = bandit_unit(1202, "Bandit-1-Reused")
+  local second = adapter:register_bandit_group(
+    new_group({ id = 122, name = "Bandit-1#002", units = { second_unit } }),
+    "Bandit-1",
+    20
+  )
+  equal(
+    watcher:OnEventDead(loss_event(second_unit, {
+      group_name = "Bandit-1#002",
+      name = "Bandit-1-Reused",
+      coalition = 1,
+      time = 25,
+    })),
+    true
+  )
+
+  equal(first[1].asset_key, "bandit-1.u1.g1")
+  equal(second[1].asset_key, "bandit-1.u1.g2")
+  local loss_keys = {}
+  for _, event in ipairs(events) do
+    if event.event_type == "asset.dead" then
+      loss_keys[#loss_keys + 1] = event.asset.asset_key
+    end
+  end
+  equal(#loss_keys, 2)
+  equal(loss_keys[1], "bandit-1.u1.g1")
+  equal(loss_keys[2], "bandit-1.u1.g2")
+end)
+
+succeeds("UnitLost subscription is optional and maps to asset.dead when available", function()
+  local controller, events = new_controller("unit-lost")
+  local adapter = new_asset_adapter(controller, nil, {
+    events = { PlayerEnterAircraft = 20, Dead = 21, Crash = 22, UnitLost = 25 },
+  })
+  local watcher = adapter:start()
+  equal(#watcher.handled, 4)
+  equal(watcher.handled[4], 25)
+  local _, raw = player_unit(1301, "Aerial-1", "Aerial-1-1")
+  watcher:OnEventPlayerEnterAircraft(player_enter_event(raw, { time = 10 }))
+  equal(watcher:OnEventUnitLost(loss_event(raw, { time = 15 })), true)
+  equal(count_type(events, "asset.dead"), 1)
+
+  local controller_without = new_controller("without-unit-lost")
+  local without = new_asset_adapter(controller_without, nil, {
+    events = { PlayerEnterAircraft = 20, Dead = 21, Crash = 22, UnitLost = -1 },
+  })
+  local watcher_without, start_error = without:start()
+  check(watcher_without ~= nil, start_error)
+  equal(#watcher_without.handled, 3)
+end)
+
+succeeds("non-roster death is ignored without changing tracked state", function()
+  local controller, events = new_controller("non-roster-death")
+  local adapter = new_asset_adapter(controller)
+  local watcher = adapter:start()
+  local untracked = new_unit({
+    id = 1401,
+    group_name = "Civilian-1",
+    name = "Civilian-1-1",
+    coalition = 0,
+  })
+
+  equal(
+    watcher:OnEventDead(loss_event(untracked, {
+      group_name = "Civilian-1",
+      name = "Civilian-1-1",
+      coalition = 0,
+      time = 15,
+    })),
+    false
+  )
+  equal(#events, 1)
+  equal(count_type(events, "asset.dead"), 0)
+  equal(count_type(events, "asset.crashed"), 0)
 end)
 
 succeeds("scripted removal emits intentional despawn before gameplay removal", function()

@@ -4,16 +4,27 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import type {
+  AssistAttributionRow,
+  AssetLossRow,
   EventRow,
   ExpenditureRow,
+  KillAttributionRow,
   RunParticipantRow,
   RunParticipantUpsert,
   RunRow,
   RunUpsertInput,
   TelemetryStore,
 } from "../src/telemetry/store";
+import type {
+  AssistAttributionFact,
+  KillAttributionFact,
+} from "../src/telemetry/combat-facts";
 import type { ExpenditureProjection } from "../src/telemetry/expenditures";
 import { processIngest } from "../src/telemetry/ingest";
+import {
+  aggregateAssetLosts,
+  type AssetLostFact,
+} from "../src/telemetry/losses";
 import type { TelemetryEvent } from "../src/telemetry/types";
 
 const contractRoot = resolve(process.cwd(), "..", "contracts");
@@ -35,11 +46,45 @@ function body(events: TelemetryEvent[]): string {
   return JSON.stringify({ batch_schema_version: 1, events });
 }
 
+function lossEvent(options: {
+  runKey: string;
+  sequence: number;
+  eventType: string;
+  assetKey?: string;
+  dcsName?: string;
+  payload?: Record<string, unknown>;
+}): TelemetryEvent {
+  const event = clone(validEvents[1]);
+  event.run_key = options.runKey;
+  event.event_sequence = options.sequence;
+  event.event_id = `${event.producer_id}:${event.run_key}:${options.sequence}`;
+  event.event_type = options.eventType;
+  event.initiator = null;
+  event.target = null;
+  event.participant = null;
+  event.weapon = null;
+  event.asset = {
+    status: "known",
+    kind: "aircraft",
+    asset_key: options.assetKey ?? "aerial-1.u1.g1",
+    dcs_name: options.dcsName ?? "Aerial-1-1",
+    dcs_type: "FA-18C_hornet",
+    coalition: "blue",
+  };
+  event.coalition = "blue";
+  event.payload = options.payload ?? {};
+  return event;
+}
+
 class MemoryStore implements TelemetryStore {
   readonly events = new Map<string, TelemetryEvent>();
   readonly runs = new Map<string, RunUpsertInput>();
   readonly runUpserts: RunUpsertInput[] = [];
   readonly expenditures = new Map<string, ExpenditureProjection>();
+  readonly losses = new Map<string, AssetLostFact>();
+  readonly kills = new Map<string, KillAttributionFact>();
+  readonly assists = new Map<string, AssistAttributionFact>();
+  runEventReads = 0;
   readonly participants = new Map<string, FakeParticipant>();
 
   async insertEvent(
@@ -84,6 +129,41 @@ class MemoryStore implements TelemetryStore {
     }
     this.expenditures.set(expenditure.sourceEventId, expenditure);
     return "inserted";
+  }
+
+  async upsertAssetLoss(loss: AssetLostFact): Promise<void> {
+    const key = `${loss.producerId} ${loss.runKey} ${loss.assetKey}`;
+    const existing = this.losses.get(key);
+    if (
+      existing === undefined ||
+      loss.sourceEventIds.length >= existing.sourceEventIds.length
+    ) {
+      this.losses.set(key, loss);
+    }
+  }
+
+  async upsertKillAttribution(attribution: KillAttributionFact): Promise<void> {
+    const key = `${attribution.producerId} ${attribution.runKey} ${attribution.targetAssetKey}`;
+    const existing = this.kills.get(key);
+    if (
+      existing === undefined ||
+      attribution.sourceEventIds.length >= existing.sourceEventIds.length
+    ) {
+      this.kills.set(key, attribution);
+    }
+  }
+
+  async upsertAssistAttribution(
+    attribution: AssistAttributionFact,
+  ): Promise<void> {
+    const key = `${attribution.producerId} ${attribution.runKey} ${attribution.targetAssetKey} ${attribution.attackerAssetKey}`;
+    const existing = this.assists.get(key);
+    if (
+      existing === undefined ||
+      attribution.sourceEventIds.length >= existing.sourceEventIds.length
+    ) {
+      this.assists.set(key, attribution);
+    }
   }
 
   async upsertRunParticipant(participant: RunParticipantUpsert): Promise<void> {
@@ -141,8 +221,32 @@ class MemoryStore implements TelemetryStore {
     return [];
   }
 
+  async listRunEvents(
+    producerId: string,
+    runKey: string,
+  ): Promise<TelemetryEvent[]> {
+    this.runEventReads += 1;
+    return [...this.events.values()]
+      .filter(
+        (event) => event.producer_id === producerId && event.run_key === runKey,
+      )
+      .sort((left, right) => left.event_sequence - right.event_sequence);
+  }
+
   async listExpenditures(): Promise<ExpenditureRow[]> {
     return [];
+  }
+
+  async listAssetLosses(): Promise<AssetLossRow[]> {
+    return [...this.losses.values()] as unknown as AssetLossRow[];
+  }
+
+  async listKillAttributions(): Promise<KillAttributionRow[]> {
+    return [...this.kills.values()] as unknown as KillAttributionRow[];
+  }
+
+  async listAssistAttributions(): Promise<AssistAttributionRow[]> {
+    return [...this.assists.values()] as unknown as AssistAttributionRow[];
   }
 
   async listRunParticipants(): Promise<RunParticipantRow[]> {
@@ -330,6 +434,52 @@ describe("telemetry ingest", () => {
     expect(merged?.valuationCatalogue ?? null).toBeNull();
     expect(merged?.valuationCatalogueVersion ?? null).toBeNull();
     expect(store.expenditures.size).toBe(0);
+    expect(store.losses.size).toBe(0);
+    expect(store.runEventReads).toBe(1);
+  });
+
+  it("projects combat facts for an unassigned historical run without a second run read", async () => {
+    const runKey = "run-slice14-historical";
+    const source = clone(validEvents[4]);
+    source.run_key = runKey;
+    source.event_sequence = 10;
+    source.event_id = `${source.producer_id}:${runKey}:10`;
+    const sourceTarget = source.target as Record<string, unknown>;
+    sourceTarget.asset_key = "bandit.u1.g1";
+    const assistHit = clone(source);
+    assistHit.event_sequence = 9;
+    assistHit.event_id = `${source.producer_id}:${runKey}:9`;
+    assistHit.event_type = "asset.hit";
+    assistHit.sim_time = source.sim_time - 10;
+    assistHit.initiator = {
+      status: "known",
+      kind: "aircraft",
+      participant_id: null,
+      asset_key: "wingman.u1.g1",
+      display_name: null,
+      callsign: null,
+      dcs_name: "Wingman-1-1",
+      dcs_type: "FA-18C_hornet",
+      coalition: "blue",
+    };
+    const store = new MemoryStore();
+    store.runs.set(`${source.producer_id} ${runKey}`, {
+      producerId: source.producer_id,
+      runKey,
+      valuationCatalogue: null,
+      valuationCatalogueVersion: null,
+      firstSequence: 1,
+      lastSequence: 8,
+      acceptedDelta: 8,
+      status: "active",
+    });
+
+    await processIngest(body([assistHit, source]), store);
+
+    expect(store.losses.size).toBe(0);
+    expect(store.kills.size).toBe(1);
+    expect(store.assists.size).toBe(1);
+    expect(store.runEventReads).toBe(1);
   });
 
   it("advances participant labels by event sequence", async () => {
@@ -353,5 +503,152 @@ describe("telemetry ingest", () => {
     );
     expect(participant?.displayName).toBe("Viper-actual");
     expect(participant?.eventSequence).toBe(11);
+  });
+
+  it("reconciles repeated aircraft loss signals into one persisted charge", async () => {
+    const runKey = "run-slice13-repeated";
+    const events = [
+      lossEvent({ runKey, sequence: 10, eventType: "asset.dead" }),
+      lossEvent({ runKey, sequence: 11, eventType: "asset.crashed" }),
+      lossEvent({
+        runKey,
+        sequence: 12,
+        eventType: "asset.dead",
+        payload: { dcs_event_name: "UnitLost" },
+      }),
+    ];
+    const store = new MemoryStore();
+
+    await processIngest(body(events), store);
+
+    expect(store.losses.size).toBe(1);
+    const persisted = [...store.losses.values()];
+    expect(persisted[0]?.sourceEventIds).toEqual(
+      events.map((event) => event.event_id),
+    );
+    expect(aggregateAssetLosts(persisted)).toEqual({
+      lossCount: 1,
+      knownSubtotalCents: 2_900_000_000,
+      unpricedCount: 0,
+      partial: false,
+    });
+  });
+
+  it("ignores despawn and pilot outcomes while ejection does not cancel loss", async () => {
+    const runKey = "run-slice13-non-loss";
+    const events = [
+      lossEvent({
+        runKey,
+        sequence: 10,
+        eventType: "asset.despawned",
+        payload: { reason: "intentional" },
+      }),
+      lossEvent({ runKey, sequence: 11, eventType: "pilot.dead" }),
+      lossEvent({ runKey, sequence: 12, eventType: "pilot.ejected" }),
+      lossEvent({ runKey, sequence: 13, eventType: "asset.dead" }),
+    ];
+    const store = new MemoryStore();
+
+    await processIngest(body(events.slice(0, 3)), store);
+    expect(store.losses.size).toBe(0);
+    await processIngest(body([events[3]]), store);
+
+    expect(store.losses.size).toBe(1);
+    expect([...store.losses.values()][0]?.sourceEventIds).toEqual([
+      events[3].event_id,
+    ]);
+  });
+
+  it("does not project losses for a pre-existing unassigned run", async () => {
+    const event = lossEvent({
+      runKey: "run-slice13-historical",
+      sequence: 10,
+      eventType: "asset.dead",
+    });
+    const store = new MemoryStore();
+    store.runs.set(`${event.producer_id} ${event.run_key}`, {
+      producerId: event.producer_id,
+      runKey: event.run_key,
+      valuationCatalogue: null,
+      valuationCatalogueVersion: null,
+      firstSequence: 1,
+      lastSequence: 9,
+      acceptedDelta: 9,
+      status: "active",
+    });
+
+    await processIngest(body([event]), store);
+
+    expect(store.events.size).toBe(1);
+    expect(store.losses.size).toBe(0);
+  });
+
+  it("charges same-named distinct asset incarnations separately", async () => {
+    const runKey = "run-slice13-incarnations";
+    const store = new MemoryStore();
+    await processIngest(
+      body([
+        lossEvent({
+          runKey,
+          sequence: 10,
+          eventType: "asset.dead",
+          assetKey: "aerial-1.u1.g1",
+          dcsName: "Aerial-1-1",
+        }),
+        lossEvent({
+          runKey,
+          sequence: 11,
+          eventType: "asset.dead",
+          assetKey: "aerial-1.u1.g2",
+          dcsName: "Aerial-1-1",
+        }),
+      ]),
+      store,
+    );
+
+    expect(store.losses.size).toBe(2);
+    expect(aggregateAssetLosts([...store.losses.values()])).toMatchObject({
+      lossCount: 2,
+      knownSubtotalCents: 5_800_000_000,
+      partial: false,
+    });
+  });
+
+  it("evolves one loss across batch boundaries and remains stable on replay", async () => {
+    const runKey = "run-slice13-batches";
+    const dead = lossEvent({
+      runKey,
+      sequence: 10,
+      eventType: "asset.dead",
+    });
+    const crashed = lossEvent({
+      runKey,
+      sequence: 11,
+      eventType: "asset.crashed",
+    });
+    const store = new MemoryStore();
+
+    await processIngest(body([dead]), store);
+    const initialFactId = [...store.losses.values()][0]?.factId;
+    await processIngest(body([crashed]), store);
+
+    expect(store.losses.size).toBe(1);
+    const afterSecondBatch = [...store.losses.values()];
+    expect(afterSecondBatch[0]?.factId).not.toBe(initialFactId);
+    expect(afterSecondBatch[0]?.sourceEventIds).toEqual([
+      dead.event_id,
+      crashed.event_id,
+    ]);
+    const totals = aggregateAssetLosts(afterSecondBatch);
+    expect(totals.knownSubtotalCents).toBe(2_900_000_000);
+
+    await processIngest(body([dead]), store);
+    await processIngest(body([crashed]), store);
+    expect(store.losses.size).toBe(1);
+    expect(aggregateAssetLosts([...store.losses.values()])).toEqual(totals);
+    expect([...store.losses.values()][0]?.sourceEventIds).toEqual([
+      dead.event_id,
+      crashed.event_id,
+    ]);
   });
 });

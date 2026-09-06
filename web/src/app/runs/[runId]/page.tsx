@@ -5,6 +5,7 @@ import {
   aggregateExpenditures,
   type ParticipantLabel,
 } from "@/telemetry/expenditures";
+import { aggregateAssetLosts } from "@/telemetry/losses";
 import { deriveSorties, eventRowToSortieInput } from "@/telemetry/sorties";
 import { NeonTelemetryStore } from "@/telemetry/store";
 
@@ -53,6 +54,12 @@ export default async function RunPage({
     const hasNextPage = events.length > EVENTS_PER_PAGE;
     const pageEvents = hasNextPage ? events.slice(0, EVENTS_PER_PAGE) : events;
     const expenditures = await store.listExpenditures(
+      run.producerId,
+      run.runKey,
+    );
+    const losses = await store.listAssetLosses(run.producerId, run.runKey);
+    const kills = await store.listKillAttributions(run.producerId, run.runKey);
+    const assists = await store.listAssistAttributions(
       run.producerId,
       run.runKey,
     );
@@ -109,6 +116,20 @@ export default async function RunPage({
         unitCostCents: expenditure.unitCostCents,
       })),
     );
+    const lossSummary = aggregateAssetLosts(
+      losses.map((loss) => ({
+        factId: loss.factId,
+        producerId: loss.producerId,
+        runKey: loss.runKey,
+        assetKey: loss.assetKey,
+        dcsType: loss.aircraftDcsType,
+        coalition: loss.coalition,
+        catalogue: loss.catalogue,
+        catalogueVersion: loss.catalogueVersion,
+        unitCostCents: loss.unitCostCents,
+        sourceEventIds: loss.sourceEventIds,
+      })),
+    );
     const eventsHref = (page: number) =>
       page <= 1
         ? `/runs/${encodeURIComponent(run.runKey)}`
@@ -129,6 +150,16 @@ export default async function RunPage({
       return input === null ? [] : [input];
     });
     const sorties = deriveSorties(sortieInputs);
+    const knownKillerCount = kills.filter(
+      (kill) => kill.killerAssetKey !== null,
+    ).length;
+    const unknownKillerCount = kills.length - knownKillerCount;
+    const sortedKills = [...kills].sort(
+      (a, b) => a.killingBlowSimTime - b.killingBlowSimTime,
+    );
+    const sortedAssists = [...assists].sort(
+      (a, b) => a.representativeHitSimTime - b.representativeHitSimTime,
+    );
     return (
       <main>
         <p className="hud-back">
@@ -266,6 +297,136 @@ export default async function RunPage({
               )}
             </>
           )}
+          <section className="hud-panel col-12">
+            <h2>Aircraft loss costs</h2>
+            {run.valuationCatalogue == null ? (
+              <p className="hud-subtitle">
+                This run predates catalogue assignment and is unpriced. Only
+                runs assigned a valuation catalogue at creation project aircraft
+                losses.
+              </p>
+            ) : losses.length === 0 ? (
+              <p className="hud-subtitle">
+                No aircraft losses recorded in this run.
+              </p>
+            ) : (
+              <>
+                <p className="hud-subtitle">
+                  Catalogue {run.valuationCatalogue} v
+                  {run.valuationCatalogueVersion} · {lossSummary.lossCount} loss
+                  {lossSummary.lossCount === 1 ? "" : "es"} · known subtotal{" "}
+                  {formatUsd(lossSummary.knownSubtotalCents)} ·{" "}
+                  {lossSummary.unpricedCount} unpriced
+                  {lossSummary.partial ? " — total partial" : " — all priced"}
+                </p>
+                <table className="hud-table expandable">
+                  <thead>
+                    <tr>
+                      <th>Asset</th>
+                      <th>Aircraft</th>
+                      <th>Coalition</th>
+                      <th>Replacement cost</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {losses.map((loss) => (
+                      <tr key={loss.factId}>
+                        <td className="hud-mono">{loss.assetKey}</td>
+                        <td className="hud-mono">
+                          {loss.aircraftDcsType ?? "unknown"}
+                        </td>
+                        <td>{loss.coalition ?? "unknown"}</td>
+                        <td className="hud-mono">
+                          {loss.unitCostCents === null
+                            ? "unpriced"
+                            : formatUsd(loss.unitCostCents)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </>
+            )}
+          </section>
+          <section className="hud-panel col-12">
+            <h2>Kills &amp; assists</h2>
+            <p className="hud-subtitle">
+              {kills.length} kill{kills.length === 1 ? "" : "s"} ·{" "}
+              {knownKillerCount} known attacker · {unknownKillerCount} unknown ·{" "}
+              {assists.length} assist{assists.length === 1 ? "" : "s"}
+            </p>
+            {kills.length === 0 ? (
+              <p className="hud-subtitle">No kills recorded in this run.</p>
+            ) : (
+              <table className="hud-table expandable">
+                <thead>
+                  <tr>
+                    <th>Target</th>
+                    <th>Killer</th>
+                    <th>Weapon</th>
+                    <th>Sim time</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sortedKills.map((kill) => (
+                    <tr key={kill.factId}>
+                      <td className="hud-mono">
+                        {kill.targetAssetKey} ({kill.targetDcsType ?? "unknown"}
+                        )
+                      </td>
+                      <td>
+                        {kill.killerAssetKey === null ? (
+                          <>unknown — not reported</>
+                        ) : (
+                          <>
+                            {kill.killerDcsName ??
+                              kill.killerDcsType ??
+                              "unknown"}{" "}
+                            ({kill.killerCoalition ?? "unknown"})
+                          </>
+                        )}
+                      </td>
+                      <td className="hud-mono">{kill.weaponDcsType ?? "—"}</td>
+                      <td className="hud-mono">{kill.killingBlowSimTime}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+            <h3>Assists</h3>
+            {assists.length === 0 ? (
+              <p className="hud-subtitle">No assists recorded in this run.</p>
+            ) : (
+              <table className="hud-table expandable">
+                <thead>
+                  <tr>
+                    <th>Target</th>
+                    <th>Assisting attacker</th>
+                    <th>Sim time</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sortedAssists.map((assist) => (
+                    <tr key={assist.factId}>
+                      <td className="hud-mono">
+                        {assist.targetAssetKey} (
+                        {assist.targetDcsType ?? "unknown"})
+                      </td>
+                      <td>
+                        {assist.attackerDcsName ??
+                          assist.attackerDcsType ??
+                          "unknown"}{" "}
+                        ({assist.attackerCoalition ?? "unknown"})
+                      </td>
+                      <td className="hud-mono">
+                        {assist.representativeHitSimTime}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </section>
           <section className="hud-panel col-12">
             <h2>Crew sorties</h2>
             {sorties.length === 0 ? (

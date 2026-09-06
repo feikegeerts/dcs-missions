@@ -132,6 +132,20 @@ function M.start(config)
   if not shot then
     return nil, dependency_error
   end
+  local combat = config.combat
+  if type(combat) ~= "table" or type(combat.new) ~= "function" then
+    combat = nil
+    local scripts_root = rawget(_G, "MY_SCRIPTS_ROOT")
+    if type(scripts_root) == "string" and type(dofile) == "function" then
+      local loaded, result = pcall(dofile, scripts_root .. "missions/duel-dynamic/telemetry/combat.lua")
+      if loaded and type(result) == "table" and type(result.new) == "function" then
+        combat = result
+      end
+    end
+    if not combat then
+      log(config.env, "warning", "combat adapter missing; Hit/Kill telemetry disabled")
+    end
+  end
   local participant
   participant, dependency_error = require_dependency(config, "participant", "new")
   if not participant then
@@ -317,6 +331,31 @@ function M.start(config)
     return nil, "creating Shot adapter failed: " .. tostring(shot_creation_error)
   end
 
+  local combat_adapter
+  if combat then
+    local combat_created, combat_result, combat_error = pcall(function()
+      return combat.new({
+        controller = controller,
+        envelope = envelope,
+        BASE = config.BASE,
+        EVENTS = config.EVENTS,
+        asset_registry = asset_adapter,
+        log = function(level, message)
+          log(config.env, level, message)
+        end,
+      })
+    end)
+    if not combat_created or not combat_result then
+      log(
+        config.env,
+        "warning",
+        "creating combat adapter failed; Hit/Kill telemetry disabled: " .. tostring(combat_error or combat_result)
+      )
+    else
+      combat_adapter = combat_result
+    end
+  end
+
   local participant_adapter, participant_creation_error
   local participant_created, participant_result, participant_error = pcall(function()
     return participant.new({
@@ -375,6 +414,20 @@ function M.start(config)
     end
   end
 
+  local function stop_combat()
+    if not combat_adapter then
+      return
+    end
+    local stopped, stop_result, stop_error = pcall(function()
+      return combat_adapter:stop()
+    end)
+    if not stopped then
+      log(config.env, "error", "combat subscription removal raised: " .. tostring(stop_result))
+    elseif not stop_result then
+      log(config.env, "error", "combat subscription removal failed: " .. tostring(stop_error))
+    end
+  end
+
   local function stop_asset()
     local stopped, stop_result, stop_error = pcall(function()
       return asset_adapter:stop()
@@ -401,6 +454,7 @@ function M.start(config)
     stop_heartbeat()
     stop_participant()
     stop_shot()
+    stop_combat()
     stop_asset()
     local event, finish_error = controller:finish()
     if not event then
@@ -513,12 +567,32 @@ function M.start(config)
     return nil, "registering Shot adapter failed: " .. tostring(shot_start_error or shot_start_result)
   end
 
+  if combat_adapter then
+    local combat_started, combat_start_result, combat_start_error = pcall(function()
+      return combat_adapter:start()
+    end)
+    if not combat_started or not combat_start_result then
+      log(
+        config.env,
+        "warning",
+        "registering combat adapter failed; Hit/Kill telemetry disabled: "
+          .. tostring(combat_start_error or combat_start_result)
+      )
+      pcall(function()
+        combat_adapter:stop()
+      end)
+      combat_adapter = nil
+    end
+  end
+
   runtime.scheduler = scheduler
   runtime.watcher = watcher
   runtime.asset = asset_adapter
   runtime.asset_watcher = asset_adapter.watcher
   runtime.shot = shot_adapter
   runtime.shot_watcher = shot_adapter.watcher
+  runtime.combat = combat_adapter
+  runtime.combat_watcher = combat_adapter and combat_adapter.watcher or nil
   runtime.participant = participant_adapter
   runtime.participant_watcher = participant_adapter.watcher
   runtime.finish = finish

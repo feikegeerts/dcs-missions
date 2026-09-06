@@ -1,0 +1,1289 @@
+{
+  "id": "73f366b8-e69f-405f-af65-295eb7eb244c",
+  "prevId": "44b36498-0c32-4b03-84fc-f5b8b018db16",
+  "version": "7",
+  "dialect": "postgresql",
+  "tables": {
+    "public.asset_losses": {
+      "name": "asset_losses",
+      "schema": "",
+      "columns": {
+        "fact_id": {
+          "name": "fact_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "producer_id": {
+          "name": "producer_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "run_key": {
+          "name": "run_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "asset_key": {
+          "name": "asset_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "aircraft_dcs_type": {
+          "name": "aircraft_dcs_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "coalition": {
+          "name": "coalition",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "catalogue": {
+          "name": "catalogue",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "catalogue_version": {
+          "name": "catalogue_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "unit_cost_cents": {
+          "name": "unit_cost_cents",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "source_event_ids": {
+          "name": "source_event_ids",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "asset_losses_run_idx": {
+          "name": "asset_losses_run_idx",
+          "columns": [
+            {
+              "expression": "producer_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "run_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "asset_losses_run_aircraft_idx": {
+          "name": "asset_losses_run_aircraft_idx",
+          "columns": [
+            {
+              "expression": "producer_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "run_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "aircraft_dcs_type",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "coalition",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "asset_losses_mission_run_fk": {
+          "name": "asset_losses_mission_run_fk",
+          "tableFrom": "asset_losses",
+          "tableTo": "mission_runs",
+          "columnsFrom": [
+            "producer_id",
+            "run_key"
+          ],
+          "columnsTo": [
+            "producer_id",
+            "run_key"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "asset_losses_catalogue_version_fk": {
+          "name": "asset_losses_catalogue_version_fk",
+          "tableFrom": "asset_losses",
+          "tableTo": "valuation_catalogues",
+          "columnsFrom": [
+            "catalogue",
+            "catalogue_version"
+          ],
+          "columnsTo": [
+            "catalogue",
+            "version"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "asset_losses_producer_id_run_key_asset_key_pk": {
+          "name": "asset_losses_producer_id_run_key_asset_key_pk",
+          "columns": [
+            "producer_id",
+            "run_key",
+            "asset_key"
+          ]
+        }
+      },
+      "uniqueConstraints": {
+        "asset_losses_fact_id_unique": {
+          "name": "asset_losses_fact_id_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "fact_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "asset_losses_unit_cost_positive": {
+          "name": "asset_losses_unit_cost_positive",
+          "value": "\"asset_losses\".\"unit_cost_cents\" IS NULL OR \"asset_losses\".\"unit_cost_cents\" > 0"
+        },
+        "asset_losses_source_events_nonempty": {
+          "name": "asset_losses_source_events_nonempty",
+          "value": "jsonb_array_length(\"asset_losses\".\"source_event_ids\") > 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.mission_runs": {
+      "name": "mission_runs",
+      "schema": "",
+      "columns": {
+        "producer_id": {
+          "name": "producer_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "run_key": {
+          "name": "run_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "mission_name": {
+          "name": "mission_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "mission_version": {
+          "name": "mission_version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "map_name": {
+          "name": "map_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "run_classification": {
+          "name": "run_classification",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "valuation_catalogue": {
+          "name": "valuation_catalogue",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "valuation_catalogue_version": {
+          "name": "valuation_catalogue_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "first_sequence": {
+          "name": "first_sequence",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "last_sequence": {
+          "name": "last_sequence",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "event_count": {
+          "name": "event_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "started_at": {
+          "name": "started_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "ended_at": {
+          "name": "ended_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'active'"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "mission_runs_run_key_idx": {
+          "name": "mission_runs_run_key_idx",
+          "columns": [
+            {
+              "expression": "run_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "mission_runs_valuation_catalogue_version_fk": {
+          "name": "mission_runs_valuation_catalogue_version_fk",
+          "tableFrom": "mission_runs",
+          "tableTo": "valuation_catalogues",
+          "columnsFrom": [
+            "valuation_catalogue",
+            "valuation_catalogue_version"
+          ],
+          "columnsTo": [
+            "catalogue",
+            "version"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "mission_runs_producer_id_run_key_pk": {
+          "name": "mission_runs_producer_id_run_key_pk",
+          "columns": [
+            "producer_id",
+            "run_key"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "mission_runs_valuation_assignment_complete": {
+          "name": "mission_runs_valuation_assignment_complete",
+          "value": "(\"mission_runs\".\"valuation_catalogue\" IS NULL AND \"mission_runs\".\"valuation_catalogue_version\" IS NULL) OR (\"mission_runs\".\"valuation_catalogue\" IS NOT NULL AND \"mission_runs\".\"valuation_catalogue_version\" IS NOT NULL)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.ordnance_expenditures": {
+      "name": "ordnance_expenditures",
+      "schema": "",
+      "columns": {
+        "source_event_id": {
+          "name": "source_event_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "producer_id": {
+          "name": "producer_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "run_key": {
+          "name": "run_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "event_sequence": {
+          "name": "event_sequence",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "participant_id": {
+          "name": "participant_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "participant_display_name": {
+          "name": "participant_display_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "participant_callsign": {
+          "name": "participant_callsign",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "asset_key": {
+          "name": "asset_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "aircraft_dcs_type": {
+          "name": "aircraft_dcs_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "coalition": {
+          "name": "coalition",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "weapon_dcs_type": {
+          "name": "weapon_dcs_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "weapon_display_name": {
+          "name": "weapon_display_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "catalogue": {
+          "name": "catalogue",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "catalogue_version": {
+          "name": "catalogue_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "unit_cost_cents": {
+          "name": "unit_cost_cents",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "ordnance_expenditures_run_sequence_idx": {
+          "name": "ordnance_expenditures_run_sequence_idx",
+          "columns": [
+            {
+              "expression": "producer_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "run_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "event_sequence",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "ordnance_expenditures_group_idx": {
+          "name": "ordnance_expenditures_group_idx",
+          "columns": [
+            {
+              "expression": "producer_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "run_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "participant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "asset_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "aircraft_dcs_type",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "coalition",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "ordnance_expenditures_weapon_dcs_type_idx": {
+          "name": "ordnance_expenditures_weapon_dcs_type_idx",
+          "columns": [
+            {
+              "expression": "weapon_dcs_type",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "ordnance_expenditures_source_event_fk": {
+          "name": "ordnance_expenditures_source_event_fk",
+          "tableFrom": "ordnance_expenditures",
+          "tableTo": "telemetry_events",
+          "columnsFrom": [
+            "source_event_id"
+          ],
+          "columnsTo": [
+            "event_id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "ordnance_expenditures_mission_run_fk": {
+          "name": "ordnance_expenditures_mission_run_fk",
+          "tableFrom": "ordnance_expenditures",
+          "tableTo": "mission_runs",
+          "columnsFrom": [
+            "producer_id",
+            "run_key"
+          ],
+          "columnsTo": [
+            "producer_id",
+            "run_key"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "ordnance_expenditures_catalogue_version_fk": {
+          "name": "ordnance_expenditures_catalogue_version_fk",
+          "tableFrom": "ordnance_expenditures",
+          "tableTo": "valuation_catalogues",
+          "columnsFrom": [
+            "catalogue",
+            "catalogue_version"
+          ],
+          "columnsTo": [
+            "catalogue",
+            "version"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "ordnance_expenditures_unit_cost_positive": {
+          "name": "ordnance_expenditures_unit_cost_positive",
+          "value": "\"ordnance_expenditures\".\"unit_cost_cents\" IS NULL OR \"ordnance_expenditures\".\"unit_cost_cents\" > 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.run_participants": {
+      "name": "run_participants",
+      "schema": "",
+      "columns": {
+        "producer_id": {
+          "name": "producer_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "run_key": {
+          "name": "run_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "participant_id": {
+          "name": "participant_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "display_name": {
+          "name": "display_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "display_name_sequence": {
+          "name": "display_name_sequence",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "callsign": {
+          "name": "callsign",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "callsign_sequence": {
+          "name": "callsign_sequence",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "coalition": {
+          "name": "coalition",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "latest_event_sequence": {
+          "name": "latest_event_sequence",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "run_participants_run_idx": {
+          "name": "run_participants_run_idx",
+          "columns": [
+            {
+              "expression": "producer_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "run_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "run_participants_mission_run_fk": {
+          "name": "run_participants_mission_run_fk",
+          "tableFrom": "run_participants",
+          "tableTo": "mission_runs",
+          "columnsFrom": [
+            "producer_id",
+            "run_key"
+          ],
+          "columnsTo": [
+            "producer_id",
+            "run_key"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "run_participants_producer_id_run_key_participant_id_pk": {
+          "name": "run_participants_producer_id_run_key_participant_id_pk",
+          "columns": [
+            "producer_id",
+            "run_key",
+            "participant_id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.telemetry_events": {
+      "name": "telemetry_events",
+      "schema": "",
+      "columns": {
+        "event_id": {
+          "name": "event_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "producer_id": {
+          "name": "producer_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "run_key": {
+          "name": "run_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "event_sequence": {
+          "name": "event_sequence",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "event_type": {
+          "name": "event_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sim_time": {
+          "name": "sim_time",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "wall_time": {
+          "name": "wall_time",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "source": {
+          "name": "source",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_version": {
+          "name": "source_version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "schema_version": {
+          "name": "schema_version",
+          "type": "smallint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "coalition": {
+          "name": "coalition",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "location_status": {
+          "name": "location_status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "location_x": {
+          "name": "location_x",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "location_y": {
+          "name": "location_y",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "location_z": {
+          "name": "location_z",
+          "type": "double precision",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "weapon_status": {
+          "name": "weapon_status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "weapon_dcs_type": {
+          "name": "weapon_dcs_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "weapon_category": {
+          "name": "weapon_category",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "initiator_status": {
+          "name": "initiator_status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "initiator_kind": {
+          "name": "initiator_kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "initiator_participant_id": {
+          "name": "initiator_participant_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "initiator_dcs_name": {
+          "name": "initiator_dcs_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "target_status": {
+          "name": "target_status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "target_kind": {
+          "name": "target_kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "target_dcs_name": {
+          "name": "target_dcs_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "asset_status": {
+          "name": "asset_status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "asset_key": {
+          "name": "asset_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "asset_dcs_name": {
+          "name": "asset_dcs_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "payload": {
+          "name": "payload",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "event_json": {
+          "name": "event_json",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "telemetry_events_run_sequence_idx": {
+          "name": "telemetry_events_run_sequence_idx",
+          "columns": [
+            {
+              "expression": "run_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "event_sequence",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "telemetry_events_event_type_idx": {
+          "name": "telemetry_events_event_type_idx",
+          "columns": [
+            {
+              "expression": "event_type",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "telemetry_events_sim_time_idx": {
+          "name": "telemetry_events_sim_time_idx",
+          "columns": [
+            {
+              "expression": "sim_time",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "telemetry_events_coalition_idx": {
+          "name": "telemetry_events_coalition_idx",
+          "columns": [
+            {
+              "expression": "coalition",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "telemetry_events_weapon_dcs_type_idx": {
+          "name": "telemetry_events_weapon_dcs_type_idx",
+          "columns": [
+            {
+              "expression": "weapon_dcs_type",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "telemetry_events_producer_run_sequence_unique": {
+          "name": "telemetry_events_producer_run_sequence_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "producer_id",
+            "run_key",
+            "event_sequence"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.valuation_catalogues": {
+      "name": "valuation_catalogues",
+      "schema": "",
+      "columns": {
+        "catalogue": {
+          "name": "catalogue",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "version": {
+          "name": "version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "effective_date": {
+          "name": "effective_date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "currency": {
+          "name": "currency",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "pricing_convention": {
+          "name": "pricing_convention",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "type_key_source": {
+          "name": "type_key_source",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "valuation_catalogues_effective_date_idx": {
+          "name": "valuation_catalogues_effective_date_idx",
+          "columns": [
+            {
+              "expression": "effective_date",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "valuation_catalogues_catalogue_version_pk": {
+          "name": "valuation_catalogues_catalogue_version_pk",
+          "columns": [
+            "catalogue",
+            "version"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "valuation_catalogues_version_positive": {
+          "name": "valuation_catalogues_version_positive",
+          "value": "\"valuation_catalogues\".\"version\" > 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.valuation_items": {
+      "name": "valuation_items",
+      "schema": "",
+      "columns": {
+        "catalogue": {
+          "name": "catalogue",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "catalogue_version": {
+          "name": "catalogue_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "dcs_type": {
+          "name": "dcs_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "display_name": {
+          "name": "display_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "faction": {
+          "name": "faction",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "category": {
+          "name": "category",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "usd_value": {
+          "name": "usd_value",
+          "type": "numeric(14, 2)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "value_basis": {
+          "name": "value_basis",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source": {
+          "name": "source",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "matrix_status": {
+          "name": "matrix_status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "matrix_evidence": {
+          "name": "matrix_evidence",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "notes": {
+          "name": "notes",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "valuation_items_dcs_type_idx": {
+          "name": "valuation_items_dcs_type_idx",
+          "columns": [
+            {
+              "expression": "dcs_type",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "valuation_items_faction_category_idx": {
+          "name": "valuation_items_faction_category_idx",
+          "columns": [
+            {
+              "expression": "faction",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "category",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "valuation_items_catalogue_version_fk": {
+          "name": "valuation_items_catalogue_version_fk",
+          "tableFrom": "valuation_items",
+          "tableTo": "valuation_catalogues",
+          "columnsFrom": [
+            "catalogue",
+            "catalogue_version"
+          ],
+          "columnsTo": [
+            "catalogue",
+            "version"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "valuation_items_catalogue_catalogue_version_dcs_type_pk": {
+          "name": "valuation_items_catalogue_catalogue_version_dcs_type_pk",
+          "columns": [
+            "catalogue",
+            "catalogue_version",
+            "dcs_type"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "valuation_items_usd_value_positive": {
+          "name": "valuation_items_usd_value_positive",
+          "value": "\"valuation_items\".\"usd_value\" > 0"
+        }
+      },
+      "isRLSEnabled": false
+    }
+  },
+  "enums": {},
+  "schemas": {},
+  "sequences": {},
+  "roles": {},
+  "policies": {},
+  "views": {},
+  "_meta": {
+    "columns": {},
+    "schemas": {},
+    "tables": {}
+  }
+}

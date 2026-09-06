@@ -273,6 +273,165 @@ export const ordnanceExpenditures = pgTable(
   ],
 );
 
+export const assetLosses = pgTable(
+  "asset_losses",
+  {
+    factId: text("fact_id").notNull(),
+    producerId: text("producer_id").notNull(),
+    runKey: text("run_key").notNull(),
+    assetKey: text("asset_key").notNull(),
+    aircraftDcsType: text("aircraft_dcs_type"),
+    coalition: text("coalition"),
+    catalogue: text("catalogue").notNull(),
+    catalogueVersion: integer("catalogue_version").notNull(),
+    unitCostCents: bigint("unit_cost_cents", { mode: "number" }),
+    sourceEventIds: jsonb("source_event_ids").$type<string[]>().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.producerId, table.runKey, table.assetKey],
+    }),
+    unique("asset_losses_fact_id_unique").on(table.factId),
+    foreignKey({
+      columns: [table.producerId, table.runKey],
+      foreignColumns: [missionRuns.producerId, missionRuns.runKey],
+      name: "asset_losses_mission_run_fk",
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.catalogue, table.catalogueVersion],
+      foreignColumns: [
+        valuationCatalogues.catalogue,
+        valuationCatalogues.version,
+      ],
+      name: "asset_losses_catalogue_version_fk",
+    }).onDelete("restrict"),
+    check(
+      "asset_losses_unit_cost_positive",
+      sql`${table.unitCostCents} IS NULL OR ${table.unitCostCents} > 0`,
+    ),
+    check(
+      "asset_losses_source_events_nonempty",
+      sql`jsonb_array_length(${table.sourceEventIds}) > 0`,
+    ),
+    index("asset_losses_run_idx").on(table.producerId, table.runKey),
+    index("asset_losses_run_aircraft_idx").on(
+      table.producerId,
+      table.runKey,
+      table.aircraftDcsType,
+      table.coalition,
+    ),
+  ],
+);
+
+export const killAttributions = pgTable(
+  "kill_attributions",
+  {
+    factId: text("fact_id").notNull(),
+    producerId: text("producer_id").notNull(),
+    runKey: text("run_key").notNull(),
+    targetAssetKey: text("target_asset_key").notNull(),
+    targetDcsName: text("target_dcs_name"),
+    targetDcsType: text("target_dcs_type"),
+    targetCoalition: text("target_coalition"),
+    killerAssetKey: text("killer_asset_key"),
+    killerDcsName: text("killer_dcs_name"),
+    killerDcsType: text("killer_dcs_type"),
+    killerCoalition: text("killer_coalition"),
+    killingBlowSimTime: doublePrecision("killing_blow_sim_time").notNull(),
+    killingBlowEventId: text("killing_blow_event_id").notNull(),
+    weaponDcsType: text("weapon_dcs_type"),
+    weaponCategory: text("weapon_category"),
+    sourceEventIds: jsonb("source_event_ids").$type<string[]>().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.producerId, table.runKey, table.targetAssetKey],
+    }),
+    unique("kill_attributions_fact_id_unique").on(table.factId),
+    foreignKey({
+      columns: [table.producerId, table.runKey],
+      foreignColumns: [missionRuns.producerId, missionRuns.runKey],
+      name: "kill_attributions_mission_run_fk",
+    }).onDelete("cascade"),
+    check(
+      "kill_attributions_source_events_nonempty",
+      sql`jsonb_array_length(${table.sourceEventIds}) > 0`,
+    ),
+    index("kill_attributions_run_idx").on(table.producerId, table.runKey),
+    index("kill_attributions_run_killer_idx").on(
+      table.producerId,
+      table.runKey,
+      table.killerAssetKey,
+    ),
+  ],
+);
+
+export const assistAttributions = pgTable(
+  "assist_attributions",
+  {
+    factId: text("fact_id").notNull(),
+    producerId: text("producer_id").notNull(),
+    runKey: text("run_key").notNull(),
+    targetAssetKey: text("target_asset_key").notNull(),
+    attackerAssetKey: text("attacker_asset_key").notNull(),
+    attackerDcsName: text("attacker_dcs_name"),
+    attackerDcsType: text("attacker_dcs_type"),
+    attackerCoalition: text("attacker_coalition"),
+    targetDcsName: text("target_dcs_name"),
+    targetDcsType: text("target_dcs_type"),
+    targetCoalition: text("target_coalition"),
+    representativeHitSimTime: doublePrecision(
+      "representative_hit_sim_time",
+    ).notNull(),
+    representativeHitEventId: text("representative_hit_event_id").notNull(),
+    sourceEventIds: jsonb("source_event_ids").$type<string[]>().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [
+        table.producerId,
+        table.runKey,
+        table.targetAssetKey,
+        table.attackerAssetKey,
+      ],
+    }),
+    unique("assist_attributions_fact_id_unique").on(table.factId),
+    foreignKey({
+      columns: [table.producerId, table.runKey],
+      foreignColumns: [missionRuns.producerId, missionRuns.runKey],
+      name: "assist_attributions_mission_run_fk",
+    }).onDelete("cascade"),
+    check(
+      "assist_attributions_source_events_nonempty",
+      sql`jsonb_array_length(${table.sourceEventIds}) > 0`,
+    ),
+    index("assist_attributions_run_idx").on(table.producerId, table.runKey),
+    index("assist_attributions_run_attacker_idx").on(
+      table.producerId,
+      table.runKey,
+      table.attackerAssetKey,
+    ),
+  ],
+);
+
 export type TelemetryEventRow = typeof telemetryEvents.$inferSelect;
 export type MissionRunRow = typeof missionRuns.$inferSelect;
 export type ValuationCatalogueRow = typeof valuationCatalogues.$inferSelect;
@@ -281,3 +440,6 @@ export type ValuationItemRow = typeof valuationItems.$inferSelect;
 export type NewValuationItemRow = typeof valuationItems.$inferInsert;
 export type RunParticipantRow = typeof runParticipants.$inferSelect;
 export type OrdnanceExpenditureRow = typeof ordnanceExpenditures.$inferSelect;
+export type AssetLossRow = typeof assetLosses.$inferSelect;
+export type KillAttributionRow = typeof killAttributions.$inferSelect;
+export type AssistAttributionRow = typeof assistAttributions.$inferSelect;

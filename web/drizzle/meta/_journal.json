@@ -22,6 +22,20 @@
       "when": 1788626981284,
       "tag": "0002_flaky_makkari",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1788674828839,
+      "tag": "0003_lazy_cyclops",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1788682134842,
+      "tag": "0004_robust_dexter_bennett",
+      "breakpoints": true
     }
   ]
 }
