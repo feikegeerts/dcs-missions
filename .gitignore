@@ -16,6 +16,10 @@ lib/dcs-world-schema/
 # opencode runtime
 .opencode/node_modules/
 .opencode/opencode-loop/
+/.opencode/agent-queue.json
+
+# Local progress metadata
+/progress.md
 
 # Environment / secrets (never commit)
 .env
