@@ -9,9 +9,10 @@ A downloaded `.miz` from a user forum or a friend has neither. To ship,
 the mission must be **self-contained** and run on a stock, sanitized DCS
 install.
 
-This doc covers the steps. The self-contained build was verified on the stock,
-sanitized dedicated server on 2026-09-02; the dev `.miz` remains the normal
-hot-reload workflow.
+This doc covers the steps. The mission-only self-contained build was verified
+on the stock, sanitized dedicated server on 2026-09-02. The newly packaged
+production telemetry bridge still requires the owner-gated S17-p4 live test;
+the dev `.miz` remains the normal hot-reload workflow.
 
 ---
 
@@ -37,8 +38,8 @@ Implementation lives in `build/pack-shipping-miz.ps1`.
 All steps are automated in `build/pack-shipping-miz.ps1`. To build a
 shipping `.miz`:
 
-```pwsh
-pwsh -File build\pack-shipping-miz.ps1 -Zip
+```powershell
+powershell -File build\pack-shipping-miz.ps1 -Zip
 ```
 
 What the packager does:
@@ -72,18 +73,30 @@ What the packager does:
    references and are silently ignored by stock DCS.
 
 4. **Synthesizes `l10n/DEFAULT/main.lua`** from `src/missions/duel-dynamic/main.lua`:
-   - Inlines `src/missions/duel-dynamic/score.lua` at the top (since
-     `dofile()` with relative paths doesn't work in stock DCS — the
-     CWD is the DCS install dir, not the mission's `.miz`).
-   - Strips the dev-only `MY_SCRIPTS_ROOT` lookup block (the
-     `dofile(DIR .. "score.lua")` and surrounding `if not ROOT then
-     return end`).
+   - Inlines `src/missions/duel-dynamic/score.lua` at the top.
+   - Strips the dev-only `MY_SCRIPTS_ROOT` lookup, the complete
+     `initDevelopmentTelemetry` function and call, and the development
+     `dofile(DIR .. "score.lua")` line. These are exact, anchored,
+     fail-loud rewrites rather than optional substitutions.
+   - Inlines the 11 pure telemetry modules (`event_id`, `envelope`, `json`,
+     `lifecycle`, `bridge`, `bridge_frame`, `bridge_queue`, `asset`, `shot`,
+     `combat`, and `participant`) as IIFE locals before the mission body. It
+     keeps `initShippingTelemetry`, rewrites each of its 11 `dofile` lines to
+     the corresponding inlined local, and injects
+     `_G.TELEMETRY_SHIPPING_ENABLED = true` immediately before the shipping
+     init call. The bridge uses historical run classification and an in-memory
+     queue; it performs no mission-side file writes.
    - Replaces `os.time()` (nilled in stock DCS) with
      `math.floor(timer.getTime() * 1000)` for the LCG seed.
    - Adds a `main.lua — SHIPPING BUILD` header explaining
      the diff.
-   - Refuses to build if any `TraceOn`, `os.*`, `io.open`, or
-     `lfs.*` reference is found in non-comment lines.
+   - Refuses to build if any `TraceOn`, `TraceLevel`, `os.*`, `io.open`,
+     `lfs.*`, `TEST_COMBAT`, `dofile(`, `require(`, `loadfile(`, or
+     `loadstring(` reference is found in a non-comment line anywhere in the
+     full synthesized artifact.
+   - Runs a compile-only `lua5.1` syntax gate on the staged artifact. It uses
+     `loadfile` only from the external check process and never executes the
+     DCS-dependent chunk.
 
 5. **Copies `l10n/DEFAULT/Moose_.lua`** from `src/lib/Moose_.lua`.
 
@@ -99,27 +112,88 @@ Do not re-zip the staging tree with `Compress-Archive` or
 member names that are valid ZIP but unusable for DCS resources. Make changes in
 `src/` and re-run the packager with `-Zip`.
 
+### Production telemetry hook
+
+The shipping mission does not need the hook to run. Without it, telemetry
+events remain in the bounded mission-memory queue and no spool file appears.
+The production GameGUI hook is what handshakes with the bridge and makes those
+events durable and deliverable.
+
+Copy the repository hook:
+
+```text
+hooks/duel-dynamic-telemetry.lua
+```
+
+to:
+
+```text
+C:\Users\g_for\Saved Games\DCS.dcs_serverrelease\Scripts\Hooks\duel-dynamic-telemetry.lua
+```
+
+No numeric filename prefix is needed. It must coexist with the existing
+`TacviewGameGUI.lua`; never replace or modify Tacview's hook.
+
+The hook creates these paths from its own unsanitized GameGUI state:
+
+```text
+<writedir>\Logs\telemetry\<run_key>.ndjson
+<writedir>\Logs\telemetry-bridge\producer-id
+```
+
+The producer ID is persisted and reused across restarts. The spool layout is
+the same layout used by the development sink, so existing collector ingest
+works unchanged. All file I/O belongs to the hook state, not the sanitized
+mission state.
+
 ### Verifying on a stock DCS
 
-This is the real test. Without it, you don't know if it works.
+This is the owner-gated S17-p4 test and is not run by the automated packaging
+loop. Without it, shipping telemetry has not been proven in the live DCS
+runtime.
 
-1. **Restore** `MissionScripting.lua` (or use a fresh DCS install in
-   a different folder). Confirm `os`/`io`/`lfs` are nilled.
-2. Test the shipping `.miz` from a stock profile. On this machine the active
+**Important live-test distinction:** starting the dedicated server by itself is
+enough to validate the stock shipping load, bridge handshake, lifecycle events,
+hook spool, and collector capture, but it does **not** exercise the mission's
+AI package behavior. The mission intentionally waits for an occupied
+`Aerial-1`–`Aerial-4` client slot before `init done` and bandit-wave spawning.
+For the full S17-p4 mission gate, a DCS client must connect to the local server
+and occupy at least one `Aerial-*` slot. Do not enable `TEST_COMBAT` or alter
+the shipping artifact to bypass this gate; that would test the development path
+instead of the shipped mission.
+
+1. Keep the dedicated server's install-level `MissionScripting.lua` **stock**.
+   Do not add an `autoexec.cfg` unsafe-API exception. Confirm mission-state
+   `os`/`io`/`lfs` remain nilled.
+2. Install `hooks/duel-dynamic-telemetry.lua` as described above, alongside
+   `TacviewGameGUI.lua`.
+3. Test the shipping `.miz` from a stock profile. On this machine the active
    dedicated-server profile is `Saved Games\DCS.dcs_serverrelease`. Preserve
    the small development loader before replacing or renaming anything.
-3. Start the mission via WebGUI (or from the editor on SP).
-4. Watch `Saved Games\DCS.dcs_serverrelease\Logs\dcs.log`:
+4. Start the mission via WebGUI (or from the editor on SP), then connect a DCS
+   client to the local server at `127.0.0.1:10308` and occupy one or more
+   `Aerial-*` slots. Wait for the mission's `init done` and package-spawn log
+   lines before checking AI behavior.
+5. Watch `Saved Games\DCS.dcs_serverrelease\Logs\dcs.log`:
    - Should NOT see any `os`/`io`/`lfs` "attempt to index nil" errors.
    - Should see `*** MOOSE INCLUDE END ***` followed by
      `[duel-dynamic] shipping build start`, `[duel-dynamic] MOOSE loaded`,
      and `[duel-dynamic] init done` (once a player joins).
-    - One package-sized bandit group should spawn and the F10 menu should work.
-5. Spawn 2–4 player slots. Confirm one close, equally sized red group appears, a
+   - Should show one `TELEMETRY_BRIDGE_HOOK START`, a
+     `TELEMETRY_BRIDGE_HOOK LOAD callback-api=Sim` (or `DCS`),
+     `handshake-ok` for the loaded mission, one or more monotonic `drained`
+     ranges, and a clean `STOP` summary.
+   - Must not show a `TELEMETRY_BRIDGE_HOOK` `fatal`,
+     `transport-unavailable`, `frame-stuck`, `spool-verify-failed`, or callback
+     `hook-error`.
+   - One package-sized bandit group should spawn and the F10 menu should work.
+6. Spawn 2–4 player slots. Confirm one close, equally sized red group appears, a
    partial red loss does not respawn, and one complete replacement appears 30
    seconds after the final red loss.
-6. Tacview-check: red aircraft remain a package and engage the blue package;
+7. Tacview-check: red aircraft remain a package and engage the blue package;
    no split-map spawns or AI wandering.
+8. Verify the resulting NDJSON with the existing collector ingest. Record only
+   operational checks in log evidence; do not expose event payloads.
 
 The dev `.miz` is NEVER overwritten. To re-enter dev mode, restore
 the de-sanitized `MissionScripting.lua` and continue editing `src/`.
@@ -190,11 +264,13 @@ helpers because they can reintroduce invalid backslash resource member names.
 
 ## Quick summary (TL;DR)
 
-1. `pwsh -File build\pack-shipping-miz.ps1 -Zip` (run from the
+1. `powershell -File build\pack-shipping-miz.ps1 -Zip` (run from the
    project root) — produces `out/duel-dynamic.miz` and
    `out/duel-dynamic-build/` (the staging tree).
 2. The dev `.miz` and `src/` are NEVER modified.
-3. The shipping `.miz` is self-contained: no `os`/`io`/`lfs`
-   dependencies, no absolute paths, no dev dispatcher.
+3. The shipping mission artifact is self-contained: no `os`/`io`/`lfs`
+   dependencies, module loaders, absolute paths, or dev dispatcher. Its pure
+   telemetry stack queues in memory; all durable file I/O is performed by the
+   separately installed GameGUI hook in unsanitized hook state.
 4. **Verify on a stock, sanitized DCS install before distributing.**
    See "Verifying on a stock DCS" above.

@@ -1,3 +1,10 @@
+import { readFileSync } from "node:fs";
+
+import {
+  defaultProcessObservationProvider,
+  sendAbortSignals,
+} from "./abort-signal.js";
+import type { AbortSignalSummary, ProcessObservation } from "./abort-signal.js";
 import type { RunSpoolSummary } from "./spool.js";
 import type { DurableSpool } from "./spool.js";
 import type { DeliverableEvent } from "./types.js";
@@ -5,6 +12,8 @@ import type { DeliverableEvent } from "./types.js";
 const DEFAULT_MAX_EVENTS = 100;
 const DEFAULT_MAX_BODY_BYTES = 1_048_576;
 const DEFAULT_TIMEOUT_MS = 30_000;
+const DEFAULT_MAX_ATTEMPTS = 3;
+const DEFAULT_RETRY_DELAYS_MS = [1000, 2000];
 const ENVELOPE_PREFIX = '{"batch_schema_version":1,"events":[';
 const ENVELOPE_SUFFIX = "]}";
 
@@ -16,6 +25,13 @@ export interface DeliveryOptions {
   maxEventsPerBatch?: number;
   maxBodyBytes?: number;
   timeoutMs?: number;
+  maxAttempts?: number;
+  retryDelaysMs?: number[];
+  sleepImpl?: (ms: number) => Promise<void>;
+  nowProvider?: () => string;
+  processObservationProvider?: () => ProcessObservation;
+  dcsProducerIdProvider?: () => string | null;
+  dcsLogTextProvider?: () => string;
   dryRun?: boolean;
 }
 
@@ -32,6 +48,7 @@ export interface RunDeliveryResult {
   producer_id: string;
   run_key: string;
   state: RunDeliveryState;
+  attempts: number;
   batches_posted: number;
   events_posted: number;
   accepted: number;
@@ -63,6 +80,7 @@ export interface ActiveDeliverySummary {
   runs: RunDeliveryResult[];
   totals: DeliveryTotals;
   had_failure: boolean;
+  abort_signals?: AbortSignalSummary[];
 }
 
 export interface DryRunDeliverySummary {
@@ -71,6 +89,7 @@ export interface DryRunDeliverySummary {
   runs: RunSpoolSummary[];
   totals: DeliveryTotals;
   had_failure: false;
+  abort_signals?: AbortSignalSummary[];
 }
 
 export type DeliverySummary = ActiveDeliverySummary | DryRunDeliverySummary;
@@ -83,6 +102,13 @@ interface ResolvedOptions {
   maxEventsPerBatch: number;
   maxBodyBytes: number;
   timeoutMs: number;
+  maxAttempts: number;
+  retryDelaysMs: number[];
+  sleepImpl: (ms: number) => Promise<void>;
+  nowProvider: () => string;
+  processObservationProvider?: () => ProcessObservation;
+  dcsProducerIdProvider?: () => string | null;
+  dcsLogTextProvider?: () => string;
 }
 
 interface IngestResult {
@@ -107,14 +133,45 @@ export async function deliver(
       runs: initialRuns,
       totals: emptyTotals(),
       had_failure: false,
+      abort_signals: [],
     };
   }
 
   const runs: RunDeliveryResult[] = [];
   for (const run of initialRuns) {
-    runs.push(await deliverRun(run, resolved));
+    const result = await deliverRun(run, resolved);
+    const success =
+      result.state === "complete" ||
+      result.state === "incomplete" ||
+      result.state === "empty";
+    options.spool.recordDeliveryAttempt({
+      producerId: result.producer_id,
+      runKey: result.run_key,
+      at: resolved.nowProvider(),
+      success,
+      error: success ? null : deliveryFailureMessage(result),
+    });
+    runs.push(result);
   }
 
+  const dcsLogText = (
+    resolved.dcsLogTextProvider ?? defaultDcsLogTextProvider
+  )();
+  const processObservation = (
+    resolved.processObservationProvider ?? defaultProcessObservationProvider
+  )();
+  const producerId = (resolved.dcsProducerIdProvider ?? (() => null))();
+  const abortSignals = await sendAbortSignals({
+    baseUrl: resolved.baseUrl,
+    token: resolved.token,
+    fetchImpl: resolved.fetchImpl,
+    timeoutMs: resolved.timeoutMs,
+    spool: options.spool,
+    dcsLogText,
+    processObservation,
+    producerId,
+    runs: initialRuns,
+  });
   const totals = summarize(runs);
   return {
     dry_run: false,
@@ -122,6 +179,7 @@ export async function deliver(
     runs,
     totals,
     had_failure: totals.runs_blocked > 0 || totals.runs_error > 0,
+    abort_signals: abortSignals,
   };
 }
 
@@ -133,6 +191,7 @@ async function deliverRun(
     producer_id: initial.producer_id,
     run_key: initial.run_key,
     state: "incomplete",
+    attempts: 0,
     batches_posted: 0,
     events_posted: 0,
     accepted: 0,
@@ -173,33 +232,51 @@ async function deliverRun(
       event_count: batch.events.length,
     });
 
-    let response: Response;
-    try {
-      response = await fetchWithTimeout(options, batch.body);
-    } catch (error: unknown) {
-      result.state = "error";
-      result.error = safeErrorMessage(
-        error instanceof RequestTimeoutError
-          ? `request timed out after ${options.timeoutMs} ms`
-          : `network error: ${errorMessage(error)}`,
-        options.token,
-      );
-      return result;
-    }
-
-    if (response.status !== 200) {
-      let serverBody: string;
+    let response: Response | undefined;
+    for (let attempt = 1; attempt <= options.maxAttempts; attempt += 1) {
+      result.attempts += 1;
+      let transientError: string;
       try {
-        serverBody = await response.text();
+        const attemptResponse = await fetchWithTimeout(options, batch.body);
+        if (attemptResponse.status === 200) {
+          response = attemptResponse;
+          break;
+        }
+
+        let serverBody: string;
+        try {
+          serverBody = await attemptResponse.text();
+        } catch (error: unknown) {
+          serverBody = `unable to read response body: ${errorMessage(error)}`;
+        }
+        const responseError = `HTTP ${attemptResponse.status}: ${serverBody}`;
+        if (!isRetryableStatus(attemptResponse.status)) {
+          result.state = "error";
+          result.error = safeErrorMessage(responseError, options.token);
+          return result;
+        }
+        transientError = responseError;
       } catch (error: unknown) {
-        serverBody = `unable to read response body: ${errorMessage(error)}`;
+        transientError =
+          error instanceof RequestTimeoutError
+            ? `request timed out after ${options.timeoutMs} ms`
+            : `network error: ${errorMessage(error)}`;
       }
-      result.state = "error";
-      result.error = safeErrorMessage(
-        `HTTP ${response.status}: ${serverBody}`,
-        options.token,
+
+      if (attempt === options.maxAttempts) {
+        result.state = "error";
+        result.error = `${safeErrorMessage(transientError, options.token)} (after ${options.maxAttempts} attempts)`;
+        return result;
+      }
+
+      await options.sleepImpl(
+        options.retryDelaysMs[
+          Math.min(attempt - 1, options.retryDelaysMs.length - 1)
+        ]!,
       );
-      return result;
+    }
+    if (response === undefined) {
+      throw new Error("delivery retry loop ended without a response");
     }
 
     let payload: unknown;
@@ -399,6 +476,8 @@ function resolveOptions(options: DeliveryOptions): ResolvedOptions {
   const maxEventsPerBatch = options.maxEventsPerBatch ?? DEFAULT_MAX_EVENTS;
   const maxBodyBytes = options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const maxAttempts = options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
+  const retryDelaysMs = options.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS;
   if (
     !Number.isInteger(maxEventsPerBatch) ||
     maxEventsPerBatch < 1 ||
@@ -412,6 +491,20 @@ function resolveOptions(options: DeliveryOptions): ResolvedOptions {
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1) {
     throw new Error("timeoutMs must be a positive integer");
   }
+  if (!Number.isInteger(maxAttempts) || maxAttempts < 1) {
+    throw new Error(
+      "maxAttempts must be an integer greater than or equal to 1",
+    );
+  }
+  if (
+    !Array.isArray(retryDelaysMs) ||
+    retryDelaysMs.length === 0 ||
+    retryDelaysMs.some((delay) => !Number.isInteger(delay) || delay < 0)
+  ) {
+    throw new Error(
+      "retryDelaysMs must be a non-empty array of non-negative integers",
+    );
+  }
   return {
     spool: options.spool,
     baseUrl: options.baseUrl,
@@ -420,7 +513,35 @@ function resolveOptions(options: DeliveryOptions): ResolvedOptions {
     maxEventsPerBatch,
     maxBodyBytes,
     timeoutMs,
+    maxAttempts,
+    retryDelaysMs,
+    sleepImpl: options.sleepImpl ?? sleep,
+    nowProvider: options.nowProvider ?? (() => new Date().toISOString()),
+    processObservationProvider: options.processObservationProvider,
+    dcsProducerIdProvider: options.dcsProducerIdProvider,
+    dcsLogTextProvider: options.dcsLogTextProvider,
   };
+}
+
+function defaultDcsLogTextProvider(): string {
+  const path = process.env.TELEMETRY_DCS_LOG;
+  if (path === undefined || path.length === 0) {
+    return "";
+  }
+  try {
+    return readFileSync(path, "utf8");
+  } catch {
+    return "";
+  }
+}
+
+function deliveryFailureMessage(result: RunDeliveryResult): string {
+  return (
+    result.error ??
+    `blocked at sequence ${result.blocked_at_sequence}${
+      result.blocked_reason === undefined ? "" : `: ${result.blocked_reason}`
+    }`
+  );
 }
 
 function summarize(runs: RunDeliveryResult[]): DeliveryTotals {
@@ -472,6 +593,14 @@ function isIngestStatus(value: unknown): value is IngestResult["status"] {
 
 function isNonnegativeInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
+function isRetryableStatus(status: number): boolean {
+  return status === 429 || (status >= 500 && status <= 599);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function safeErrorMessage(message: string, token: string): string {

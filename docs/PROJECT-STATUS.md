@@ -17,21 +17,32 @@ on offline-only evidence but is not complete stock mission/combat or near-live
 acceptance. Collector automation and browser refresh are still not implemented.
 Older snapshots below are historical and do not override this addendum.
 
-**Last updated:** 2026-09-05 (Slice 12 implemented offline; migration 0002
-applied to Neon and verified; all live/collector testing parked by owner
-decision). Read this first when coming back.
+**Last updated:** 2026-09-06 (Slices 13 + 14 complete, committed/pushed
+`ac8e37e`, migrations 0003+0004 in Neon and live-ingest verified; Slice 15
+B/C pushed; demo runs cleaned from Neon; STYLUA-CRLF fixed uncommitted).
+Read this first when coming back.
 
-**Night shift 2026-09-06 (free-mode, uncommitted unless noted):** Slice 15
-Increment B + HUD reskin committed `d8d901b` and pushed (ordnance-by-type,
-update timestamps, event pagination, command-HUD theme, demo seed script;
-evidence: `docs/telemetry/slice-15-dashboard-increment-b-evidence.md`).
-Demo runs verified complete in Neon (blue-ahead $2,547,093.00, unpriced
-partial, 61-event pagination run; migration 0002 confirmed applied there).
-Slice 15 Increment C implemented offline, **uncommitted** (runs pagination,
-test/historical classification filter, crew-sortie panel; 71 web tests green;
-evidence: `docs/telemetry/slice-15-dashboard-increment-c-evidence.md`).
-Kill/loss/efficiency still parked behind Slices 13–14 (SOL). Live viewing of
-B/C, commit/push of C, and any DB deletes await owner review.
+**Night shift 2026-09-06:** Slice 15 Increment B + HUD reskin committed
+`d8d901b` and Slice 15 Increment C committed `36f8252` (both pushed;
+ordnance-by-type, update timestamps, event + runs pagination,
+test/historical classification filter, crew-sortie panel, command-HUD theme,
+demo seed script; evidence:
+`docs/telemetry/slice-15-dashboard-increment-b/c-evidence.md`). **Slices 13
+(aircraft losses + deduplicated loss costs) and 14 (hit/kill/assist
+attribution) are complete, committed, and pushed as `ac8e37e`** —
+mission-side loss + hit/kill capture (104/104 offline Lua), backend
+projections (106 web tests), run-page views, and migrations `0003` + `0004`
+applied to Neon with live-ingest verification (see
+`docs/telemetry/slice-13-*` and `slice-14-*` evidence). Post-wrap-up owner
+actions 2026-09-06: live B/C viewing against the deployed dashboard/DB
+**confirmed by owner**; the three Slice 15 **demo runs deleted from Neon**
+(owner-approved; 143 rows, 24 → 21 runs); **STYLUA-CRLF fixed**
+(`main.lua` line endings + 6 formatting spots; uncommitted, owner-gated
+commit). Still open: live-DCS validation of S14 hit/kill capture,
+production map + aircraft decision. Historical next queue was Slice 16 → 17 →
+19 (Sol); the near-live planning addendum above now defines the new dependency
+order without starting or extending an execution queue.
+Durable queue + evidence: `progress.md`.
 
 This is a snapshot of where the project is, what's known to work, what's
 known to be broken, and what still needs to happen before the mission

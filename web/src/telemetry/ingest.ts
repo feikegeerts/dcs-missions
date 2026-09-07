@@ -1,64 +1,27 @@
 import type { TelemetryStore } from "./store";
-import type { TelemetryEvent } from "./types";
 import {
-  catalogueForAssignment,
   currentOrdnanceAssignment,
-  deriveExpenditure,
-  participantObservation,
   type CatalogueAssignment,
 } from "./expenditures";
 import { validateBatch } from "./validate";
-import { reconcileAssetLosts } from "./losses";
-import {
-  reconcileAssistAttributions,
-  reconcileKillAttributions,
-} from "./combat-facts";
+import { computeIngestMetrics } from "./ingest-metrics";
+import { defaultRateLimiter, type FixedWindowRateLimiter } from "./rate-limit";
+import { persistRunFromRetainedEvents } from "./replay";
 
 type IngestResult = {
   event_id: string;
   status: "accepted" | "duplicate" | "rejected";
-  reason?: "schema-invalid" | "inconsistent-event-id" | "db-conflict";
+  reason?:
+    | "schema-invalid"
+    | "inconsistent-event-id"
+    | "db-conflict"
+    | "content-conflict";
 };
-
-function stringField(
-  payload: Record<string, unknown>,
-  field: string,
-): string | null {
-  const value = payload[field];
-  return typeof value === "string" && value.length > 0 ? value : null;
-}
-
-function runFields(events: TelemetryEvent[]) {
-  const firstEvent = events[0];
-  const lastEvent = events[events.length - 1];
-  const started = events.find(
-    (event) =>
-      event.event_sequence === 1 && event.event_type === "mission.started",
-  );
-  const ended = events.find((event) => event.event_type === "mission.ended");
-
-  return {
-    firstSequence: Math.min(...events.map((event) => event.event_sequence)),
-    lastSequence: Math.max(...events.map((event) => event.event_sequence)),
-    missionName: started ? stringField(started.payload, "mission_name") : null,
-    missionVersion: started
-      ? stringField(started.payload, "mission_version")
-      : null,
-    mapName: started ? stringField(started.payload, "map_name") : null,
-    runClassification: started
-      ? stringField(started.payload, "run_classification")
-      : null,
-    startedAt: started?.wall_time ?? null,
-    endedAt: ended?.wall_time ?? null,
-    status: ended ? ("ended" as const) : ("active" as const),
-    firstEvent,
-    lastEvent,
-  };
-}
 
 export async function processIngest(
   rawBodyText: string,
   store: TelemetryStore,
+  rateLimiter: FixedWindowRateLimiter = defaultRateLimiter,
 ): Promise<{ httpStatus: number; body: unknown }> {
   const validation = validateBatch(rawBodyText);
   if (!validation.ok) {
@@ -66,6 +29,10 @@ export async function processIngest(
       httpStatus: 400,
       body: { error: validation.code, message: validation.message },
     };
+  }
+
+  if (!rateLimiter.tryAcquire(validation.producerId)) {
+    return { httpStatus: 429, body: { error: "rate-limited" } };
   }
 
   const results: IngestResult[] = [];
@@ -94,19 +61,23 @@ export async function processIngest(
     }
     results.push({
       event_id: result.event.event_id,
-      status: outcome,
-      ...(outcome === "rejected" ? { reason: "db-conflict" as const } : {}),
+      status: outcome === "content-conflict" ? "rejected" : outcome,
+      ...(outcome === "rejected"
+        ? { reason: "db-conflict" as const }
+        : outcome === "content-conflict"
+          ? { reason: "content-conflict" as const }
+          : {}),
     });
   }
 
   const events = validation.events.map(({ event }) => event);
-  const fields = runFields(events);
 
   // Catalogue assignment is pinned at run creation: a run row that does
   // not exist yet is explicitly assigned the current catalogue, while a
   // pre-existing row keeps whatever it has (including nothing — historical
   // runs are never retroactively priced). The same assignment prices every
-  // expenditure projected from this batch, so a run can never mix versions.
+  // expenditure projected from retained run truth, so a run cannot mix versions.
+  // This lookup is not lifecycle evidence: ingest never changes another run.
   const preExistingRun = await store.getRunByRunKey(validation.runKey);
   const assignment: CatalogueAssignment | null = preExistingRun
     ? preExistingRun.valuationCatalogue != null &&
@@ -117,90 +88,30 @@ export async function processIngest(
         }
       : null
     : currentOrdnanceAssignment();
+  const metrics = computeIngestMetrics(
+    events,
+    results.map((result) => result.status),
+    assignment,
+  );
 
-  await store.upsertRun({
-    producerId: validation.producerId,
-    runKey: validation.runKey,
-    missionName: fields.missionName,
-    missionVersion: fields.missionVersion,
-    mapName: fields.mapName,
-    runClassification: fields.runClassification,
-    valuationCatalogue: assignment?.catalogue ?? null,
-    valuationCatalogueVersion: assignment?.version ?? null,
-    firstSequence: fields.firstSequence,
-    lastSequence: fields.lastSequence,
-    acceptedDelta: accepted,
-    startedAt: fields.startedAt,
-    endedAt: fields.endedAt,
-    status: fields.status,
-  });
-
-  // Derived facts are projected after the run row exists (foreign keys).
-  // Both newly accepted and duplicate source events are projected: a
-  // duplicate re-pass repairs a projection that failed to persist, and
-  // every projection insert is idempotent, so replays never double-charge.
-  if (catalogueForAssignment(assignment) !== null) {
-    for (let index = 0; index < validation.events.length; index += 1) {
-      const result = validation.events[index];
-      if (!result.valid) {
-        continue;
-      }
-      const outcome = results[index]?.status;
-      if (outcome !== "accepted" && outcome !== "duplicate") {
-        continue;
-      }
-      const expenditure = deriveExpenditure(result.event, assignment);
-      if (expenditure !== null) {
-        await store.insertExpenditure(expenditure);
-      }
-    }
-  }
-  for (let index = 0; index < validation.events.length; index += 1) {
-    const result = validation.events[index];
-    if (!result.valid) {
-      continue;
-    }
-    const outcome = results[index]?.status;
-    if (outcome !== "accepted" && outcome !== "duplicate") {
-      continue;
-    }
-    const observation = participantObservation(result.event);
-    if (observation !== null) {
-      await store.upsertRunParticipant({
-        producerId: observation.producerId,
-        runKey: observation.runKey,
-        participantId: observation.participantId,
-        displayName: observation.displayName,
-        callsign: observation.callsign,
-        coalition: observation.coalition,
-        eventSequence: observation.eventSequence,
-      });
-    }
-  }
-
-  // Reconciliation is run-scoped rather than batch-scoped. One retained-event
-  // read feeds catalogue-gated losses and catalogue-independent combat facts.
   const retainedEvents = await store.listRunEvents(
     validation.producerId,
     validation.runKey,
   );
-  if (catalogueForAssignment(assignment) !== null) {
-    for (const loss of reconcileAssetLosts(retainedEvents, assignment)) {
-      await store.upsertAssetLoss(loss);
-    }
-  }
-  for (const attribution of reconcileKillAttributions(retainedEvents)) {
-    await store.upsertKillAttribution(attribution);
-  }
-  for (const attribution of reconcileAssistAttributions(retainedEvents)) {
-    await store.upsertAssistAttribution(attribution);
-  }
+  await persistRunFromRetainedEvents(
+    store,
+    validation.producerId,
+    validation.runKey,
+    retainedEvents,
+    assignment,
+  );
 
   return {
     httpStatus: 200,
     body: {
       results,
       summary: { accepted, duplicates, rejected },
+      metrics,
     },
   };
 }

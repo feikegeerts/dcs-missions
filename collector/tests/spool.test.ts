@@ -241,4 +241,189 @@ describe("durable spool ordering", () => {
       nextBefore,
     );
   });
+
+  it("detects mission.ended only for the matching spooled run", () => {
+    const database = openSpool();
+    const active = eventAt(1, "run-active");
+    const endedStart = eventAt(1, "run-ended");
+    const ended = eventAt(2, "run-ended", undefined, "mission.ended");
+    database.insertEvent(active);
+    database.insertEvent(endedStart);
+    database.insertEvent(ended);
+
+    expect(database.hasMissionEnded("test-producer", "run-ended")).toBe(true);
+    expect(database.hasMissionEnded("test-producer", "run-active")).toBe(false);
+    expect(database.hasMissionEnded("test-producer", "run-unknown")).toBe(
+      false,
+    );
+  });
+
+  it("orders delivery health and applies success and failure upsert semantics", () => {
+    const database = openSpool();
+    expect(database.getDeliveryHealth()).toEqual([]);
+
+    database.recordDeliveryAttempt({
+      producerId: "producer-z",
+      runKey: "run-z",
+      at: "2026-09-06T00:00:00.000Z",
+      success: true,
+      error: null,
+    });
+    database.recordDeliveryAttempt({
+      producerId: "producer-a",
+      runKey: "run-a",
+      at: "2026-09-06T00:01:00.000Z",
+      success: false,
+      error: "offline",
+    });
+    database.recordDeliveryAttempt({
+      producerId: "producer-z",
+      runKey: "run-z",
+      at: "2026-09-06T00:02:00.000Z",
+      success: false,
+      error: "temporary failure",
+    });
+
+    expect(database.getDeliveryHealth()).toEqual([
+      {
+        producerId: "producer-a",
+        runKey: "run-a",
+        lastAttemptAt: "2026-09-06T00:01:00.000Z",
+        lastSuccessAt: null,
+        lastError: "offline",
+      },
+      {
+        producerId: "producer-z",
+        runKey: "run-z",
+        lastAttemptAt: "2026-09-06T00:02:00.000Z",
+        lastSuccessAt: "2026-09-06T00:00:00.000Z",
+        lastError: "temporary failure",
+      },
+    ]);
+
+    database.recordDeliveryAttempt({
+      producerId: "producer-z",
+      runKey: "run-z",
+      at: "2026-09-06T00:03:00.000Z",
+      success: true,
+      error: null,
+    });
+    expect(database.getDeliveryHealth()[1]).toEqual({
+      producerId: "producer-z",
+      runKey: "run-z",
+      lastAttemptAt: "2026-09-06T00:03:00.000Z",
+      lastSuccessAt: "2026-09-06T00:03:00.000Z",
+      lastError: null,
+    });
+  });
+
+  it("prunes only fully acknowledged runs and preserves durable run metadata", () => {
+    const database = openSpool();
+    const fullyAcknowledged = [
+      eventAt(1, "run-complete"),
+      eventAt(2, "run-complete"),
+    ];
+    const partiallyAcknowledged = [
+      eventAt(1, "run-partial"),
+      eventAt(2, "run-partial"),
+    ];
+    const noState = [eventAt(1, "run-no-state")];
+    for (const event of [
+      ...fullyAcknowledged,
+      ...partiallyAcknowledged,
+      ...noState,
+    ]) {
+      database.insertEvent(event);
+    }
+    fullyAcknowledged.forEach((event) => database.acknowledge(event.event_id));
+    database.acknowledge(partiallyAcknowledged[0]!.event_id);
+    database.recordDeliveryAttempt({
+      producerId: "test-producer",
+      runKey: "run-complete",
+      at: "2026-09-06T01:00:00.000Z",
+      success: true,
+      error: null,
+    });
+    database.setCursor({
+      source_path: "telemetry.ndjson",
+      identity: { device: "1", inode: "2", birthtime_ns: "3" },
+      offset: 42,
+      producer_id: "test-producer",
+      run_key: "run-complete",
+    });
+    database.quarantine({
+      quarantine_id: "quarantine-survives-prune",
+      source_path: "telemetry.ndjson",
+      identity: { device: "1", inode: "2", birthtime_ns: "3" },
+      start_offset: 42,
+      end_offset: 43,
+      raw_line: Buffer.from("{"),
+      error_code: "schema-invalid",
+      error_message: "invalid event",
+      error_details: {},
+    });
+
+    expect(database.pruneDeliveredRuns(false)).toEqual({
+      prunedRuns: [
+        {
+          producerId: "test-producer",
+          runKey: "run-complete",
+          eventCount: 2,
+        },
+      ],
+      totalEventsPruned: 2,
+    });
+    expect(database.eventCount()).toBe(3);
+    expect(database.listRuns().map((run) => run.run_key)).toEqual([
+      "run-no-state",
+      "run-partial",
+    ]);
+    expect(database.getDeliveryHealth()).toHaveLength(1);
+    expect(database.getCursor("telemetry.ndjson")?.offset).toBe(42);
+    expect(database.quarantineCount()).toBe(1);
+
+    const later = eventAt(3, "run-complete");
+    database.insertEvent(later);
+    expect(
+      database.listDeliverable("test-producer", "run-complete", 100)[0]?.event
+        .event_sequence,
+    ).toBe(3);
+    expect(database.acknowledge(later.event_id)).toBe("acknowledged");
+  });
+
+  it("reports a prune dry-run without changing events or acknowledgements", () => {
+    const database = openSpool();
+    const events = [eventAt(1), eventAt(2)];
+    events.forEach((event) => database.insertEvent(event));
+    events.forEach((event) => database.acknowledge(event.event_id));
+    const before = database.listRuns();
+
+    expect(database.pruneDeliveredRuns(true)).toEqual({
+      prunedRuns: [
+        {
+          producerId: "test-producer",
+          runKey: "run-list-deliverable",
+          eventCount: 2,
+        },
+      ],
+      totalEventsPruned: 2,
+    });
+    expect(database.eventCount()).toBe(2);
+    expect(database.listRuns()).toEqual(before);
+    expect(database.acknowledge(events[1]!.event_id)).toBe("duplicate");
+  });
+
+  it("prunes nothing from empty and entirely undelivered spools", () => {
+    const database = openSpool();
+    expect(database.pruneDeliveredRuns(false)).toEqual({
+      prunedRuns: [],
+      totalEventsPruned: 0,
+    });
+    database.insertEvent(eventAt(1));
+    expect(database.pruneDeliveredRuns(false)).toEqual({
+      prunedRuns: [],
+      totalEventsPruned: 0,
+    });
+    expect(database.eventCount()).toBe(1);
+  });
 });

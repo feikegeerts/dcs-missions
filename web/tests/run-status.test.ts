@@ -11,6 +11,12 @@ describe("run liveness display", () => {
     ).toBe("ended");
   });
 
+  it("keeps aborted runs aborted regardless of age", () => {
+    expect(
+      displayRunStatus("aborted", new Date("2026-08-01T00:00:00Z"), NOW),
+    ).toBe("aborted");
+  });
+
   it("keeps freshly heartbeating runs active", () => {
     expect(
       displayRunStatus("active", new Date(NOW.getTime() - 30 * 1000), NOW),

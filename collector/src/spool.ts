@@ -39,6 +39,39 @@ interface CountRow {
   count: number;
 }
 
+interface DeliveryHealthRow {
+  producer_id: string;
+  run_key: string;
+  last_attempt_at: string;
+  last_success_at: string | null;
+  last_error: string | null;
+}
+
+interface PrunableRunRow {
+  producer_id: string;
+  run_key: string;
+  event_count: number;
+}
+
+export interface DeliveryHealthRecord {
+  producerId: string;
+  runKey: string;
+  lastAttemptAt: string;
+  lastSuccessAt: string | null;
+  lastError: string | null;
+}
+
+export interface PrunedRun {
+  producerId: string;
+  runKey: string;
+  eventCount: number;
+}
+
+export interface PruneResult {
+  prunedRuns: PrunedRun[];
+  totalEventsPruned: number;
+}
+
 export interface RunSpoolSummary {
   producer_id: string;
   run_key: string;
@@ -366,6 +399,114 @@ export class DurableSpool {
     }));
   }
 
+  hasMissionEnded(producerId: string, runKey: string): boolean {
+    const row = this.database
+      .prepare(
+        `SELECT 1 AS one FROM spool_events
+         WHERE producer_id = ? AND run_key = ? AND event_type = 'mission.ended'
+         LIMIT 1`,
+      )
+      .get(producerId, runKey) as { one: number } | undefined;
+    return row !== undefined;
+  }
+
+  recordDeliveryAttempt(record: {
+    producerId: string;
+    runKey: string;
+    at: string;
+    success: boolean;
+    error: string | null;
+  }): void {
+    this.database
+      .prepare(
+        `INSERT INTO delivery_health (
+          producer_id, run_key, last_attempt_at, last_success_at, last_error
+        ) VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(producer_id, run_key) DO UPDATE SET
+          last_attempt_at = excluded.last_attempt_at,
+          last_success_at = CASE
+            WHEN ? THEN excluded.last_attempt_at
+            ELSE delivery_health.last_success_at
+          END,
+          last_error = CASE WHEN ? THEN NULL ELSE excluded.last_error END`,
+      )
+      .run(
+        record.producerId,
+        record.runKey,
+        record.at,
+        record.success ? record.at : null,
+        record.success ? null : record.error,
+        record.success ? 1 : 0,
+        record.success ? 1 : 0,
+      );
+  }
+
+  getDeliveryHealth(): DeliveryHealthRecord[] {
+    const rows = this.database
+      .prepare(
+        `SELECT producer_id, run_key, last_attempt_at, last_success_at, last_error
+         FROM delivery_health
+         ORDER BY producer_id, run_key`,
+      )
+      .all() as DeliveryHealthRow[];
+    return rows.map((row) => ({
+      producerId: row.producer_id,
+      runKey: row.run_key,
+      lastAttemptAt: row.last_attempt_at,
+      lastSuccessAt: row.last_success_at,
+      lastError: row.last_error,
+    }));
+  }
+
+  pruneDeliveredRuns(dryRun: boolean): PruneResult {
+    const prune = this.database.transaction(() => {
+      const rows = this.database
+        .prepare(
+          `SELECT
+            events.producer_id,
+            events.run_key,
+            COUNT(*) AS event_count
+          FROM spool_events AS events
+          INNER JOIN run_delivery_state AS state
+            ON state.producer_id = events.producer_id
+            AND state.run_key = events.run_key
+          GROUP BY events.producer_id, events.run_key
+          HAVING state.acknowledged_through = MAX(events.event_sequence)
+          ORDER BY events.producer_id, events.run_key`,
+        )
+        .all() as PrunableRunRow[];
+      const prunedRuns = rows.map((row) => ({
+        producerId: row.producer_id,
+        runKey: row.run_key,
+        eventCount: row.event_count,
+      }));
+
+      if (!dryRun) {
+        const deleteAcknowledgements = this.database.prepare(
+          `DELETE FROM acknowledgements
+           WHERE producer_id = ? AND run_key = ?`,
+        );
+        const deleteEvents = this.database.prepare(
+          `DELETE FROM spool_events
+           WHERE producer_id = ? AND run_key = ?`,
+        );
+        for (const run of prunedRuns) {
+          deleteAcknowledgements.run(run.producerId, run.runKey);
+          deleteEvents.run(run.producerId, run.runKey);
+        }
+      }
+
+      return {
+        prunedRuns,
+        totalEventsPruned: prunedRuns.reduce(
+          (total, run) => total + run.eventCount,
+          0,
+        ),
+      };
+    });
+    return prune();
+  }
+
   private acknowledgedThrough(producerId: string, runKey: string): number {
     const row = this.database
       .prepare(
@@ -458,6 +599,15 @@ export class DurableSpool {
         producer_id TEXT NOT NULL,
         run_key TEXT NOT NULL,
         acknowledged_through INTEGER NOT NULL CHECK (acknowledged_through >= 0),
+        PRIMARY KEY (producer_id, run_key)
+      );
+
+      CREATE TABLE IF NOT EXISTS delivery_health (
+        producer_id TEXT NOT NULL,
+        run_key TEXT NOT NULL,
+        last_attempt_at TEXT NOT NULL,
+        last_success_at TEXT,
+        last_error TEXT,
         PRIMARY KEY (producer_id, run_key)
       );
     `);

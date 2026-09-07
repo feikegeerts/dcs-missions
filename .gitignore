@@ -17,6 +17,9 @@ lib/dcs-world-schema/
 .opencode/node_modules/
 .opencode/opencode-loop/
 /.opencode/agent-queue.json
+/.opencode/s16-p5-attempt2-collector-half-prompt.md
+/.opencode/s16-p7-attempt1-prompt.md
+/.opencode/s16-p8-attempt1-prompt.md
 
 # Local progress metadata
 /progress.md

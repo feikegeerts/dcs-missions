@@ -16,6 +16,7 @@ import type {
   KillAttributionFact,
 } from "./combat-facts";
 import type { AssetLostFact } from "./losses";
+import { canonicalJson } from "./replay";
 import type { TelemetryEvent } from "./types";
 
 export type RunRow = typeof missionRuns.$inferSelect;
@@ -37,7 +38,7 @@ export interface RunUpsertInput {
   valuationCatalogueVersion?: number | null;
   firstSequence: number;
   lastSequence: number;
-  acceptedDelta: number;
+  eventCount: number;
   startedAt?: string | null;
   endedAt?: string | null;
   status: "active" | "ended";
@@ -56,7 +57,8 @@ export interface RunParticipantUpsert {
 export interface TelemetryStore {
   insertEvent(
     event: TelemetryEvent,
-  ): Promise<"accepted" | "duplicate" | "rejected">;
+  ): Promise<"accepted" | "duplicate" | "rejected" | "content-conflict">;
+  markRunAborted(producerId: string, runKey: string): Promise<number>;
   upsertRun(run: RunUpsertInput): Promise<void>;
   insertExpenditure(
     expenditure: ExpenditureProjection,
@@ -177,20 +179,66 @@ function isUniqueViolation(error: unknown): boolean {
 export class NeonTelemetryStore implements TelemetryStore {
   async insertEvent(
     event: TelemetryEvent,
-  ): Promise<"accepted" | "duplicate" | "rejected"> {
+  ): Promise<"accepted" | "duplicate" | "rejected" | "content-conflict"> {
     try {
       const rows = await getDb()
         .insert(telemetryEvents)
         .values(eventRow(event))
         .onConflictDoNothing({ target: telemetryEvents.eventId })
         .returning({ eventId: telemetryEvents.eventId });
-      return rows.length > 0 ? "accepted" : "duplicate";
+      if (rows.length > 0) {
+        return "accepted";
+      }
+
+      const retained = await getDb()
+        .select({ event: telemetryEvents.eventJson })
+        .from(telemetryEvents)
+        .where(eq(telemetryEvents.eventId, event.event_id))
+        .limit(1);
+      if (retained[0] === undefined) {
+        return "rejected";
+      }
+      return canonicalJson(retained[0].event) === canonicalJson(event)
+        ? "duplicate"
+        : "content-conflict";
     } catch (error) {
       if (isUniqueViolation(error)) {
         return "rejected";
       }
       throw error;
     }
+  }
+
+  async markRunAborted(producerId: string, runKey: string): Promise<number> {
+    const rows = await getDb()
+      .update(missionRuns)
+      .set({ status: "aborted", updatedAt: sql`now()` })
+      .where(
+        and(
+          eq(missionRuns.producerId, producerId),
+          eq(missionRuns.runKey, runKey),
+          eq(missionRuns.status, "active"),
+        ),
+      )
+      .returning({ runKey: missionRuns.runKey });
+    return rows.length;
+  }
+
+  async getRunByProducerAndRunKey(
+    producerId: string,
+    runKey: string,
+  ): Promise<RunRow | null> {
+    const rows = await getDb()
+      .select()
+      .from(missionRuns)
+      .where(
+        and(
+          eq(missionRuns.producerId, producerId),
+          eq(missionRuns.runKey, runKey),
+        ),
+      )
+      .limit(1);
+    return rows[0] ?? null;
   }
 
   async upsertRun(input: RunUpsertInput): Promise<void> {
@@ -208,7 +256,7 @@ export class NeonTelemetryStore implements TelemetryStore {
         valuationCatalogueVersion: input.valuationCatalogueVersion ?? null,
         firstSequence: input.firstSequence,
         lastSequence: input.lastSequence,
-        eventCount: input.acceptedDelta,
+        eventCount: input.eventCount,
         startedAt: input.startedAt ? new Date(input.startedAt) : null,
         endedAt: input.endedAt ? new Date(input.endedAt) : null,
         status: input.status,
@@ -218,14 +266,14 @@ export class NeonTelemetryStore implements TelemetryStore {
         set: {
           firstSequence: sql`LEAST(${missionRuns.firstSequence}, EXCLUDED.first_sequence)`,
           lastSequence: sql`GREATEST(${missionRuns.lastSequence}, EXCLUDED.last_sequence)`,
-          eventCount: sql`${missionRuns.eventCount} + EXCLUDED.event_count`,
-          startedAt: sql`COALESCE(EXCLUDED.started_at, ${missionRuns.startedAt})`,
-          endedAt: sql`COALESCE(EXCLUDED.ended_at, ${missionRuns.endedAt})`,
+          eventCount: sql`EXCLUDED.event_count`,
+          startedAt: sql`COALESCE(${missionRuns.startedAt}, EXCLUDED.started_at)`,
+          endedAt: sql`COALESCE(${missionRuns.endedAt}, EXCLUDED.ended_at)`,
           status: sql`CASE WHEN EXCLUDED.status = 'ended' THEN 'ended' ELSE ${missionRuns.status} END`,
-          missionName: sql`COALESCE(EXCLUDED.mission_name, ${missionRuns.missionName})`,
-          missionVersion: sql`COALESCE(EXCLUDED.mission_version, ${missionRuns.missionVersion})`,
-          mapName: sql`COALESCE(EXCLUDED.map_name, ${missionRuns.mapName})`,
-          runClassification: sql`COALESCE(EXCLUDED.run_classification, ${missionRuns.runClassification})`,
+          missionName: sql`COALESCE(${missionRuns.missionName}, EXCLUDED.mission_name)`,
+          missionVersion: sql`COALESCE(${missionRuns.missionVersion}, EXCLUDED.mission_version)`,
+          mapName: sql`COALESCE(${missionRuns.mapName}, EXCLUDED.map_name)`,
+          runClassification: sql`COALESCE(${missionRuns.runClassification}, EXCLUDED.run_classification)`,
           // A run's catalogue assignment is pinned at creation and never
           // rewritten: existing assignments win, and runs that predate
           // catalogue assignment stay unassigned (no retroactive pricing).

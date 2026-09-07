@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { eventsToCsv } from "@/telemetry/export";
+import { eventsToCsv, eventsToNdjson } from "@/telemetry/export";
 import { NeonTelemetryStore } from "@/telemetry/store";
 
 export const dynamic = "force-dynamic";
@@ -31,6 +31,21 @@ export async function GET(
     }
 
     const searchParams = new URL(req.url).searchParams;
+    if (searchParams.get("format") === "ndjson") {
+      const runEvents = await store.listRunEvents(run.producerId, run.runKey);
+      if (runEvents.length > 10_000) {
+        return NextResponse.json(
+          { error: "run-too-large", count: runEvents.length },
+          { status: 413 },
+        );
+      }
+      return new NextResponse(eventsToNdjson(runEvents), {
+        headers: {
+          "content-type": "application/x-ndjson; charset=utf-8",
+          "content-disposition": `attachment; filename="${run.runKey}-events.ndjson"`,
+        },
+      });
+    }
     const requestedLimit = queryNumber(searchParams, "limit", 50);
     const requestedOffset = queryNumber(searchParams, "offset", 0);
     const limit = Math.min(Math.max(requestedLimit, 1), 100);

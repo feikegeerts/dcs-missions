@@ -1,11 +1,13 @@
 /**
- * CSV export builders for telemetry reads.
+ * Export builders for telemetry reads.
  *
  * Pure functions over minimal row shapes: formatting here never touches the
  * database, so money and quoting rules are unit-testable. Amounts render in
  * dollars with exactly two decimals; unpriced rows render an empty amount
  * and keep their identity columns so nothing is silently dropped.
  */
+
+import type { TelemetryEvent } from "./types";
 
 export type CsvEventRow = {
   eventSequence: number;
@@ -51,6 +53,13 @@ function moneyCell(cents: number | null): string {
 function toCsv(header: string[], rows: string[][]): string {
   const lines = [header, ...rows].map((row) => row.map(escapeCell).join(","));
   return `${lines.join("\r\n")}\r\n`;
+}
+
+export function eventsToNdjson(events: readonly TelemetryEvent[]): string {
+  if (events.length === 0) {
+    return "";
+  }
+  return `${events.map((event) => JSON.stringify(event)).join("\n")}\n`;
 }
 
 export function eventsToCsv(events: readonly CsvEventRow[]): string {

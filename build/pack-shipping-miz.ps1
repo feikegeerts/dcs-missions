@@ -15,11 +15,10 @@
 #      make regex brittle). Pure substring search/replace.
 #   4. Embeds the shipping Lua sources as DCS resources under l10n/DEFAULT:
 #        - Moose_.lua   (copied from src/lib/Moose_.lua)
-#        - main.lua     (synthesized: inlines score.lua and
-#                               patches the dev main.lua for stock
-#                               DCS - strips TraceOn, replaces os.time()
-#                               with timer.getTime()*1000, removes the
-#                               dispatcher-driven dofile(score.lua))
+#        - main.lua     (synthesized: inlines score.lua and the 11 pure
+#                               telemetry modules, wires the production
+#                               telemetry bridge, and patches the dev main.lua
+#                               for stock DCS)
 #   5. Re-zips into out/duel-dynamic.miz (the shipping artifact)
 #
 # The dev .miz is NEVER overwritten. The dev workflow (edit src/, restart
@@ -301,16 +300,68 @@ $newTrigAction = @"
 
     $devMainText  = [System.IO.File]::ReadAllText($devMain)
 
-    # Strip the dofile(score.lua) and MY_SCRIPTS_ROOT lookup block from the
-    # dev main.lua; that logic only exists in dev. The inlined score module
-    # below replaces it.
-    $rootBlockPattern = '(?ms)^\s*--\s*Load siblings\.[\s\S]*?^dofile\(DIR \.\. "score\.lua"\)\s*\r?\n'
-    $devMainText = [regex]::Replace($devMainText, $rootBlockPattern, '')
+    # Strip only the anchored development loader pieces. Every strip and
+    # shipping-module rewrite is required to match exactly once so source-shape
+    # drift fails the build instead of silently producing a dev-dependent file.
+    $devLookupPattern = '(?ms)^-- Load siblings\. Bootstrap set _G\.MY_SCRIPTS_ROOT to the project src/ path\.\r?\n[\s\S]*?^local DIR = ROOT \.\. "missions/duel-dynamic/"\r?\n'
+    $matches = [regex]::Matches($devMainText, $devLookupPattern)
+    if ($matches.Count -ne 1) {
+        throw "Dev main lookup strip expected exactly one anchored block; found $($matches.Count)."
+    }
+    $devMainText = [regex]::Replace($devMainText, $devLookupPattern, '')
 
-    # Belt-and-suspenders: also strip the `local ROOT = _G.MY_SCRIPTS_ROOT
-    # ... end` block if the previous regex missed it.
-    $rootLookupPattern = '(?ms)^\s*--\s*Load siblings[\s\S]*?^end\s*\r?\n'
-    $devMainText = [regex]::Replace($devMainText, $rootLookupPattern, '')
+    $developmentInitPattern = '(?ms)^local function initDevelopmentTelemetry\(\)\r?\n.*?^end\r?\n'
+    $matches = [regex]::Matches($devMainText, $developmentInitPattern)
+    if ($matches.Count -ne 1) {
+        throw "Development telemetry function strip expected exactly one anchored block; found $($matches.Count)."
+    }
+    $devMainText = [regex]::Replace($devMainText, $developmentInitPattern, '')
+
+    foreach ($strip in @(
+        @{ Label = 'development telemetry call'; Pattern = '(?m)^initDevelopmentTelemetry\(\)\r?\n' },
+        @{ Label = 'development score dofile'; Pattern = '(?m)^dofile\(DIR \.\. "score\.lua"\)\r?\n' }
+    )) {
+        $matches = [regex]::Matches($devMainText, $strip.Pattern)
+        if ($matches.Count -ne 1) {
+            throw "$($strip.Label) strip expected exactly one anchored line; found $($matches.Count)."
+        }
+        $devMainText = [regex]::Replace($devMainText, $strip.Pattern, '')
+    }
+
+    $telemetryModules = @(
+        @{ Name = 'event_id'; Local = 'TelemetryEventId' },
+        @{ Name = 'envelope'; Local = 'TelemetryEnvelope' },
+        @{ Name = 'json'; Local = 'TelemetryJson' },
+        @{ Name = 'lifecycle'; Local = 'TelemetryLifecycle' },
+        @{ Name = 'bridge'; Local = 'TelemetryBridge' },
+        @{ Name = 'bridge_frame'; Local = 'TelemetryBridgeFrame' },
+        @{ Name = 'bridge_queue'; Local = 'TelemetryBridgeQueue' },
+        @{ Name = 'asset'; Local = 'TelemetryAsset' },
+        @{ Name = 'shot'; Local = 'TelemetryShot' },
+        @{ Name = 'combat'; Local = 'TelemetryCombat' },
+        @{ Name = 'participant'; Local = 'TelemetryParticipant' }
+    )
+    foreach ($module in $telemetryModules) {
+        $dofilePattern = '(?m)^    local (?<variable>[A-Za-z][A-Za-z0-9]*) = dofile\(DIR \.\. "telemetry/' + [regex]::Escape($module.Name) + '\.lua"\)\r?\n'
+        $matches = [regex]::Matches($devMainText, $dofilePattern)
+        if ($matches.Count -ne 1) {
+            throw "Shipping telemetry rewrite for '$($module.Name)' expected exactly one dofile line; found $($matches.Count)."
+        }
+        $variable = $matches[0].Groups['variable'].Value
+        $replacement = "    local $variable = $($module.Local)`r`n"
+        $devMainText = [regex]::Replace($devMainText, $dofilePattern, $replacement)
+    }
+
+    $shippingInitCallPattern = '(?m)^initShippingTelemetry\(\)\r?\n'
+    $matches = [regex]::Matches($devMainText, $shippingInitCallPattern)
+    if ($matches.Count -ne 1) {
+        throw "Shipping telemetry flag injection expected exactly one initShippingTelemetry() call; found $($matches.Count)."
+    }
+    $devMainText = [regex]::Replace(
+        $devMainText,
+        $shippingInitCallPattern,
+        "_G.TELEMETRY_SHIPPING_ENABLED = true`r`ninitShippingTelemetry()`r`n"
+    )
 
     # Strip the dev-only unattended test-combat block (gated by
     # _G.TEST_COMBAT_ENABLED). Anchored on the section header (the "-- ===="
@@ -331,20 +382,6 @@ $newTrigAction = @"
     # Strip the dev `main start` breadcrumb; shipping has its own.
     $devMainText = $devMainText -replace '(?m)^env\.info\("\[duel-dynamic\] main start"\)\r?\n', ''
 
-    # Sanity check: no TraceOn / os.* / io.* / lfs.* / TEST_COMBAT in shipping
-    # code (outside comments). Fails the build with a clear error if any are
-    # present. TEST_COMBAT guards the dev-only test-combat strip + init-bypass
-    # revert above (both contain that string).
-    $banned = @('TraceOn', 'TraceLevel', 'os\.', 'io\.open', 'lfs\.', 'TEST_COMBAT')
-    foreach ($b in $banned) {
-        $hits = [regex]::Matches($devMainText, "^.*$b.*$", 'Multiline') |
-            Where-Object { $_.Value -notmatch '^\s*--' } |
-            ForEach-Object { $_.Value }
-        if ($hits) {
-            throw "Refusing to ship: '$b' found in code (not just comments):`n$($hits -join "`n")"
-        }
-    }
-
     $shippingHeader = @'
 -- main.lua - SHIPPING BUILD resource for duel-dynamic.
 -- Generated by build/pack-shipping-miz.ps1 from src/missions/duel-dynamic/.
@@ -354,8 +391,16 @@ $newTrigAction = @"
 -- MISSION START trigger (after Moose_.lua). MOOSE is already in _G.
 --
 -- Diff vs the dev main.lua:
---   * score.lua is INLINED below (no dofile() in stock DCS - the CWD is
---     the DCS install dir, not the mission's .miz directory).
+--   * score.lua is INLINED below; no runtime module loading is needed.
+--   * Eleven pure telemetry modules are inlined as IIFE locals below.
+--   * Shipping sets _G.TELEMETRY_SHIPPING_ENABLED and calls
+--     initShippingTelemetry(), which starts the deferred bridge with historical
+--     run classification and an in-memory queue sink. Mission code writes no
+--     telemetry files.
+--   * The production GameGUI hook hooks/duel-dynamic-telemetry.lua durably
+--     spools events to <writedir>\Logs\telemetry\<run_key>.ndjson. Without the
+--     hook, the mission runs normally, events remain queued in mission memory,
+--     and no spool file appears.
 --   * The _G.MY_SCRIPTS_ROOT lookup is removed.
 --   * os.time() (nilled in stock DCS) is replaced with
 --     math.floor(timer.getTime() * 1000) - see the RNG seed line.
@@ -363,7 +408,7 @@ $newTrigAction = @"
 -- Known limitation (carried over from dev): round-1 player position is
 -- the ME position (DCS ignores setPosition on client-controlled player
 -- slots in MP). Round N+1 works because the death respawn path forces
--- the client to refresh. See docs/spec-duel-dynamic.md §6.1.
+-- the client to refresh. See docs/spec-duel-dynamic.md section 6.1.
 
 env.info("[duel-dynamic] shipping build start")
 
@@ -424,10 +469,54 @@ end
 
 '@
 
-    $shippingMain = $shippingHeader + "`r`n" + $devMainText
+    $inlinedTelemetry = ""
+    foreach ($module in $telemetryModules) {
+        $modulePath = Join-Path $SrcRoot "missions\duel-dynamic\telemetry\$($module.Name).lua"
+        if (-not (Test-Path -LiteralPath $modulePath)) {
+            throw "Telemetry module not found: $modulePath"
+        }
+        $moduleSource = [System.IO.File]::ReadAllText($modulePath, [System.Text.Encoding]::UTF8)
+        $inlinedTelemetry += "-- Inlined telemetry module: $($module.Name) (was src/missions/duel-dynamic/telemetry/$($module.Name).lua)`r`n"
+        $inlinedTelemetry += "local $($module.Local) = (function()`r`n"
+        $inlinedTelemetry += $moduleSource
+        if (-not $moduleSource.EndsWith("`r`n")) {
+            $inlinedTelemetry += "`r`n"
+        }
+        $inlinedTelemetry += "end)()`r`n`r`n"
+    }
+
+    $shippingMain = $shippingHeader + "`r`n" + $inlinedTelemetry + $devMainText
+
+    # Gate the complete synthesized artifact, including inlined modules and the
+    # generated header. Comment-only references are documentation and ignored.
+    $banned = @(
+        'TraceOn', 'TraceLevel', 'os\.', 'io\.open', 'lfs\.', 'TEST_COMBAT',
+        'dofile\(', 'require\(', 'loadfile\(', 'loadstring\('
+    )
+    foreach ($b in $banned) {
+        $hits = [regex]::Matches($shippingMain, "^.*$b.*$", 'Multiline') |
+            Where-Object { $_.Value -notmatch '^\s*--' } |
+            ForEach-Object { $_.Value }
+        if ($hits) {
+            throw "Refusing to ship: '$b' found in code (not just comments):`n$($hits -join "`n")"
+        }
+    }
+    Write-Host "Banned-pattern gate: OK (full synthesized main.lua)"
+
     $shippingMainPath = Join-Path $scriptsDir "main.lua"
     [System.IO.File]::WriteAllText($shippingMainPath, $shippingMain, (New-Object System.Text.UTF8Encoding $false))
     Write-Host "  wrote $shippingMainPath ($((Get-Item $shippingMainPath).Length) bytes)"
+
+    $luaCommand = Get-Command lua5.1 -ErrorAction SilentlyContinue
+    if ($null -eq $luaCommand) {
+        throw "lua5.1 is required for the staged shipping main.lua syntax gate but was not found on PATH."
+    }
+    $syntaxScript = "local chunk, err = loadfile([[$shippingMainPath]]); if not chunk then error(err) end"
+    & $luaCommand.Source -e $syntaxScript
+    if ($LASTEXITCODE -ne 0) {
+        throw "lua5.1 syntax gate failed for staged artifact: $shippingMainPath"
+    }
+    Write-Host "Syntax gate: OK ($shippingMainPath)"
 
     # --- 6. Copy l10n/DEFAULT/Moose_.lua ---
     Write-Host "Copying l10n/DEFAULT/Moose_.lua ..."

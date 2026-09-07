@@ -1,12 +1,11 @@
 /**
  * Display-only run liveness.
  *
- * A run stays `active` in storage until an explicit `mission.ended`
- * arrives, so missions that die without ending (killed DCS process,
- * stopped server) read as active forever. This module derives a
- * presentation label from heartbeat age without mutating anything:
- * authoritative stale/aborted classification is Slice 16 Sol work and
- * remains parked.
+ * A run stays `active` in storage until an explicit `mission.ended` arrives
+ * or a replacement run from the same producer authoritatively marks it
+ * `aborted`. This module derives a stale presentation label from heartbeat
+ * age without mutating storage. Stored `aborted` and `ended` statuses are
+ * terminal and always displayed as-is.
  *
  * A run showing `active` with no heartbeat for longer than
  * STALE_AFTER_MS is displayed as `stale`. The threshold is deliberately
@@ -17,17 +16,17 @@
 
 export const STALE_AFTER_MS = 10 * 60 * 1000;
 
-export type StoredRunStatus = "active" | "ended";
+export type StoredRunStatus = "active" | "aborted" | "ended";
 
-export type DisplayRunStatus = "active" | "stale" | "ended";
+export type DisplayRunStatus = "active" | "stale" | "aborted" | "ended";
 
 export function displayRunStatus(
   storedStatus: StoredRunStatus,
   updatedAt: Date,
   now: Date = new Date(),
 ): DisplayRunStatus {
-  if (storedStatus === "ended") {
-    return "ended";
+  if (storedStatus === "ended" || storedStatus === "aborted") {
+    return storedStatus;
   }
   if (now.getTime() - updatedAt.getTime() > STALE_AFTER_MS) {
     return "stale";

@@ -25,7 +25,7 @@ function formatUsd(cents: number): string {
   })}`;
 }
 
-const ALL_STATUSES = ["all", "active", "stale", "ended"] as const;
+const ALL_STATUSES = ["all", "active", "stale", "aborted", "ended"] as const;
 
 type StatusFilter = (typeof ALL_STATUSES)[number];
 
@@ -52,6 +52,7 @@ export default async function HomePage({
     const statusFilter: StatusFilter =
       params.status === "active" ||
       params.status === "stale" ||
+      params.status === "aborted" ||
       params.status === "ended"
         ? params.status
         : "all";
@@ -64,9 +65,9 @@ export default async function HomePage({
 
     const store = new NeonTelemetryStore();
     const now = new Date();
-    // Liveness is display-only: storage keeps `active` until an explicit
-    // `mission.ended`, and authoritative stale/aborted classification is
-    // parked Slice 16 work. Runs with no recent heartbeat render `stale`.
+    // Staleness is display-only. Storage keeps a run `active` until an
+    // explicit `mission.ended` or a replacement run marks it `aborted`.
+    // Active runs with no recent heartbeat render `stale`.
     // Fleet + scope counts cover every matching run (capped at 100, the
     // pre-existing list limit); only the runs table itself is paged.
     const matching = (
@@ -79,7 +80,9 @@ export default async function HomePage({
       .map((run) => ({
         run,
         display:
-          run.status === "active" || run.status === "ended"
+          run.status === "active" ||
+          run.status === "aborted" ||
+          run.status === "ended"
             ? displayRunStatus(run.status, run.updatedAt, now)
             : ("active" as DisplayRunStatus),
       }))

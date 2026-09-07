@@ -101,7 +101,77 @@ local function initDevelopmentTelemetry()
   _G.duel_telemetry_runtime = runtime
 end
 
+local function initShippingTelemetry()
+  if _G.TELEMETRY_SHIPPING_ENABLED ~= true then
+    return
+  end
+  if _G.TELEMETRY_DEVELOPMENT_ENABLED == true then
+    env.error(
+      "[duel-dynamic][telemetry] shipping telemetry requires development telemetry to be disabled "
+        .. "(both root _G.duel_telemetry_runtime)"
+    )
+    return
+  end
+
+  local ok, runtime, startError = pcall(function()
+    local eventId = dofile(DIR .. "telemetry/event_id.lua")
+    local envelope = dofile(DIR .. "telemetry/envelope.lua")
+    local json = dofile(DIR .. "telemetry/json.lua")
+    local lifecycle = dofile(DIR .. "telemetry/lifecycle.lua")
+    local bridge = dofile(DIR .. "telemetry/bridge.lua")
+    local bridgeFrame = dofile(DIR .. "telemetry/bridge_frame.lua")
+    local bridgeQueue = dofile(DIR .. "telemetry/bridge_queue.lua")
+    local asset = dofile(DIR .. "telemetry/asset.lua")
+    local shot = dofile(DIR .. "telemetry/shot.lua")
+    local combat = dofile(DIR .. "telemetry/combat.lua")
+    local participant = dofile(DIR .. "telemetry/participant.lua")
+
+    return bridge.start({
+      event_id = eventId,
+      envelope = envelope,
+      json = json,
+      lifecycle = lifecycle,
+      bridge_queue = bridgeQueue,
+      bridge_frame = bridgeFrame,
+      asset = asset,
+      shot = shot,
+      combat = combat,
+      participant = participant,
+      timer = timer,
+      env = env,
+      BASE = BASE,
+      SCHEDULER = SCHEDULER,
+      EVENTS = EVENTS,
+      player_group_names = PLAYER_GROUP_NAMES,
+      bandit_group_names = BANDIT_GROUP_NAMES,
+      player_coalition = coalition.side.BLUE,
+      bandit_coalition = coalition.side.RED,
+      state = _G,
+      heartbeat_interval = 30,
+      mission_name = "duel-dynamic",
+      mission_version = "1",
+      source_version = "duel-dynamic-telemetry-v1",
+      run_classification = "historical",
+    })
+  end)
+
+  if not ok then
+    env.error("[duel-dynamic][telemetry-shipping] initialization raised: " .. tostring(runtime))
+    return
+  end
+  if not runtime then
+    env.error("[duel-dynamic][telemetry-shipping] initialization failed: " .. tostring(startError))
+    return
+  end
+
+  -- MOOSE event subscriptions use weak subscriber keys. Keep the complete
+  -- runtime strongly reachable for the life of this mission run.
+  _G.duel_telemetry_bridge = runtime
+  _G.duel_telemetry_runtime = runtime
+end
+
 initDevelopmentTelemetry()
+initShippingTelemetry()
 dofile(DIR .. "score.lua")
 
 local Tracker = _G.duel_tracker
@@ -997,8 +1067,7 @@ if _G.TEST_COMBAT_ENABLED then
     if TEST_COMBAT_GUN_TEST then
       -- Both aircraft use their guns; no AAM pylon is armed.
     elseif TEST_COMBAT_BLUE_MISSILE ~= nil then
-      blue_missile = TEST_COMBAT_PYLONS[blue_airframe]
-        and TEST_COMBAT_PYLONS[blue_airframe][TEST_COMBAT_BLUE_MISSILE]
+      blue_missile = TEST_COMBAT_PYLONS[blue_airframe] and TEST_COMBAT_PYLONS[blue_airframe][TEST_COMBAT_BLUE_MISSILE]
       if not blue_missile then
         env.error(
           "[duel-dynamic][test-combat] missing pylon cell: airframe="
@@ -1009,8 +1078,7 @@ if _G.TEST_COMBAT_ENABLED then
         return false
       end
     else
-      bandit_missile = TEST_COMBAT_PYLONS[bandit_airframe]
-        and TEST_COMBAT_PYLONS[bandit_airframe][TEST_COMBAT_MISSILE]
+      bandit_missile = TEST_COMBAT_PYLONS[bandit_airframe] and TEST_COMBAT_PYLONS[bandit_airframe][TEST_COMBAT_MISSILE]
       if not bandit_missile then
         env.error(
           "[duel-dynamic][test-combat] missing pylon cell: airframe="
@@ -1023,11 +1091,9 @@ if _G.TEST_COMBAT_ENABLED then
     end
 
     local payload_ok, payload_result = pcall(function()
-      local bandit_payload = bandit_missile
-          and testCombatPayload(bandit_missile.index, bandit_missile.pylon, 0)
+      local bandit_payload = bandit_missile and testCombatPayload(bandit_missile.index, bandit_missile.pylon, 0)
         or testCombatPayload(nil, nil, TEST_COMBAT_GUN_TEST and 100 or 0)
-      local blue_payload = blue_missile
-          and testCombatPayload(blue_missile.index, blue_missile.pylon, 0)
+      local blue_payload = blue_missile and testCombatPayload(blue_missile.index, blue_missile.pylon, 0)
         or testCombatPayload(nil, nil, TEST_COMBAT_GUN_TEST and 100 or 0)
       return setTemplatePayload(waveSpawner, bandit_payload) and setTemplatePayload(blueSpawner, blue_payload)
     end)
@@ -1081,20 +1147,27 @@ if _G.TEST_COMBAT_ENABLED then
         return runtime.shot:extend_player_roster({ blue_group_name })
       end)
       if not shot_ok or shot_result ~= true then
-        env.error("[duel-dynamic][test-combat] failed to extend shot player roster: " .. tostring(shot_error or shot_result))
+        env.error(
+          "[duel-dynamic][test-combat] failed to extend shot player roster: " .. tostring(shot_error or shot_result)
+        )
       end
 
       local asset_ok, asset_result, asset_error = pcall(function()
         return runtime.asset:extend_player_roster({ blue_group_name })
       end)
       if not asset_ok or asset_result ~= true then
-        env.error("[duel-dynamic][test-combat] failed to extend asset player roster: " .. tostring(asset_error or asset_result))
+        env.error(
+          "[duel-dynamic][test-combat] failed to extend asset player roster: " .. tostring(asset_error or asset_result)
+        )
       else
         local register_ok, register_result, register_error = pcall(function()
           return runtime.asset:register_player_group(blueGrp)
         end)
         if not register_ok or register_result == nil then
-          env.error("[duel-dynamic][test-combat] failed to register blue AI asset: " .. tostring(register_error or register_result))
+          env.error(
+            "[duel-dynamic][test-combat] failed to register blue AI asset: "
+              .. tostring(register_error or register_result)
+          )
         end
       end
     end
