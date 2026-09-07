@@ -1,5 +1,6 @@
 import Link from "next/link";
 
+import { formatDashboardDateTime } from "@/telemetry/dates";
 import {
   DASHBOARD_RUN_SCOPE_LIMIT,
   latestHumanLabel,
@@ -197,9 +198,7 @@ export default async function PlayersPage({
                           </Link>
                         </td>
                         <td className="stat-number">{player.runs}</td>
-                        <td className="hud-mono">
-                          {player.lastSeen.slice(0, 10)}
-                        </td>
+                        <td>{formatDashboardDateTime(player.lastSeen)}</td>
                       </tr>
                     ))}
                   </tbody>

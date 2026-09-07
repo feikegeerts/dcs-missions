@@ -1,5 +1,6 @@
 import Link from "next/link";
 
+import { RunLink } from "@/components/run-link";
 import {
   DASHBOARD_RUN_SCOPE_LIMIT,
   DOSSIER_RUNS_PER_PAGE,
@@ -311,17 +312,11 @@ export default async function MissionDossierPage({
                       const summary = item?.summary;
                       return (
                         <tr key={`${run.producerId}:${run.runKey}`}>
-                          <td className="hud-mono">
-                            <Link
-                              href={`/runs/${encodeURIComponent(run.runKey)}`}
-                            >
-                              {run.startedAt
-                                ? new Date(run.startedAt)
-                                    .toISOString()
-                                    .slice(0, 16)
-                                    .replace("T", " ")
-                                : run.runKey}
-                            </Link>
+                          <td>
+                            <RunLink
+                              runKey={run.runKey}
+                              startedAt={run.startedAt}
+                            />
                           </td>
                           <td>{run.mapName ?? "unknown"}</td>
                           <td>

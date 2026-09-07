@@ -1,5 +1,6 @@
 import Link from "next/link";
 
+import { formatDashboardDate } from "@/telemetry/dates";
 import {
   DASHBOARD_RUN_SCOPE_LIMIT,
   groupRunsByMission,
@@ -183,9 +184,7 @@ export default async function MissionsPage({
                         <span>
                           latest:{" "}
                           <strong>
-                            {new Date(latestUpdatedAt)
-                              .toISOString()
-                              .slice(0, 10)}
+                            {formatDashboardDate(latestUpdatedAt)}
                           </strong>
                         </span>
                       )}

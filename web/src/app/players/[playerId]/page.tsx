@@ -1,5 +1,6 @@
 import Link from "next/link";
 
+import { RunLink } from "@/components/run-link";
 import {
   aggregatePlayerCareer,
   buildRunScoreboard,
@@ -279,12 +280,11 @@ export default async function PlayerProfilePage({
                 <tbody>
                   {career.history.map((item) => (
                     <tr key={`${item.runKey}|${item.row.key}`}>
-                      <td className="hud-mono">
-                        <Link href={`/runs/${encodeURIComponent(item.runKey)}`}>
-                          {item.startedAt
-                            ? item.startedAt.slice(0, 16).replace("T", " ")
-                            : item.runKey}
-                        </Link>
+                      <td>
+                        <RunLink
+                          runKey={item.runKey}
+                          startedAt={item.startedAt}
+                        />
                       </td>
                       <td>{missionCatalogEntry(item.missionName).title}</td>
                       <td className="stat-number">{item.row.kills}</td>

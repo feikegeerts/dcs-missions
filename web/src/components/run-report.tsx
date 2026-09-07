@@ -17,6 +17,11 @@ import {
   missionCatalogEntry,
   type ScoreboardRow,
 } from "@/telemetry/dashboard";
+import {
+  formatDashboardDateTime,
+  runKeyTimestamp,
+  shortRunKey,
+} from "@/telemetry/dates";
 import { timelinePage, type RunReportData } from "@/telemetry/run-report";
 
 function CoalitionPanel({
@@ -306,6 +311,7 @@ export function RunReport({
         scoreboard.blue.ordnanceUnpriced + scoreboard.blue.aircraftUnpriced,
       )
     : "unpriced";
+  const displayStartedAt = run.startedAt ?? runKeyTimestamp(run.runKey);
   const redCost = priced
     ? formatPartialCost(
         scoreboard.red.totalCents,
@@ -324,13 +330,17 @@ export function RunReport({
       </p>
       <h1 className="hud-title">{entry.title}</h1>
       <p className="hud-subtitle">
-        {run.startedAt
-          ? `${new Date(run.startedAt).toISOString().slice(0, 16).replace("T", " ")} UTC`
-          : run.runKey}{" "}
+        <span className="hud-mono" title={`Full run key: ${run.runKey}`}>
+          RUN {shortRunKey(run.runKey)}
+        </span>{" "}
+        ·{" "}
+        {displayStartedAt
+          ? formatDashboardDateTime(displayStartedAt)
+          : "start time unavailable"}{" "}
         · {run.mapName ?? "unknown map"} ·{" "}
         <span className={`status-${run.status}`}>{run.status}</span> ·{" "}
         {run.eventCount} events · last #{run.lastSequence} · updated{" "}
-        {new Date(run.updatedAt).toISOString()}
+        {formatDashboardDateTime(run.updatedAt)}
       </p>
 
       <div className="hud-grid" style={{ marginTop: "1rem" }}>

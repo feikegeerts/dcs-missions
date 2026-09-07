@@ -393,6 +393,26 @@ input::placeholder {
   font-weight: 600;
 }
 
+.run-link {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.05rem;
+  min-width: 11rem;
+}
+
+.run-label {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.run-reference {
+  color: var(--hud-text-dim);
+  font-family: var(--hud-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.03em;
+}
+
 .current-run {
   display: flex;
   flex-wrap: wrap;
