@@ -17,7 +17,7 @@ on offline-only evidence but is not complete stock mission/combat or near-live
 acceptance. Collector automation and browser refresh are still not implemented.
 Older snapshots below are historical and do not override this addendum.
 
-**Last updated:** 2026-09-06 (Slices 13 + 14 complete, committed/pushed
+**Last updated:** 2026-09-07 (Slices 13 + 14 complete, committed/pushed
 `ac8e37e`, migrations 0003+0004 in Neon and live-ingest verified; Slice 15
 B/C pushed; demo runs cleaned from Neon; STYLUA-CRLF fixed uncommitted).
 Read this first when coming back.
@@ -43,6 +43,36 @@ production map + aircraft decision. Historical next queue was Slice 16 → 17 �
 19 (Sol); the near-live planning addendum above now defines the new dependency
 order without starting or extending an execution queue.
 Durable queue + evidence: `progress.md`.
+
+### Current test readiness — read this before starting DCS
+
+**Last host check:** 2026-09-07. This is an operational snapshot, not a
+promise that the server will still be running later; recheck the paths and log
+before a new run.
+
+| Test | Status | Meaning |
+|---|---|---|
+| Stock shipping mission with a client | **Ready, after reload** | The dedicated server is running, port 10308 is open, and the production telemetry hook is installed and has loaded successfully. A client still needs to join an `Aerial-*` slot for the mission's AI/package behavior. |
+| Unattended auto-load/auto-stop test | **Not ready** | The temporary `zz-dev-telemetry-load.lua` hook is not installed. The current server has a mission loaded but its latest run is paused after `mission.started`. |
+| Dynamic `src/` development-loader test | **Not ready** | The server `MissionScripting.lua` is stock, matching `MissionScripting.lua.orig`; dynamic development loading requires the de-sanitized dev variant. |
+
+Installed and verified production hook:
+
+```text
+C:\Users\g_for\Saved Games\DCS.dcs_serverrelease\Scripts\Hooks\duel-dynamic-telemetry.lua
+```
+
+The matching log evidence is `TELEMETRY_BRIDGE_HOOK START`, `LOAD
+callback-api=Sim`, `handshake-ok`, and a drained `mission.started` event in
+`Saved Games\DCS.dcs_serverrelease\Logs\dcs.log`. This is **not** the same as
+the temporary unattended test hook described in
+`docs/telemetry/unattended-test-loop.md`.
+
+For the next unattended development run, install the temporary hook, restore
+the de-sanitized `MissionScripting.lua`, restart the server, and remove the
+temporary hook and restore the stock file during teardown. Do not infer
+unattended-test readiness merely from the production telemetry hook being
+present.
 
 This is a snapshot of where the project is, what's known to work, what's
 known to be broken, and what still needs to happen before the mission
@@ -94,7 +124,9 @@ artifact. It was not modified or deleted. The active repository mission is
 
 ## 2. Environment status
 
-> **DCS environment is currently STOCK** (restored after the closure run).
+> **DCS mission scripting environment is currently STOCK** (restored after the
+> closure run). The production GameGUI telemetry hook is installed separately
+> in the server's Saved Games hooks directory.
 > The dedicated-server install
 > (`D:\DCS World Server`) `MissionScripting.lua` is the stock file (live
 > SHA-1 `FB54471ECE4DB968AED4A55A1806B25EA5116452`, identical to the
@@ -102,11 +134,15 @@ artifact. It was not modified or deleted. The active repository mission is
 > is preserved as `MissionScripting.lua.telemetry-dev-backup` (SHA-1
 > `33977AAD2B3FE7A39E15374839C813E164BF0929`; the exact live de-sanitized
 > file used during the Slice 11 dev window had SHA-1
-> `D0069384E34331079A2513D84AE474C9BF5A8843`). `DCS_server` is stopped by
-> the orchestrator. `MissionScripting.lua` remains byte-identical to
+> `D0069384E34331079A2513D84AE474C9BF5A8843`).
+> At the 2026-09-07 host check, `DCS_server.exe` was running.
+> `MissionScripting.lua` remains byte-identical to
 > `MissionScripting.lua.orig` at SHA-1
 > `FB54471ECE4DB968AED4A55A1806B25EA5116452`; `src/bootstrap.lua` was
-> restored with `TEST_COMBAT_ENABLED=true`.
+> restored with `TEST_COMBAT_ENABLED=true`. The temporary
+> `zz-dev-telemetry-load.lua` hook was absent. The permanent
+> `duel-dynamic-telemetry.lua` hook was present and had logged a successful
+> handshake for the loaded shipping mission.
 >
 > To re-enter dev mode (required for the dynamic `src/` dev loader): patch
 > the file again per `docs/dev-setup.md §2`. Keep it stock before any
