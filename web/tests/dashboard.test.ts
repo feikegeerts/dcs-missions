@@ -15,6 +15,7 @@ import {
   type BuildScoreboardInput,
   type PlayerRunEntry,
 } from "../src/telemetry/dashboard";
+import { buildAiCallsigns } from "../src/telemetry/ai-names";
 import type { TelemetryEvent } from "../src/telemetry/types";
 
 function baseInput(
@@ -215,7 +216,10 @@ describe("buildRunScoreboard", () => {
     );
     expect(board.ai).toHaveLength(1);
     expect(board.ai[0]).toMatchObject({
-      displayName: "Bandit-1-1",
+      displayName: buildAiCallsigns("dashboard", [
+        "aerial-1.u1.g1",
+        "bandit-1.u1.g1",
+      ]).get("bandit-1.u1.g1"),
       losses: 1,
       shots: 1,
       aircraftLossCents: 5_000_000,
@@ -245,7 +249,9 @@ describe("buildRunScoreboard", () => {
       }),
     );
     expect(board.humans.map((row) => row.displayName)).toEqual(["Quiet Pilot"]);
-    expect(board.ai.map((row) => row.displayName)).toEqual(["Bandit-9-1"]);
+    expect(board.ai.map((row) => row.displayName)).toEqual([
+      buildAiCallsigns("dashboard", ["bandit-9.u1.g1"]).get("bandit-9.u1.g1"),
+    ]);
   });
 
   it("counts unknown killers without assigning them to a combatant", () => {
@@ -454,7 +460,7 @@ describe("buildRunScoreboard", () => {
     );
     expect(shared.humans.every((row) => row.losses === 0)).toBe(true);
     expect(shared.ai.find((row) => row.losses === 1)?.displayName).toBe(
-      "Aerial-1-1",
+      buildAiCallsigns("dashboard", ["aerial-1.u1.g1"]).get("aerial-1.u1.g1"),
     );
   });
 });

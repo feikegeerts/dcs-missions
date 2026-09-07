@@ -22,6 +22,7 @@
 
 import { createHash } from "node:crypto";
 
+import { buildAiCallsigns, type AiCallsignMap } from "./ai-names";
 import type { TelemetryEvent } from "./types";
 
 /** Dashboard reads cap a single scope at this many runs. Totals always cover
@@ -398,7 +399,36 @@ function aiLabel(input: {
   return input.assetKey;
 }
 
+function assetKeysForCallsigns(input: BuildScoreboardInput): string[] {
+  const keys: string[] = [];
+  const add = (assetKey: string | null | undefined) => {
+    if (assetKey !== null && assetKey !== undefined && assetKey !== "") {
+      keys.push(assetKey);
+    }
+  };
+  for (const asset of input.assets) {
+    add(asset.assetKey);
+  }
+  for (const expenditure of input.expenditures) {
+    add(expenditure.assetKey);
+  }
+  for (const loss of input.losses) {
+    add(loss.assetKey);
+  }
+  for (const kill of input.kills) {
+    add(kill.targetAssetKey);
+    add(kill.killerAssetKey);
+  }
+  for (const assist of input.assists) {
+    add(assist.targetAssetKey);
+    add(assist.attackerAssetKey);
+  }
+  return keys;
+}
+
 export type BuildScoreboardInput = {
+  runKey?: string;
+  aiCallsigns?: AiCallsignMap;
   participants: readonly ScoreboardParticipantInput[];
   expenditures: readonly ScoreboardExpenditureInput[];
   losses: readonly ScoreboardLossInput[];
@@ -474,6 +504,9 @@ export function buildRunScoreboard(input: BuildScoreboardInput): RunScoreboard {
   const humans = new Map<string, ScoreboardRow>();
   const ai = new Map<string, ScoreboardRow>();
   const unresolved = new Map<string, ScoreboardRow>();
+  const aiCallsigns =
+    input.aiCallsigns ??
+    buildAiCallsigns(input.runKey ?? "dashboard", assetKeysForCallsigns(input));
 
   const humanRow = (
     participantId: string,
@@ -507,7 +540,8 @@ export function buildRunScoreboard(input: BuildScoreboardInput): RunScoreboard {
         kind: "ai",
         key: `asset:${assetKey}`,
         participantId: null,
-        displayName: aiLabel({ ...label, assetKey }),
+        displayName:
+          aiCallsigns.get(assetKey) ?? aiLabel({ ...label, assetKey }),
         callsign: null,
         coalition,
       });

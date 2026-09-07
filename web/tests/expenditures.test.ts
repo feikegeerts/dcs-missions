@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { ordnanceCatalogueV1 } from "../src/telemetry/catalogue";
+import { buildAiCallsigns } from "../src/telemetry/ai-names";
 import {
   aggregateByWeapon,
   aggregateExpenditures,
@@ -30,7 +31,14 @@ function firedEvent(options: {
   coalition?: string | null;
   withTarget?: boolean;
 }): TelemetryEvent {
-  const participantId = options.participantId ?? "ucid-viper-1";
+  const participantId =
+    options.participantId === undefined
+      ? "ucid-viper-1"
+      : options.participantId;
+  const displayName =
+    options.displayName === undefined ? "Viper" : options.displayName;
+  const callsign =
+    options.callsign === undefined ? "Aerial 1-1" : options.callsign;
   const weapon =
     options.weaponDcsType === null
       ? { status: "unknown", reason: "instance-identity-unavailable" }
@@ -56,8 +64,8 @@ function firedEvent(options: {
       kind: "aircraft",
       participant_id: participantId,
       asset_key: options.assetKey ?? "aerial-1.u1.g1",
-      display_name: options.displayName ?? "Viper",
-      callsign: options.callsign ?? "Aerial 1-1",
+      display_name: displayName,
+      callsign,
       dcs_name: "Aerial-1-1",
       dcs_type: options.aircraftDcsType ?? "FA-18C_hornet",
       coalition: options.coalition ?? "blue",
@@ -67,8 +75,8 @@ function firedEvent(options: {
       status: "known",
       kind: "participant",
       participant_id: participantId,
-      display_name: options.displayName ?? "Viper",
-      callsign: options.callsign ?? "Aerial 1-1",
+      display_name: displayName,
+      callsign,
       coalition: options.coalition ?? "blue",
     },
     asset: {
@@ -183,6 +191,31 @@ describe("ordnance expenditure projection", () => {
 });
 
 describe("expenditure drilldown", () => {
+  it("uses the deterministic AI callsign when no participant is known", () => {
+    const expenditure = projections([
+      firedEvent({
+        sequence: 1,
+        weaponDcsType: "AIM_120C",
+        participantId: null,
+        displayName: null,
+        callsign: null,
+        assetKey: "bandit-1.u1.g1",
+        aircraftDcsType: "Su-33",
+        coalition: "red",
+      }),
+    ]);
+    const expected = buildAiCallsigns(RUN, ["bandit-1.u1.g1"]).get(
+      "bandit-1.u1.g1",
+    );
+
+    const drilldown = aggregateExpenditures(expenditure);
+
+    expect(drilldown.groups[0]?.participantDisplayName).toBe(expected);
+    expect(drilldown.groups[0]?.participantDisplayName).not.toBe(
+      "Unknown shooter",
+    );
+  });
+
   it("groups by participant, incarnation, airframe, and coalition", () => {
     const expenditure = projections([
       firedEvent({

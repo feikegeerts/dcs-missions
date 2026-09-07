@@ -7,6 +7,7 @@ import {
 } from "@/telemetry/expenditures";
 import { aggregateAssetLosts } from "@/telemetry/losses";
 import { deriveSorties, eventRowToSortieInput } from "@/telemetry/sorties";
+import { buildAiCallsigns } from "@/telemetry/ai-names";
 import {
   buildRunScoreboard,
   extractAssetSnapshots,
@@ -182,7 +183,18 @@ export function RunReport({
     catalogueVersion: expenditure.catalogueVersion,
     unitCostCents: expenditure.unitCostCents,
   }));
-  const drilldown = aggregateExpenditures(expenditureInputs, labels);
+  const assets = extractAssetSnapshots(runEvents);
+  const aiCallsigns = buildAiCallsigns(run.runKey, [
+    ...assets.map((asset) => asset.assetKey),
+    ...expenditureInputs.flatMap((expenditure) =>
+      expenditure.assetKey === null ? [] : [expenditure.assetKey],
+    ),
+  ]);
+  const drilldown = aggregateExpenditures(
+    expenditureInputs,
+    labels,
+    aiCallsigns,
+  );
   const byWeapon = aggregateByWeapon(expenditureInputs);
   const lossSummary = aggregateAssetLosts(
     losses.map((loss) => ({
@@ -200,6 +212,8 @@ export function RunReport({
   );
 
   const scoreboard = buildRunScoreboard({
+    runKey: run.runKey,
+    aiCallsigns,
     participants: participants.map((participant) => ({
       participantId: participant.participantId,
       displayName: participant.displayName,
@@ -237,7 +251,7 @@ export function RunReport({
       attackerDcsName: assist.attackerDcsName,
       attackerDcsType: assist.attackerDcsType,
     })),
-    assets: extractAssetSnapshots(runEvents),
+    assets,
     sorties: extractSortieOwners(runEvents),
   });
 

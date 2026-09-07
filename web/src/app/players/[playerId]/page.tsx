@@ -102,7 +102,9 @@ export default async function PlayerProfilePage({
           store.listAssistAttributions(run.producerId, run.runKey),
           store.listRunParticipants(run.producerId, run.runKey),
         ]);
+      const assets = extractAssetSnapshots(runEvents);
       const scoreboard = buildRunScoreboard({
+        runKey: run.runKey,
         participants: participants.map((row) => ({
           participantId: row.participantId,
           displayName: row.displayName,
@@ -140,7 +142,7 @@ export default async function PlayerProfilePage({
           attackerDcsName: assist.attackerDcsName,
           attackerDcsType: assist.attackerDcsType,
         })),
-        assets: extractAssetSnapshots(runEvents),
+        assets,
         sorties: extractSortieOwners(runEvents),
       });
       for (const row of scoreboard.humans) {

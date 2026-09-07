@@ -31,6 +31,12 @@ aircraft, vehicle, ship, or AI-controlled entity. Reuse of a DCS name does not
 make a replacement the same asset instance.
 _Avoid_: Unit, platform
 
+**AI Callsign**:
+A run-scoped friendly display label assigned to an AI asset instance. It makes
+AI combatants readable in the dashboard but is not an identity, participant, or
+replacement for the authoritative asset key.
+_Avoid_: AI pilot identity, persistent AI identity
+
 **Tracked Asset Scope**:
 The explicit boundary of asset categories included in a telemetry release.
 Assets outside this boundary are intentionally excluded rather than unknown.

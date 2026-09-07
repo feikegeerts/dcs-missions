@@ -1,5 +1,6 @@
 import type { OrdinanceCatalogue } from "./catalogue";
 import { ordnanceCatalogueV1, resolveValuation } from "./catalogue";
+import { buildAiCallsigns, type AiCallsignMap } from "./ai-names";
 import type { TelemetryEvent } from "./types";
 
 export type CatalogueAssignment = {
@@ -275,6 +276,7 @@ export function latestParticipantLabels(
 export function aggregateExpenditures(
   expenditures: readonly ExpenditureAggregateInput[],
   participantLabels: ReadonlyMap<string, ParticipantLabel> = new Map(),
+  aiCallsigns?: AiCallsignMap,
 ): ExpenditureDrilldown {
   let knownSubtotalCents = 0;
   let unpricedCount = 0;
@@ -282,6 +284,14 @@ export function aggregateExpenditures(
     string,
     ExpenditureGroup & { firstEventSequence: number }
   >();
+  const resolvedAiCallsigns =
+    aiCallsigns ??
+    buildAiCallsigns(
+      expenditures[0]?.runKey ?? "unknown-run",
+      expenditures.flatMap((expenditure) =>
+        expenditure.assetKey === null ? [] : [expenditure.assetKey],
+      ),
+    );
 
   for (const expenditure of expenditures) {
     if (expenditure.unitCostCents === null) {
@@ -304,10 +314,17 @@ export function aggregateExpenditures(
       const currentLabel = expenditure.participantId
         ? participantLabels.get(expenditure.participantId)
         : undefined;
+      const aiCallsign =
+        expenditure.participantId === null && expenditure.assetKey !== null
+          ? resolvedAiCallsigns.get(expenditure.assetKey)
+          : undefined;
       group = {
         participantId: expenditure.participantId,
         participantDisplayName:
-          currentLabel?.displayName ?? expenditure.participantDisplayName,
+          currentLabel?.displayName ??
+          expenditure.participantDisplayName ??
+          aiCallsign ??
+          null,
         participantCallsign:
           currentLabel?.callsign ?? expenditure.participantCallsign,
         assetKey: expenditure.assetKey,
