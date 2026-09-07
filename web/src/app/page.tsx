@@ -1,33 +1,18 @@
 import Link from "next/link";
 
 import {
-  aggregateByWeapon,
-  aggregateExpenditures,
-} from "@/telemetry/expenditures";
-import {
-  displayRunStatus,
-  type DisplayRunStatus,
-} from "@/telemetry/run-status";
+  DASHBOARD_RUN_SCOPE_LIMIT,
+  groupRunsByMission,
+} from "@/telemetry/dashboard";
 import {
   matchesClassification,
   parseClassificationFilter,
-  parsePageNumber,
   type ClassificationFilter,
 } from "@/telemetry/run-filters";
+import { displayRunStatus } from "@/telemetry/run-status";
 import { NeonTelemetryStore } from "@/telemetry/store";
 
 export const dynamic = "force-dynamic";
-
-function formatUsd(cents: number): string {
-  return `$${(cents / 100).toLocaleString("en-US", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`;
-}
-
-const ALL_STATUSES = ["all", "active", "stale", "aborted", "ended"] as const;
-
-type StatusFilter = (typeof ALL_STATUSES)[number];
 
 const ALL_CLASSIFICATIONS: readonly ClassificationFilter[] = [
   "all",
@@ -35,190 +20,78 @@ const ALL_CLASSIFICATIONS: readonly ClassificationFilter[] = [
   "historical",
 ];
 
-const RUNS_PER_PAGE = 20;
+function formatFreshness(updatedAt: Date, now: Date): string {
+  const seconds = Math.max(
+    0,
+    Math.round((now.getTime() - updatedAt.getTime()) / 1000),
+  );
+  if (seconds < 60) {
+    return `${seconds} second${seconds === 1 ? "" : "s"} ago`;
+  }
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) {
+    return `${minutes} minute${minutes === 1 ? "" : "s"} ago`;
+  }
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) {
+    return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+  }
+  const days = Math.floor(hours / 24);
+  return `${days} day${days === 1 ? "" : "s"} ago`;
+}
 
-export default async function HomePage({
+export default async function MissionsPage({
   searchParams,
 }: {
-  searchParams: Promise<{
-    status?: string;
-    mission?: string;
-    classification?: string;
-    runsPage?: string;
-  }>;
+  searchParams: Promise<{ classification?: string }>;
 }) {
   try {
     const params = await searchParams;
-    const statusFilter: StatusFilter =
-      params.status === "active" ||
-      params.status === "stale" ||
-      params.status === "aborted" ||
-      params.status === "ended"
-        ? params.status
-        : "all";
-    const missionFilter = (params.mission ?? "").trim().toLowerCase();
     const classificationFilter = parseClassificationFilter(
       params.classification,
     );
-    const runsPage = parsePageNumber(params.runsPage);
-    const runsOffset = (runsPage - 1) * RUNS_PER_PAGE;
-
     const store = new NeonTelemetryStore();
     const now = new Date();
-    // Staleness is display-only. Storage keeps a run `active` until an
-    // explicit `mission.ended` or a replacement run marks it `aborted`.
-    // Active runs with no recent heartbeat render `stale`.
-    // Fleet + scope counts cover every matching run (capped at 100, the
-    // pre-existing list limit); only the runs table itself is paged.
-    const matching = (
-      await store.listRuns(
-        100,
-        0,
-        classificationFilter === "all" ? null : classificationFilter,
-      )
-    )
-      .map((run) => ({
-        run,
-        display:
-          run.status === "active" ||
-          run.status === "aborted" ||
-          run.status === "ended"
-            ? displayRunStatus(run.status, run.updatedAt, now)
-            : ("active" as DisplayRunStatus),
-      }))
-      .filter(
-        ({ run, display }) =>
-          (statusFilter === "all" || display === statusFilter) &&
-          (missionFilter === "" ||
-            (run.missionName ?? "").toLowerCase().includes(missionFilter)) &&
-          matchesClassification(run.runClassification, classificationFilter),
-      );
-    const runs = matching;
-    const pageWindow = matching.slice(
-      runsOffset,
-      runsOffset + RUNS_PER_PAGE + 1,
+    const allRuns = await store.listRuns(
+      DASHBOARD_RUN_SCOPE_LIMIT,
+      0,
+      classificationFilter === "all" ? null : classificationFilter,
     );
-    const hasNextRunsPage = pageWindow.length > RUNS_PER_PAGE;
-    const pageRuns = hasNextRunsPage
-      ? pageWindow.slice(0, RUNS_PER_PAGE)
-      : pageWindow;
-
-    // Fleet totals aggregate per-run expenditure rows already projected at
-    // ingest; no new queries beyond the existing per-run reads. At current
-    // run counts this is a handful of indexed queries; revisit with a
-    // summary table if run volume ever makes the fan-out expensive.
-    const fleetExpenditures = (
-      await Promise.all(
-        runs.map(({ run }) =>
-          store.listExpenditures(run.producerId, run.runKey),
-        ),
-      )
-    ).flat();
-    const fleet = aggregateExpenditures(
-      fleetExpenditures.map((expenditure) => ({
-        sourceEventId: expenditure.sourceEventId,
-        producerId: expenditure.producerId,
-        runKey: expenditure.runKey,
-        eventSequence: expenditure.eventSequence,
-        participantId: expenditure.participantId,
-        participantDisplayName: expenditure.participantDisplayName,
-        participantCallsign: expenditure.participantCallsign,
-        assetKey: expenditure.assetKey,
-        aircraftDcsType: expenditure.aircraftDcsType,
-        coalition: expenditure.coalition,
-        weaponDcsType: expenditure.weaponDcsType,
-        weaponDisplayName: expenditure.weaponDisplayName,
-        catalogue: expenditure.catalogue,
-        catalogueVersion: expenditure.catalogueVersion,
-        unitCostCents: expenditure.unitCostCents,
-      })),
+    const runs = allRuns.filter((run) =>
+      matchesClassification(run.runClassification, classificationFilter),
     );
-    const fleetByWeapon = aggregateByWeapon(
-      fleetExpenditures.map((expenditure) => ({
-        sourceEventId: expenditure.sourceEventId,
-        producerId: expenditure.producerId,
-        runKey: expenditure.runKey,
-        eventSequence: expenditure.eventSequence,
-        participantId: expenditure.participantId,
-        participantDisplayName: expenditure.participantDisplayName,
-        participantCallsign: expenditure.participantCallsign,
-        assetKey: expenditure.assetKey,
-        aircraftDcsType: expenditure.aircraftDcsType,
-        coalition: expenditure.coalition,
-        weaponDcsType: expenditure.weaponDcsType,
-        weaponDisplayName: expenditure.weaponDisplayName,
-        catalogue: expenditure.catalogue,
-        catalogueVersion: expenditure.catalogueVersion,
-        unitCostCents: expenditure.unitCostCents,
-      })),
-    );
-    const fleetUpdatedAt =
+    const groups = groupRunsByMission(runs);
+    const latest =
       runs.length === 0
         ? null
-        : new Date(
-            Math.max(
-              ...runs.map(({ run }) => new Date(run.updatedAt).getTime()),
-            ),
+        : runs.reduce((a, b) =>
+            new Date(a.updatedAt).getTime() >= new Date(b.updatedAt).getTime()
+              ? a
+              : b,
           );
+    const latestDisplay =
+      latest === null ||
+      (latest.status !== "active" &&
+        latest.status !== "aborted" &&
+        latest.status !== "ended")
+        ? null
+        : displayRunStatus(latest.status, new Date(latest.updatedAt), now);
 
-    const buildHref = (overrides: {
-      status?: string;
-      classification?: string;
-      runsPage?: number;
-    }) => {
-      const search = new URLSearchParams();
-      const status = overrides.status ?? statusFilter;
-      const classification = overrides.classification ?? classificationFilter;
-      const page = overrides.runsPage ?? 1;
-      if (status !== "all") {
-        search.set("status", status);
-      }
-      if (missionFilter !== "") {
-        search.set("mission", missionFilter);
-      }
-      if (classification !== "all") {
-        search.set("classification", classification);
-      }
-      if (page > 1) {
-        search.set("runsPage", String(page));
-      }
-      const query = search.toString();
-      return query === "" ? "/" : `/?${query}`;
-    };
-
-    const filterHref = (status: string) => buildHref({ status });
     const classificationHref = (classification: string) =>
-      buildHref({ classification });
-    const runsHref = (page: number) => buildHref({ runsPage: page });
+      classification === "all" ? "/" : `/?classification=${classification}`;
 
     return (
       <main>
-        <h1 className="hud-title">Theater overview</h1>
+        <h1 className="hud-title">Missions</h1>
         <p className="hud-subtitle">
-          {runs.length} run{runs.length === 1 ? "" : "s"} in scope
-          {fleetUpdatedAt !== null
-            ? ` · updated ${fleetUpdatedAt.toISOString()}`
-            : ""}
+          Mission types recorded on this server · {runs.length} run
+          {runs.length === 1 ? "" : "s"} in scope
         </p>
+
         <div className="hud-grid" style={{ marginTop: "1rem" }}>
           <section className="hud-panel col-12">
-            <h2>Filters</h2>
+            <h2>Data scope</h2>
             <div className="hud-filters">
-              {ALL_STATUSES.map((status) =>
-                status === statusFilter ? (
-                  <span key={status} className="hud-chip hud-chip-active">
-                    {status}
-                  </span>
-                ) : (
-                  <Link
-                    key={status}
-                    className="hud-chip"
-                    href={filterHref(status)}
-                  >
-                    {status}
-                  </Link>
-                ),
-              )}
               {ALL_CLASSIFICATIONS.map((classification) =>
                 classification === classificationFilter ? (
                   <span
@@ -237,139 +110,108 @@ export default async function HomePage({
                   </Link>
                 ),
               )}
-              {missionFilter !== "" && (
-                <span className="hud-stat-sub">
-                  mission ∋ “{missionFilter}” (
-                  <Link href={filterHref(statusFilter)}>clear</Link>)
-                </span>
-              )}
             </div>
           </section>
-          <section className="hud-panel col-4">
-            <h2>Fleet shots</h2>
-            <div className="hud-stat">{fleet.expenditureCount}</div>
-            <div className="hud-stat-sub">
-              {fleet.partial ? (
-                <span className="hud-warning">
-                  {fleet.unpricedCount} unpriced — total partial
-                </span>
-              ) : (
-                "all priced"
-              )}
+
+          {latest && (
+            <div className="col-12">
+              <div className="current-run">
+                <div>
+                  <strong>{latest.missionName ?? "Unknown mission"}</strong>
+                  {" · "}
+                  {latest.mapName ?? "unknown map"}
+                  {" · "}
+                  <span className="hud-mono">
+                    last telemetry{" "}
+                    {formatFreshness(new Date(latest.updatedAt), now)}
+                  </span>
+                </div>
+                <div>
+                  {latestDisplay !== null && (
+                    <span className={`status-${latestDisplay}`}>
+                      {latestDisplay}
+                      {latestDisplay === "stale" ? " ◌" : ""}
+                    </span>
+                  )}{" "}
+                  <Link href={`/runs/${encodeURIComponent(latest.runKey)}`}>
+                    {latestDisplay === "active" ? "Open run →" : "Latest run →"}
+                  </Link>
+                </div>
+              </div>
             </div>
-          </section>
-          <section className="hud-panel col-4">
-            <h2>Known subtotal</h2>
-            <div className="hud-stat">
-              {formatUsd(fleet.knownSubtotalCents)}
-            </div>
-            <div className="hud-stat-sub">exact cents, no rounding</div>
-          </section>
-          <section className="hud-panel col-4">
-            <h2>Coverage</h2>
-            <div className="hud-stat">{fleetByWeapon.weapons.length}</div>
-            <div className="hud-stat-sub">weapon types tracked</div>
-          </section>
-          {fleetByWeapon.weapons.length > 0 && (
-            <section className="hud-panel col-4">
-              <h2>Ordnance by type // fleet</h2>
-              <table className="hud-table">
-                <thead>
-                  <tr>
-                    <th>Weapon</th>
-                    <th>Shots</th>
-                    <th>Value</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {fleetByWeapon.weapons.map((weapon) => (
-                    <tr key={weapon.weaponDcsType ?? "unknown"}>
-                      <td className="hud-mono">
-                        {weapon.weaponDisplayName ??
-                          weapon.weaponDcsType ??
-                          "unknown"}
-                      </td>
-                      <td className="hud-mono">{weapon.expenditureCount}</td>
-                      <td className="hud-mono">
-                        {weapon.unpricedCount === 0
-                          ? formatUsd(weapon.knownSubtotalCents)
-                          : `${formatUsd(weapon.knownSubtotalCents)} + ${weapon.unpricedCount} unpriced`}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </section>
           )}
-          <section className="hud-panel col-8">
-            <h2>Runs</h2>
-            <div className="hud-pager" style={{ marginBottom: "0.6rem" }}>
-              <span>
-                Page {runsPage} · {pageRuns.length} of {runs.length} in scope
-              </span>
-              {runsPage > 1 && (
-                <Link href={runsHref(runsPage - 1)}>← Prev</Link>
-              )}
-              {hasNextRunsPage && (
-                <Link href={runsHref(runsPage + 1)}>Next →</Link>
-              )}
-            </div>
-            {runs.length === 0 ? (
-              <div className="hud-empty">NO RUNS MATCH THESE FILTERS</div>
-            ) : (
-              <table className="hud-table">
-                <thead>
-                  <tr>
-                    <th>Run</th>
-                    <th>Mission</th>
-                    <th>Status</th>
-                    <th>Events</th>
-                    <th>Export</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {pageRuns.map(({ run, display }) => (
-                    <tr key={`${run.producerId}:${run.runKey}`}>
-                      <td className="hud-mono">
-                        <Link href={`/runs/${encodeURIComponent(run.runKey)}`}>
-                          {run.runKey}
-                        </Link>
-                      </td>
-                      <td>{run.missionName ?? "unknown"}</td>
-                      <td>
-                        <span className={`status-${display}`}>
-                          {display}
-                          {display === "stale" ? " ◌" : ""}
+
+          {groups.length === 0 ? (
+            <section className="hud-panel col-12">
+              <div className="hud-empty">NO RUNS IN THIS SCOPE</div>
+            </section>
+          ) : (
+            groups.map(({ entry, runs: groupRuns, latestUpdatedAt }) => {
+              const maps = [
+                ...new Set(
+                  groupRuns
+                    .map((run) => run.mapName)
+                    .filter((map): map is string => map !== null),
+                ),
+              ];
+              const latestRun = groupRuns.reduce((a, b) =>
+                new Date(a.updatedAt).getTime() >=
+                new Date(b.updatedAt).getTime()
+                  ? a
+                  : b,
+              );
+              return (
+                <section key={entry.key} className="hud-panel col-6">
+                  <div className="mission-card">
+                    <h3>
+                      <Link href={`/missions/${encodeURIComponent(entry.key)}`}>
+                        {entry.title}
+                      </Link>
+                    </h3>
+                    <p>{entry.description}</p>
+                    <div className="mission-meta">
+                      <span>
+                        <strong>{groupRuns.length}</strong> run
+                        {groupRuns.length === 1 ? "" : "s"}
+                      </span>
+                      {maps.length > 0 && (
+                        <span>
+                          maps: <strong>{maps.join(", ")}</strong>
                         </span>
-                      </td>
-                      <td className="hud-mono">
-                        {run.eventCount} ev · #{run.lastSequence}
-                      </td>
-                      <td className="hud-mono">
-                        <a
-                          href={`/api/telemetry/runs/${encodeURIComponent(run.runKey)}/events?format=csv`}
-                        >
-                          events
-                        </a>{" "}
-                        <a
-                          href={`/api/telemetry/runs/${encodeURIComponent(run.runKey)}/expenditures?format=csv`}
-                        >
-                          costs
-                        </a>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </section>
+                      )}
+                      {latestUpdatedAt !== null && (
+                        <span>
+                          latest:{" "}
+                          <strong>
+                            {new Date(latestUpdatedAt)
+                              .toISOString()
+                              .slice(0, 10)}
+                          </strong>
+                        </span>
+                      )}
+                    </div>
+                    <div className="mission-meta">
+                      <Link href={`/missions/${encodeURIComponent(entry.key)}`}>
+                        View runs →
+                      </Link>
+                      <Link
+                        href={`/runs/${encodeURIComponent(latestRun.runKey)}`}
+                      >
+                        Latest run →
+                      </Link>
+                    </div>
+                  </div>
+                </section>
+              );
+            })
+          )}
         </div>
       </main>
     );
   } catch {
     return (
       <main>
-        <h1 className="hud-title">Theater overview</h1>
+        <h1 className="hud-title">Missions</h1>
         <div className="hud-empty">TELEMETRY DATABASE UNAVAILABLE</div>
       </main>
     );
