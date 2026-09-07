@@ -1,5 +1,22 @@
 # Project status
 
+**Near-live planning update — 2026-09-07:** Owner approved incorporating the
+near-live architecture into the slice roadmap; this is documentation approval,
+not an implementation/deployment completion. New work: S16-p7/p8 (duplicate
+integrity, partial-write repair, authoritative lifecycle), S17-p5/p6/p7 (ACK
+reconciliation, bounded hook work/truthful stop, live revalidation), then
+S18.5-a–e (persistent collector, durable scheduling, Windows operations, browser
+polling, integrated acceptance). Slice 18 authentication stays deferred; Slice
+19 remains a separate study, not a near-live prerequisite. See
+[detailed plan](telemetry/slice-18-5-near-live-plan.md).
+
+**Evidence distinction:** `progress.md` now records a 2026-09-07 partial S17-p4
+stock-server pass: shipping hook/handshake/local spool and local collection of
+five lifecycle events. No client joined and no API delivery ran. This improves
+on offline-only evidence but is not complete stock mission/combat or near-live
+acceptance. Collector automation and browser refresh are still not implemented.
+Older snapshots below are historical and do not override this addendum.
+
 **Last updated:** 2026-09-05 (Slice 12 implemented offline; migration 0002
 applied to Neon and verified; all live/collector testing parked by owner
 decision). Read this first when coming back.

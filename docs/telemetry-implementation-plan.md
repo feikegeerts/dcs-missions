@@ -1,17 +1,23 @@
 # DCS Telemetry Implementation Plan
 
-**Status:** Implementation in progress. Slices 1–11 are complete for their
-approved scopes. The rejoin hardening has an observed live-run closure record,
-but the latest six-file hardening change set has only offline verification:
-85 Lua tests pass and live validation is parked. Slice 12 is approved to
-proceed after the offline hardening review; it still requires its own Gate E
-review at completion. See `docs/telemetry/rejoin-fix-evidence.md` §10.
+**Status (2026-09-07):** Implementation in progress. The owner approved
+incorporating the near-live architecture into this plan: new Slice 16
+correctness follow-ups, Slice 17 transport hardening, and scoped Slice 18.5
+automatic delivery/browser refresh. These additions are **planned, not
+implemented**. Slice 17 parts 1–3 have offline evidence; part 4 has a recorded
+partial stock-server live pass through local collection, not player/combat or
+API delivery acceptance. See `progress.md` for the dated evidence and
+[`slice-18-5-near-live-plan.md`](telemetry/slice-18-5-near-live-plan.md) for
+the new work breakdown, dependencies, and acceptance matrix.
 
 This plan turns the duel-dynamic mission into a telemetry producer and adds a
 public read-only dashboard backed by a protected ingestion API. Work is split
 into small vertical slices. Every slice has a narrow scope, automated tests,
 manual DCS validation, and a stop point. An agent must not continue into the
-next slice without the previous slice passing its gate.
+dependent slice without its prerequisite gates passing. Independent approved
+offline work need not wait for an unrelated owner-gated live test. Planning
+approval does not authorize deployment, credentials, live DCS operations,
+database writes, commit/push, or an unattended Loop.
 
 The domain vocabulary in [`CONTEXT.md`](../CONTEXT.md) is authoritative. If a
 future implementation request conflicts with that vocabulary, stop and resolve
@@ -82,6 +88,25 @@ the implementation agent to reinterpret:
 
 ## 2. Goals And Non-Goals
 
+### Approved near-live direction — 2026-09-07
+
+- Preserve stock mission queue → verified hook NDJSON → external SQLite
+  collector → protected ingest → retained events/projections → public reads.
+- Add one supervised, long-running collector on the DCS host; bounded local
+  collection must continue independently of HTTP waits and retry backoff.
+- Start with periodic collection and browser polling. Filesystem notifications
+  are optional hints, never a correctness dependency. No separate Neon listener,
+  SSE, WebSockets, managed realtime, or hook IPC is required initially.
+- Target roughly 2–5 seconds under healthy conditions, subject to measurement;
+  this is not a verified SLA. Outages cause delay, not inferred mission abortion.
+- No loss guarantee extends to events still in mission RAM at hard termination,
+  exhausted/corrupt storage, or power failure. Readback is not an fsync guarantee.
+- The collector credential remains service-private, outside DCS and browser
+  environments. Slice 18 user authentication remains deferred and independent.
+- The detailed slice plan defines corrections to ACK reconciliation, duplicate
+  content validation, and arrival-order supersession; do not assume the existing
+  implementation already satisfies them.
+
 ### Goals
 
 - Record enough event history to calculate ordnance expenditure, aircraft
@@ -122,11 +147,13 @@ Lua telemetry normalizer
   versioned event envelope
         |
         v
-Development file sink / future DCS bridge
+Stock queue → GameGUI peek/ack → verified local NDJSON
+  (development file sink remains a separate dev-only alternative)
         |
         v
 Local TypeScript collector
-  tail, validate, spool, retry, batch, deduplicate
+  supervised process: bounded tail/validate/SQLite spool
+  independent delivery scheduling, retry, batch, deduplicate
         |
         | HTTPS with collector credential
         v
@@ -139,7 +166,7 @@ Neon PostgreSQL via Drizzle
         |
         v
 Public dashboard
-  live standing, costs, ordnance, losses, timeline, history
+  periodic browser refresh: standing, costs, ordnance, losses, history
 ```
 
 ### Repository layout
@@ -535,6 +562,12 @@ not permission to refactor adjacent areas. Each agent stops after its own exit
 criteria and reports evidence.
 
 ### Model assignment policy
+
+The model labels below are historical planning labels, not agent configuration.
+For new near-live parts, the active orchestrator routing and the explicit
+Sol-required assignments in the detailed plan take precedence; in particular,
+migrations, protected APIs and framework lifecycle work are not ordinary-builder
+tasks merely because an older table labels them Luna.
 
 - **GPT-5.6 SOL High** owns work with unresolved domain semantics, ambiguous DCS
   behavior, lifecycle reconciliation, cross-system failure modes, security
@@ -1048,14 +1081,32 @@ failures require system-level reasoning.
   API outage is indistinguishable from a stopped mission at the web boundary.
 - Mark the previous run aborted when the same producer starts a replacement
   run, or when the validated bridge/collector confirms that no run remains
-  active after reconnecting.
+  active after reconnecting. Use authoritative source lifecycle evidence, never
+  API arrival order; an old unseen backlog run must not abort a newer run.
 
 **Tests:** Kill the collector, API, database connection, and DCS process
-independently. Verify no event loss, no double charging, no false completion,
-and correct eventual abort classification.
+independently. Verify no loss of durably retained events, no double charging,
+no false completion, and correct eventual abort classification. A hard-kill
+unspooled RAM/partial-write tail is an explicit capture limitation, not a
+recoverable network backlog.
 
 **Exit criteria:** A damaged projection is rebuildable and interrupted runs are
 classified without treating a temporary network outage as a mission abort.
+
+**Near-live follow-ups (planned; existing evidence is not revoked):**
+
+- **S16-p7 — Ingest identity and partial-failure repair (Sol):** distinguish
+  identical duplicates from conflicting content; project retained events;
+  recover run summaries and projections after failures between writes; test
+  commit-before-response-loss without duplicate costs/kills/losses/assists.
+- **S16-p8 — Authoritative lifecycle ordering (Sol):** replace first-ingest
+  supersession with trustworthy source/process-generation evidence; define
+  composite producer/run targeting and credential scope; allow late facts and
+  genuine `mission.ended` after an abort; keep unknown/stale distinct from death.
+
+Both require explicit compatibility/migration review where needed. These are
+prerequisites for safe continuous delivery, not user-login work from Slice 18.
+Exact boundaries and tests: [near-live plan](telemetry/slice-18-5-near-live-plan.md).
 
 ### Slice 17: Stock-sanitized shipping bridge
 
@@ -1066,10 +1117,32 @@ shipping path, where failures can silently disable mission telemetry.
 
 **Purpose:** Implement the bridge proven in Slice 3.
 
-**Scope:** Implement the selected server hook, DCS-gRPC integration, or other
-validated local path; remove mission-side `io`, `os`, and `lfs` requirements;
-update shipping packaging for telemetry modules; and test the self-contained
-`.miz` with stock sanitization.
+**Scope:** Use the selected GameGUI hook and nested
+`net.dostring_in("mission", ...)` → `a_do_script(...)` bridge, not a new
+DCS-gRPC/HTTP/IPC alternative. Preserve NUL-free, capped `DDBRIDGE1` frames,
+verified local append before acknowledgement, no mission-side `io`/`os`/`lfs`,
+and self-contained shipping packaging.
+
+**Evidence:** S17-p1 queue/protocol, p2 production hook, and p3 packaging are
+implemented offline. S17-p4 has a recorded 2026-09-07 partial live pass: stock
+shipping hook/handshake/spool and two local collection passes, five gapless
+lifecycle events. No player joined; no ingest API delivery occurred. See the
+dated `progress.md` addendum; the hook's STOP text is not proof of arbitrary
+multi-frame tail completeness.
+
+**Near-live follow-ups (planned; Sol-required):**
+
+- **S17-p5 — Ambiguous ACK reconciliation:** exercise ACK execution followed by
+  response loss; reconcile verified spool and mission ACK cursors, using existing
+  bridge status where possible; prevent stale-peek stalls and unsafe advancement.
+- **S17-p6 — Bounded hook work and truthful stop:** remove lifetime-growing
+  verification work while preserving byte verification; bound callback effort;
+  verify polling-clock behavior; distinguish verified empty, pending, and unknown
+  stop tails. Never add an unbounded final-drain loop.
+- **S17-p7 — Post-hardening live validation:** revalidate the exact hardened
+  shipping artifact/hook on stock DCS, including player/combat behavior, restart,
+  ambiguous-return recovery where injectable, multi-frame stop, and long-run
+  callback cost. Preserve S17-p4's partial evidence rather than relabeling it.
 
 **Constraint:** Do not redesign mission event semantics in this slice. If the
 Slice 3 assumptions no longer hold, stop and update the bridge decision first.
@@ -1090,19 +1163,45 @@ be designed before any mechanical implementation is delegated.
 private runs, participant views, and protected catalogue editing.
 
 **Constraint:** Do not allow this deferred slice to complicate version-one
-ingestion or dashboard work.
+ingestion or dashboard work. Slice 18 is not a dependency of Slice 18.5;
+collector credential isolation and protected lifecycle writes remain required
+without introducing public user accounts.
 
-### Slice 18.5: Automatic collector delivery (notes only, unscoped)
+### Slice 18.5: Near-live collector delivery and dashboard refresh
 
-**Status:** Notes only — not approved, not scoped, no implementation.
-See `docs/telemetry/slice-18-5-auto-push-notes.md` for the full analysis.
+**Status:** Architecture/slice plan approved for incorporation 2026-09-07;
+implementation not started. [Detailed plan](telemetry/slice-18-5-near-live-plan.md)
+supersedes the earlier notes-only proposal.
 
-**Why:** The owner asked whether a live mission-to-Neon connection is possible,
-or at least an automatic push when the server stops a mission, instead of the
-manual `collect` + `deliver` CLI step. The notes record the answer (no live push
-from mission Lua; standalone poller outside DCS is the recommended shape) and
-the five open host/URL/token/lag/backlog decisions. Do not implement from this
-pointer alone — this slice needs scoping first.
+**Purpose:** Start a mission and see source-derived facts update automatically,
+including eventual final state after temporary outages, without involving DCS in
+network delivery or replacing durable spooling.
+
+**Parts:**
+
+| Part | Bounded outcome | Dependencies |
+|---|---|---|
+| S18.5-a | Single-owner persistent collector, bounded reads and independent scheduling | Existing collector contract; ownership/lifecycle design reviewed by Sol |
+| S18.5-b | Fair durable delivery retries and lifecycle outbox | a + S16-p7/p8 |
+| S18.5-c | Windows supervision, secret isolation, logs/backlog/crash recovery | a/b; operator provisioning approval before installation |
+| S18.5-d | Browser polling, reconnect/focus refresh, preserved UI and honest freshness | Existing public reads; independent offline work |
+| S18.5-e | Offline failure matrix and authorized end-to-end latency/load gate | a–d + S17-p5/p6/p7; live/API approval |
+
+**Routing:** Sol owns concurrency, lifecycle, security, schema/API compatibility,
+and framework lifecycle behavior. Only isolated routine fixtures/prose/UI
+formatting may use the current ordinary-builder routing (exact free Spark while
+confirmed available, one Luna fallback); no model/config changes are authorized.
+
+**Constraints:** Approximately 1-second collection and 2-second visible-page
+refresh are starting settings. Deliver partial batches promptly; do not wait for
+100 events, file stability, or mission end. Keep sequence order within each run,
+fairness across runs, permanent failures visible, and collection alive during
+network outages. No automatic prune or remote realtime infrastructure initially.
+
+**Exit criteria:** The detailed acceptance matrix passes with recorded evidence;
+healthy latency is measured against an owner-confirmed target; final spooled
+state arrives automatically; network delay never alone aborts a mission. No
+claim of recovery for an unspooled hard-kill tail or of power-loss durability.
 
 ### Slice 19: Mission-agnostic telemetry architecture (Sol study)
 
@@ -1400,6 +1499,9 @@ Version one is ready when all of the following are true:
 - Public reads work without user authentication.
 - Writes require the collector credential.
 - The local collector recovers from network/API interruption.
+- After Slice 18.5 acceptance, collection/delivery and visible dashboard refresh
+  require no manual CLI passes; late final state converges automatically within
+  the documented storage and source-capture limits.
 - The dashboard works on desktop and mobile.
 - Existing duel-dynamic behavior remains intact.
 - Only the configured player aircraft, package-wave bandits, and their discrete
@@ -1407,7 +1509,12 @@ Version one is ready when all of the following are true:
 - Stock-sanitized shipping behavior and telemetry are validated through the
   bridge proven in Slice 3.
 
-## 14. First Authorized Implementation Task
+## 14. Historical First Authorized Implementation Task
+
+This section records the original Slice 1 authorization, not the next task on
+resume. The 2026-09-07 near-live follow-ups are defined in §9 and the detailed
+plan; incorporate them through their dependencies and Gate E rather than
+restarting Slice 1 or extending the old Loop goal.
 
 After this plan is approved, the first coding task should be Slice 1 only:
 
