@@ -28,6 +28,7 @@ const RETRY_AFTER_MIN_MS = 1000;
 const RETRY_AFTER_MAX_MS = 600_000;
 const CIRCUIT_BASE_MS = 60_000;
 const CIRCUIT_CAP_MS = 900_000;
+const APPROVED_PRODUCTION_ORIGIN = "https://dcs-missions.vercel.app";
 const ENVELOPE_PREFIX = '{"batch_schema_version":1,"events":[';
 const ENVELOPE_SUFFIX = "]}";
 
@@ -978,8 +979,9 @@ async function fetchWithTimeout(
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), options.timeoutMs);
   try {
-    return await options.fetchImpl(url, {
+    const response = await options.fetchImpl(url, {
       method: "POST",
+      redirect: "manual",
       headers: {
         "content-type": "application/json",
         authorization: `Bearer ${options.token}`,
@@ -987,6 +989,17 @@ async function fetchWithTimeout(
       body,
       signal: controller.signal,
     });
+    if (response.status >= 300 && response.status <= 399) {
+      throw new AuthenticatedRedirectError(
+        `authenticated redirect rejected (HTTP ${response.status})`,
+      );
+    }
+    // Native fetch always supplies response.url. Synthetic injected Responses
+    // use an empty URL, which means the test double reports no URL drift.
+    if (response.url !== "" && response.url !== url) {
+      throw new AuthenticatedRedirectError("authenticated response URL drift");
+    }
+    return response;
   } catch (error: unknown) {
     if (controller.signal.aborted) throw new RequestTimeoutError();
     throw error;
@@ -1055,6 +1068,7 @@ function resolveOptions(options: DeliveryOptions): ResolvedOptions {
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1) {
     throw new Error("timeoutMs must be a positive integer");
   }
+  validateDeliveryBaseUrl(options.baseUrl);
   return {
     spool: options.spool,
     baseUrl: options.baseUrl,
@@ -1219,6 +1233,44 @@ function ingestUrl(baseUrl: string): string {
   return `${baseUrl.replace(/\/+$/, "")}/api/telemetry/ingest`;
 }
 
+export function validateDeliveryBaseUrl(baseUrl: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(baseUrl);
+  } catch {
+    throw new Error("delivery URL must be an absolute approved origin");
+  }
+  if (
+    parsed.username !== "" ||
+    parsed.password !== "" ||
+    parsed.search !== "" ||
+    parsed.hash !== "" ||
+    (parsed.pathname !== "" && parsed.pathname !== "/")
+  ) {
+    throw new Error("delivery URL must contain only an approved origin");
+  }
+  if (baseUrl !== parsed.origin && baseUrl !== `${parsed.origin}/`) {
+    throw new Error("delivery URL must use the canonical approved origin");
+  }
+  const loopback =
+    parsed.hostname === "127.0.0.1" || parsed.hostname === "[::1]";
+  if (loopback) {
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      throw new Error("loopback delivery URL must use HTTP or HTTPS");
+    }
+    return;
+  }
+  if (
+    parsed.hostname === "dcs-missions.vercel.app" &&
+    parsed.protocol !== "https:"
+  ) {
+    throw new Error("production delivery URL must use HTTPS");
+  }
+  if (parsed.origin !== APPROVED_PRODUCTION_ORIGIN) {
+    throw new Error("delivery origin is not allowlisted");
+  }
+}
+
 function isRetryableStatus(status: number): boolean {
   return status === 429 || (status >= 500 && status <= 599);
 }
@@ -1257,3 +1309,5 @@ function errorMessage(error: unknown): string {
 }
 
 class RequestTimeoutError extends Error {}
+
+class AuthenticatedRedirectError extends Error {}

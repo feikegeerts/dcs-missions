@@ -15,7 +15,7 @@ import {
   type TestWorkspace,
 } from "./helpers.js";
 
-const baseUrl = "https://telemetry.invalid";
+const baseUrl = "http://127.0.0.1:3000";
 const token = "durable-secret";
 
 describe("fair durable delivery and lifecycle outbox", () => {

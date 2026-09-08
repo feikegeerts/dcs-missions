@@ -39,6 +39,10 @@ interface CountRow {
   count: number;
 }
 
+interface QuarantineReasonRow extends CountRow {
+  error_code: string;
+}
+
 interface DeliveryHealthRow {
   producer_id: string;
   run_key: string;
@@ -98,6 +102,14 @@ interface SourceTailRow {
   durable_offset: number;
   tail_state: string;
   observed_at: string;
+}
+
+interface BacklogRow {
+  producer_id: string;
+  run_key: string;
+  event_count: number;
+  byte_count: number;
+  oldest_inserted_at: string;
 }
 
 export interface DeliveryHealthRecord {
@@ -177,6 +189,14 @@ export interface SourceTailRecord {
   durableOffset: number;
   tailState: "clear" | "partial";
   observedAt: string;
+}
+
+export interface RunBacklogSummary {
+  producerId: string;
+  runKey: string;
+  eventCount: number;
+  byteCount: number;
+  oldestInsertedAt: string;
 }
 
 export class DurableSpool {
@@ -535,6 +555,16 @@ export class DurableSpool {
     return this.count("quarantine");
   }
 
+  listQuarantineReasons(): Array<{ reason: string; count: number }> {
+    const rows = this.database
+      .prepare(
+        `SELECT error_code, COUNT(*) AS count
+         FROM quarantine GROUP BY error_code ORDER BY error_code`,
+      )
+      .all() as QuarantineReasonRow[];
+    return rows.map((row) => ({ reason: row.error_code, count: row.count }));
+  }
+
   listRuns(): RunSpoolSummary[] {
     const rows = this.database
       .prepare(
@@ -559,6 +589,34 @@ export class DurableSpool {
       next_deliverable_sequence:
         this.nextDeliverable(row.producer_id, row.run_key)?.event
           .event_sequence ?? null,
+    }));
+  }
+
+  /** Returns retained events beyond each durable acknowledgement cursor. */
+  listBacklogSummaries(): RunBacklogSummary[] {
+    const rows = this.database
+      .prepare(
+        `SELECT
+          events.producer_id,
+          events.run_key,
+          COUNT(*) AS event_count,
+          COALESCE(SUM(LENGTH(CAST(events.event_json AS BLOB))), 0) AS byte_count,
+          MIN(events.inserted_at) AS oldest_inserted_at
+        FROM spool_events AS events
+        LEFT JOIN run_delivery_state AS state
+          ON state.producer_id = events.producer_id
+          AND state.run_key = events.run_key
+        WHERE events.event_sequence > COALESCE(state.acknowledged_through, 0)
+        GROUP BY events.producer_id, events.run_key
+        ORDER BY events.producer_id, events.run_key`,
+      )
+      .all() as BacklogRow[];
+    return rows.map((row) => ({
+      producerId: row.producer_id,
+      runKey: row.run_key,
+      eventCount: row.event_count,
+      byteCount: row.byte_count,
+      oldestInsertedAt: sqliteTimestamp(row.oldest_inserted_at),
     }));
   }
 
@@ -1172,4 +1230,8 @@ function mapLifecycle(row: LifecycleRow): LifecycleObservationRecord {
     lastError: row.last_error,
     sentAt: row.sent_at,
   };
+}
+
+function sqliteTimestamp(value: string): string {
+  return value.includes("T") ? value : `${value.replace(" ", "T")}Z`;
 }

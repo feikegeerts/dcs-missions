@@ -34,7 +34,7 @@ describe("persistent service scheduler", () => {
       schema: schemaPath,
       intervalMs: 100,
       maxCycleBytes: 4096,
-      url: "https://example.invalid",
+      url: "http://127.0.0.1:3000",
       token,
     };
   }
@@ -133,6 +133,86 @@ describe("persistent service scheduler", () => {
     expect(fetchImpl.mock.calls.length).toBeGreaterThanOrEqual(2);
     expect(logs.join("\n")).not.toContain(token);
     expect(logs.join("\n")).toContain("[REDACTED]");
+    expect(
+      logs.some((line) => JSON.parse(line).kind === "network-failure"),
+    ).toBe(true);
+  });
+
+  it("logs startup recovery after reconciling retained state", async () => {
+    vi.useFakeTimers();
+    const configuration = options();
+    const retained = fixture("01-mission-started.json");
+    writeRun(workspace!.input, "retained.ndjson", [retained]);
+    const first = await ServiceController.create(configuration, {
+      print: () => {},
+    });
+    first.start();
+    await first.stop();
+    const logs: string[] = [];
+    controller = await ServiceController.create(configuration, {
+      print: (line) => logs.push(line),
+    });
+
+    controller.start();
+
+    const recovery = logs
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+      .find((line) => line.kind === "recovery");
+    expect(recovery).toMatchObject({
+      lock_acquired: true,
+      run_count: 1,
+      backlog: { runs: 1, events: 1 },
+      circuit: { open: false },
+      lifecycle_pending: 0,
+    });
+  });
+
+  it("classifies disk exhaustion and capture failures with redaction", async () => {
+    vi.useFakeTimers();
+    const token = "dummy-test-token";
+    const configuration = options(token);
+    const logs: string[] = [];
+    controller = await ServiceController.create(configuration, {
+      print: (line) => logs.push(line),
+    });
+    const internals = controller as unknown as {
+      collector: { collect(): never };
+    };
+    const diskError = Object.assign(new Error(`database full ${token}`), {
+      code: "SQLITE_FULL",
+    });
+    internals.collector.collect = () => {
+      throw diskError;
+    };
+    controller.start();
+    expect(logs.map((line) => JSON.parse(line))).toContainEqual(
+      expect.objectContaining({
+        kind: "disk-exhaustion",
+        component: "collection",
+        error: "database full [REDACTED]",
+      }),
+    );
+    expect(logs.join("\n")).not.toContain(token);
+
+    await controller.stop();
+    controller = undefined;
+    const captureLogs: string[] = [];
+    controller = await ServiceController.create(configuration, {
+      print: (line) => captureLogs.push(line),
+    });
+    const captureInternals = controller as unknown as {
+      collector: { collect(): never };
+    };
+    captureInternals.collector.collect = () => {
+      throw new Error(`source missing ${token}`);
+    };
+    controller.start();
+    expect(captureLogs.map((line) => JSON.parse(line))).toContainEqual(
+      expect.objectContaining({
+        kind: "capture-failure",
+        error: "source missing [REDACTED]",
+      }),
+    );
   });
 
   it("continues collection while an authorization circuit is open", async () => {

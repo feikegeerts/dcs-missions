@@ -1,0 +1,22 @@
+<service>
+  <id>DcsTelemetryCollector</id>
+  <name>DCS Telemetry Collector</name>
+  <description>Durably collects and delivers DCS mission telemetry.</description>
+  <executable>{{NODE_EXE}}</executable>
+  <arguments>--env-file=&quot;{{SERVICE_SETTINGS_FILE}}&quot; &quot;{{COLLECTOR_SERVICE_JS}}&quot; --input &quot;{{INPUT_DIR}}&quot; --state &quot;{{STATE_DIR}}&quot; --schema &quot;{{SCHEMA_FILE}}&quot; --url &quot;https://dcs-missions.vercel.app&quot; --interval-ms 5000 --max-cycle-bytes 2097152 --lock-port {{LOCK_PORT}}</arguments>
+  <workingdirectory>{{COLLECTOR_DIR}}</workingdirectory>
+  <startmode>Automatic</startmode>
+  <delayedAutoStart>true</delayedAutoStart>
+  <stoptimeout>30 sec</stoptimeout>
+  <onfailure action="restart" delay="10 sec" />
+  <resetfailure>1 hour</resetfailure>
+  <serviceaccount>
+    <username>{{SERVICE_IDENTITY}}</username>
+    <allowservicelogon>true</allowservicelogon>
+  </serviceaccount>
+  <logpath>{{LOG_DIR}}</logpath>
+  <log mode="roll-by-size">
+    <sizeThreshold>10240</sizeThreshold>
+    <keepFiles>10</keepFiles>
+  </log>
+</service>

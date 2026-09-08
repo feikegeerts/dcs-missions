@@ -3,6 +3,7 @@ import type { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 
 import {
+  childProcessEnv,
   classifyProcessRecord,
   decideAbortSignal,
   defaultProcessObservationProvider,
@@ -110,6 +111,55 @@ describe("process-generation observation", () => {
     expect(defaultProcessObservationProvider(binding, "linux")).toEqual({
       state: "unknown",
     });
+  });
+
+  it("strips the ingest token from the CIM subprocess environment", () => {
+    const original = process.env.TELEMETRY_INGEST_TOKEN;
+    process.env.TELEMETRY_INGEST_TOKEN = "dummy-test-token";
+    let captured: { env?: NodeJS.ProcessEnv } | undefined;
+    const capturingExecute = ((
+      _file: string,
+      _args: string[],
+      options: { env?: NodeJS.ProcessEnv },
+    ) => {
+      captured = options;
+      return JSON.stringify({
+        pid: 4242,
+        creationTime: "2026-09-07T10:00:00.0000000Z",
+        image: "DCS_server.exe",
+        commandLine: String.raw`D:\DCS\bin\DCS_server.exe -w DCS.dcs_serverrelease`,
+      });
+    }) as typeof execFileSync;
+    try {
+      expect(
+        defaultProcessObservationProvider(binding, "win32", capturingExecute),
+      ).toMatchObject({ state: "known-running" });
+    } finally {
+      if (original === undefined) {
+        delete process.env.TELEMETRY_INGEST_TOKEN;
+      } else {
+        process.env.TELEMETRY_INGEST_TOKEN = original;
+      }
+    }
+    expect(captured?.env?.TELEMETRY_INGEST_TOKEN).toBeUndefined();
+    expect(captured?.env?.PATH).toBeDefined();
+  });
+
+  it("childProcessEnv strips secret-named variables without mutating the source", () => {
+    const source: NodeJS.ProcessEnv = {
+      PATH: "C:\\bin",
+      TELEMETRY_INGEST_TOKEN: "dummy-test-token",
+      SOME_API_KEY: "dummy",
+      DATABASE_PASSWORD: "dummy",
+      SYSTEMROOT: "C:\\Windows",
+    };
+    const stripped = childProcessEnv(source);
+    expect(stripped.TELEMETRY_INGEST_TOKEN).toBeUndefined();
+    expect(stripped.SOME_API_KEY).toBeUndefined();
+    expect(stripped.DATABASE_PASSWORD).toBeUndefined();
+    expect(stripped.PATH).toBe("C:\\bin");
+    expect(stripped.SYSTEMROOT).toBe("C:\\Windows");
+    expect(source.TELEMETRY_INGEST_TOKEN).toBe("dummy-test-token");
   });
 });
 

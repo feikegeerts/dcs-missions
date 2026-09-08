@@ -429,4 +429,44 @@ describe("durable spool ordering", () => {
     });
     expect(database.eventCount()).toBe(1);
   });
+
+  it("never prunes lifecycle-pending, blocked, or active fully acknowledged runs", () => {
+    const database = openSpool();
+    for (const runKey of ["run-pending", "run-blocked"]) {
+      const events = [
+        eventAt(1, runKey),
+        eventAt(2, runKey, undefined, "mission.ended"),
+      ];
+      events.forEach((event) => database.insertEvent(event));
+      events.forEach((event) => database.acknowledge(event.event_id));
+    }
+    const active = eventAt(1, "run-active");
+    database.insertEvent(active);
+    database.acknowledge(active.event_id);
+    database.insertLifecycleObservation({
+      observationKey: "pending-observation",
+      producerId: "test-producer",
+      runKey: "run-pending",
+      hookGeneration: 1,
+      processBinding: {},
+      reason: "simulation-stop-observed",
+      evidenceIdentity: "evidence",
+      tailState: "clear",
+      observedAt: "2026-09-08T00:00:00.000Z",
+    });
+    database.blockRun({
+      producerId: "test-producer",
+      runKey: "run-blocked",
+      sequence: 2,
+      eventId: "test-producer:run-blocked:2",
+      reason: "operator review required",
+      classification: "test-block",
+    });
+
+    expect(database.pruneDeliveredRuns(false)).toEqual({
+      prunedRuns: [],
+      totalEventsPruned: 0,
+    });
+    expect(database.listRuns()).toHaveLength(3);
+  });
 });

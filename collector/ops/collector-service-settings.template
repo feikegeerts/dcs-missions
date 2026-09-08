@@ -1,0 +1,4 @@
+# Copy to an ACL-restricted, service-private path outside the repository.
+# Populate only after access is limited to Administrators, SYSTEM, and the
+# dedicated collector service identity.
+TELEMETRY_INGEST_TOKEN={{TELEMETRY_INGEST_TOKEN}}

@@ -195,6 +195,31 @@ export function classifyProcessRecord(
   return { state: "known-running", ...scope };
 }
 
+const SECRET_ENV_SUFFIX =
+  /(_|^)(TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY|CREDENTIALS?)$/i;
+
+/**
+ * Returns a copy of `source` safe to pass to helper subprocesses:
+ * `TELEMETRY_INGEST_TOKEN` and any obviously secret-named variables are
+ * removed. The lifecycle CIM query needs no secrets, and token-bearing
+ * environments must not propagate to subprocesses.
+ */
+export function childProcessEnv(
+  source: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  const stripped: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(source)) {
+    if (value === undefined || key === "TELEMETRY_INGEST_TOKEN") {
+      continue;
+    }
+    if (SECRET_ENV_SUFFIX.test(key)) {
+      continue;
+    }
+    stripped[key] = value;
+  }
+  return stripped;
+}
+
 export function defaultProcessObservationProvider(
   binding?: ProcessBinding,
   platform = process.platform,
@@ -218,7 +243,12 @@ export function defaultProcessObservationProvider(
     const output = execute(
       "powershell.exe",
       ["-NoProfile", "-NonInteractive", "-Command", script],
-      { encoding: "utf8", timeout: 5000, windowsHide: true },
+      {
+        encoding: "utf8",
+        timeout: 5000,
+        windowsHide: true,
+        env: childProcessEnv(),
+      },
     );
     const parsed = JSON.parse(output.trim()) as unknown;
     if (parsed === null) {

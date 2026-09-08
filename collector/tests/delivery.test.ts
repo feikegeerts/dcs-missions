@@ -30,7 +30,7 @@ interface FetchRecorder {
   fetchImpl: typeof fetch;
 }
 
-const baseUrl = "https://telemetry.invalid";
+const baseUrl = "http://127.0.0.1:3000";
 const testToken = "delivery-test-token-never-print";
 
 describe("spool delivery", () => {
@@ -152,6 +152,105 @@ describe("spool delivery", () => {
       totals: { batches_posted: 0, events_posted: 0, runs_complete: 1 },
       runs: [{ state: "complete", acknowledged_through: 16, batches: [] }],
     });
+  });
+
+  it("allows the documented HTTP loopback test double and sets redirect manual", async () => {
+    const events = makeRun(2, "run-loopback");
+    const database = setup([events]);
+    const recorder = recordFetch((call) => acceptedResponse(bodyFrom(call)));
+
+    await deliver(deliveryOptions(database, recorder));
+
+    expect(String(recorder.calls[0]?.input)).toBe(
+      "http://127.0.0.1:3000/api/telemetry/ingest",
+    );
+    expect(recorder.calls[0]?.init?.redirect).toBe("manual");
+
+    await expect(
+      deliver(
+        deliveryOptions(database, recorder, {
+          baseUrl: "http://[::1]:3000",
+          dryRun: true,
+        }),
+      ),
+    ).resolves.toMatchObject({ dry_run: true });
+    await expect(
+      deliver(
+        deliveryOptions(database, recorder, {
+          baseUrl: "https://dcs-missions.vercel.app",
+          dryRun: true,
+        }),
+      ),
+    ).resolves.toMatchObject({ dry_run: true });
+  });
+
+  it("rejects non-HTTPS production and non-allowlisted origins before fetch", async () => {
+    const database = setup([]);
+    const recorder = recordFetch(() => {
+      throw new Error("must not fetch");
+    });
+
+    await expect(
+      deliver(
+        deliveryOptions(database, recorder, {
+          baseUrl: "http://dcs-missions.vercel.app",
+        }),
+      ),
+    ).rejects.toThrow("production delivery URL must use HTTPS");
+    await expect(
+      deliver(
+        deliveryOptions(database, recorder, {
+          baseUrl: "https://not-approved.invalid",
+        }),
+      ),
+    ).rejects.toThrow("delivery origin is not allowlisted");
+    expect(recorder.calls).toEqual([]);
+  });
+
+  it.each([undefined, "https://not-approved.invalid/capture"])(
+    "rejects an authenticated 302 without following it (Location %s)",
+    async (location) => {
+      const events = makeRun(2, "run-redirect");
+      const database = setup([events]);
+      const recorder = recordFetch(
+        () =>
+          new Response("redirect", {
+            status: 302,
+            headers: location === undefined ? {} : { location },
+          }),
+      );
+
+      const summary = await deliver(deliveryOptions(database, recorder));
+
+      expect(recorder.calls).toHaveLength(1);
+      expect(recorder.calls[0]?.init?.redirect).toBe("manual");
+      expect(summary.runs[0]).toMatchObject({
+        state: "error",
+        error: "network error: authenticated redirect rejected (HTTP 302)",
+        next_retry_at: expect.any(String),
+      });
+      expect(JSON.stringify(summary)).not.toContain("not-approved.invalid");
+    },
+  );
+
+  it("rejects a final response URL that drifts from the pinned request URL", async () => {
+    const events = makeRun(2, "run-url-drift");
+    const database = setup([events]);
+    const recorder = recordFetch((call) => {
+      const response = acceptedResponse(bodyFrom(call));
+      Object.defineProperty(response, "url", {
+        value: "https://not-approved.invalid/api/telemetry/ingest",
+      });
+      return response;
+    });
+
+    const summary = await deliver(deliveryOptions(database, recorder));
+
+    expect(summary.runs[0]).toMatchObject({
+      state: "error",
+      error: "network error: authenticated response URL drift",
+    });
+    expect(JSON.stringify(summary)).not.toContain("not-approved.invalid");
   });
 
   it("acknowledges a fresh spool when every server result is duplicate", async () => {
@@ -529,6 +628,39 @@ describe("spool delivery", () => {
         retryRequired: false,
       }),
     ]);
+  });
+
+  it("rejects a lifecycle redirect without following it", async () => {
+    const events = makeRun(2, "run-abort-redirect", undefined, false);
+    const database = setup([events]);
+    const recorder = recordFetch((call) =>
+      isAbortCall(call)
+        ? new Response("redirect", {
+            status: 307,
+            headers: { location: "https://not-approved.invalid/capture" },
+          })
+        : acceptedResponse(bodyFrom(call)),
+    );
+
+    const summary = await deliver(
+      deliveryOptions(database, recorder, {
+        dcsLogTextProvider: () =>
+          "TELEMETRY_BRIDGE_HOOK handshake-ok generation=9 run=run-abort-redirect producer=delivery-producer\nTELEMETRY_BRIDGE_HOOK STOP generation=9 spooled=2 spool=C:/telemetry/run-abort-redirect.ndjson failures=0 stuck=nil unspooled=0",
+      }),
+    );
+
+    expect(recorder.calls).toHaveLength(2);
+    expect(
+      recorder.calls.every((call) => call.init?.redirect === "manual"),
+    ).toBe(true);
+    expect(summary.abort_signals).toEqual([
+      expect.objectContaining({
+        posted: false,
+        retryRequired: true,
+        error: "network error: authenticated redirect rejected (HTTP 307)",
+      }),
+    ]);
+    expect(JSON.stringify(summary)).not.toContain("not-approved.invalid");
   });
 
   it("records a temporary lifecycle API outage for retry without a state flip", async () => {
