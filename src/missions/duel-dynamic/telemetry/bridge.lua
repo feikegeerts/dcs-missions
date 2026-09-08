@@ -177,6 +177,9 @@ function M.start(config)
     if not queue then
       return nil, self.start_error or "bridge start faulted"
     end
+    if self.queue_overflow_error then
+      return nil, "bridge queue overflow"
+    end
     if not positive_integer(from_sequence) then
       return nil, "from_sequence must be a positive integer"
     end
@@ -207,6 +210,12 @@ function M.start(config)
     end
     if not queue then
       return nil, self.start_error or "bridge start faulted"
+    end
+    -- ACK is idempotent at the transport boundary. A hook may retry after the
+    -- mission applied an ACK but its response was lost. Only an already-covered
+    -- positive sequence is accepted here; the queue still rejects stale ACKs.
+    if positive_integer(sequence) and sequence <= queue:acked_count() then
+      return true, "already-applied"
     end
     return queue:ack(sequence)
   end
@@ -257,6 +266,9 @@ function M.start(config)
       end
       local appended, append_error = queue:append(line)
       if not appended then
+        if type(append_error) == "string" and string.find(append_error, "bridge queue overflow:", 1, true) == 1 then
+          runtime.queue_overflow_error = append_error
+        end
         log(config.env, "error", "bridge queue write failed: " .. tostring(append_error))
         return nil, append_error
       end

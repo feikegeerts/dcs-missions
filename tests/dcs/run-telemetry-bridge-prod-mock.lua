@@ -41,8 +41,16 @@ local function run_mapping(mapping)
     local fs = {
       files = {},
       directories = { ["mock-root"] = true, ["mock-root/"] = true },
+      io_stats = { read_operations = 0, read_bytes = 0, max_single_read = 0 },
+      fail_append_open = false,
+      fail_size = false,
       fail_write = false,
+      short_write = false,
     }
+
+    function fs:reset_io_stats()
+      self.io_stats = { read_operations = 0, read_bytes = 0, max_single_read = 0 }
+    end
 
     function fs:mkdir(path)
       self.directories[normalized(path)] = true
@@ -60,6 +68,12 @@ local function run_mapping(mapping)
       if field == "mode" then
         return mode
       end
+      if field == "size" then
+        if self.fail_size and self.files[path] ~= nil then
+          return nil
+        end
+        return self.files[path] ~= nil and #self.files[path] or nil
+      end
       return mode and { mode = mode } or nil
     end
 
@@ -69,20 +83,39 @@ local function run_mapping(mapping)
         if self.files[path] == nil then
           return nil, "not found"
         end
-        local handle = { content = self.files[path], closed = false }
+        local handle = { content = self.files[path], closed = false, position = 0, fs = self }
         function handle:read(format)
           assert(not self.closed, "read on closed file")
-          assert(format == "*a", "unsupported read")
-          return self.content
+          local bytes
+          if format == "*a" then
+            bytes = string.sub(self.content, self.position + 1)
+          else
+            assert(type(format) == "number" and format >= 0, "unsupported read")
+            bytes = string.sub(self.content, self.position + 1, self.position + format)
+          end
+          self.position = self.position + #bytes
+          self.fs.io_stats.read_operations = self.fs.io_stats.read_operations + 1
+          self.fs.io_stats.read_bytes = self.fs.io_stats.read_bytes + #bytes
+          self.fs.io_stats.max_single_read = math.max(self.fs.io_stats.max_single_read, #bytes)
+          return bytes
+        end
+        function handle:seek(whence, offset)
+          assert(not self.closed, "seek on closed file")
+          assert(whence == "set", "unsupported seek")
+          self.position = offset
+          return self.position
         end
         function handle:close()
           self.closed = true
-          return nil
+          return true
         end
         return handle
       end
       if mode ~= "wb" and mode ~= "ab" then
         return nil, "unsupported mode"
+      end
+      if mode == "ab" and self.fail_append_open then
+        return nil, "injected open failure"
       end
       local handle = {
         fs = self,
@@ -95,19 +128,25 @@ local function run_mapping(mapping)
         if self.fs.fail_write then
           error("injected write failure")
         end
+        if self.fs.short_write then
+          local partial = string.sub(bytes, 1, math.max(1, math.floor(#bytes / 2)))
+          self.content = self.content .. partial
+          self.fs.files[self.path] = self.content
+          return nil, "injected short write"
+        end
         self.content = self.content .. bytes
         self.fs.files[self.path] = self.content
-        return nil
+        return self
       end
       function handle:flush()
         assert(not self.closed, "flush on closed file")
         self.fs.files[self.path] = self.content
-        return nil
+        return true
       end
       function handle:close()
         self.fs.files[self.path] = self.content
         self.closed = true
-        return nil
+        return true
       end
       return handle
     end
@@ -163,7 +202,7 @@ local function run_mapping(mapping)
     return mission, modules
   end
 
-  local function start_real_bridge(mission, modules)
+  local function start_real_bridge(mission, modules, options)
     local watchers = {}
     local schedules = {}
     local fake_base = {}
@@ -230,6 +269,7 @@ local function run_mapping(mapping)
       mission_name = "duel-dynamic",
       mission_version = "1",
       source_version = "duel-dynamic-telemetry-v1",
+      queue_max_lines = options and options.queue_max_lines or nil,
     })
     check(runtime ~= nil, bridge_error)
     check(mission.io == nil and mission.os == nil and mission.lfs == nil, "mission sandbox leaked hook libraries")
@@ -254,7 +294,9 @@ local function run_mapping(mapping)
       mission_calls = 0,
       boundary_pairs = {},
       cross_state_reads = 0,
+      status_calls = 0,
     }
+    local transport_fault = { ack_response = nil, status_response = nil }
     local mission, modules = new_mission_environment()
     local trigger = {}
     trigger._G = trigger
@@ -294,6 +336,27 @@ local function run_mapping(mapping)
       assert(chunk, load_error)
       setfenv(chunk, trigger)
       local before = chunk()
+      if string.find(source, "bridge:status()", 1, true) then
+        topology.status_calls = topology.status_calls + 1
+        if transport_fault.status_response then
+          local fault = transport_fault.status_response
+          transport_fault.status_response = nil
+          if fault == "lost" then
+            before = nil
+          elseif fault == "mangled" then
+            before = "garbage"
+          end
+        end
+      end
+      if transport_fault.ack_response and string.find(source, "bridge:ack(", 1, true) then
+        local fault = transport_fault.ack_response
+        transport_fault.ack_response = nil
+        if fault == "lost" then
+          before = nil
+        elseif fault == "mangled" then
+          before = "garbage"
+        end
+      end
       local result = truncate_nul(before)
       if type(before) == "string" then
         topology.boundary_pairs[#topology.boundary_pairs + 1] = { before = before, after = result }
@@ -358,9 +421,22 @@ local function run_mapping(mapping)
       min_frames = 1,
       poll_interval_s = 0.25,
       max_backoff_s = 4,
-      test_spool_verify_mutator = function(path)
-        if fs.corrupt_verify and string.find(path, ".ndjson", 1, true) then
-          fs.files[normalized(path)] = "corrupt"
+      stop_max_cycles = options.stop_max_cycles or 32,
+      test_spool_verify_mutator = function(path, pre_size, appended_size)
+        path = normalized(path)
+        if fs.verify_fault and string.find(path, ".ndjson", 1, true) then
+          local content = fs.files[path]
+          if fs.verify_fault == "partial-append" then
+            fs.files[path] = string.sub(content, 1, pre_size + math.max(1, math.floor(appended_size / 2)))
+          elseif fs.verify_fault == "prior-byte" and pre_size > 0 then
+            local at = pre_size
+            local replacement = string.sub(content, at, at) == "x" and "y" or "x"
+            fs.files[path] = string.sub(content, 1, at - 1) .. replacement .. string.sub(content, at + 1)
+          elseif fs.verify_fault == "tail-byte" then
+            fs.files[path] = string.sub(content, 1, -2) .. "x"
+          elseif fs.verify_fault == "size-mismatch" then
+            fs.files[path] = content .. "x"
+          end
         end
       end,
       test_export = function(value)
@@ -406,6 +482,7 @@ local function run_mapping(mapping)
       hook_env = hook_env,
       fake_net = fake_net,
       trigger = trigger,
+      transport_fault = transport_fault,
     }
 
     function system:contains(fragment)
@@ -440,7 +517,7 @@ local function run_mapping(mapping)
       self.mission.duel_telemetry_runtime = nil
       self.runtime = nil
       if with_bridge ~= false then
-        self.runtime = start_real_bridge(self.mission, self.modules)
+        self.runtime = start_real_bridge(self.mission, self.modules, options)
       end
       self.callbacks.onMissionLoadBegin()
       self:advance(0.25)
@@ -556,6 +633,15 @@ local function run_mapping(mapping)
     equal(system.topology.round_trips - before, 1)
   end)
 
+  succeeds("one ambiguous-ack cycle stays within three mission evaluations", function()
+    local system = new_system()
+    system:new_generation(true)
+    system.transport_fault.ack_response = "lost"
+    local before = system.topology.round_trips
+    system:advance(0.25)
+    equal(system.topology.round_trips - before, system.export.budgets.max_mission_evals_per_cycle)
+  end)
+
   succeeds("frame-too-large halves the requested range and fully drains", function()
     local system = new_system({ max_frames = 2 })
     system:new_generation(true)
@@ -567,7 +653,7 @@ local function run_mapping(mapping)
       calls[#calls + 1] = { from = from, maximum = maximum }
       return original_peek(runtime, from, maximum)
     end
-    for _ = 1, 4 do
+    for _ = 1, 6 do
       system:advance(0.25)
     end
     equal(system.runtime:status().pending_count, 0)
@@ -591,7 +677,10 @@ local function run_mapping(mapping)
     equal(system.runtime:status().last_acked_sequence, 0)
     equal(system.runtime:status().pending_count, 2)
     check(system.export.state.stuck)
-    check(system:contains("spool-verify-failed"))
+    check(system:contains("spool-write-failed"))
+    local stop_ok = pcall(system.callbacks.onSimulationStop)
+    check(stop_ok, "disk-fault stop callback escaped")
+    check(system:contains("stuck=true unspooled=unknown"))
     system:advance(1, 10)
     equal(system.topology.round_trips, before_calls + 1)
   end)
@@ -600,11 +689,94 @@ local function run_mapping(mapping)
     local system = new_system()
     system:new_generation(true)
     system:add_line(2, { marker = "corrupt" })
-    system.fs.corrupt_verify = true
+    system.fs.verify_fault = "tail-byte"
     system:advance(0.25)
     equal(system.runtime:status().last_acked_sequence, 0)
     check(system.export.state.stuck)
     check(system:contains("spool-verify-failed"))
+  end)
+
+  local function verify_disk_fault(name, configure, expected_category, seed_first)
+    succeeds(name, function()
+      local system = new_system()
+      system:new_generation(true)
+      if seed_first then
+        system:advance(0.25)
+        equal(system.runtime:status().last_acked_sequence, 1)
+        system:add_line(2, { marker = name })
+      end
+      configure(system.fs)
+      system:advance(0.25)
+      equal(system.runtime:status().last_acked_sequence, seed_first and 1 or 0)
+      check(system.export.state.stuck)
+      check(system:contains(expected_category))
+      local stop_ok = pcall(system.callbacks.onSimulationStop)
+      check(stop_ok, "fault callback escaped")
+      check(system:contains("stuck=true unspooled=unknown"))
+    end)
+  end
+
+  verify_disk_fault("append open failure is explicit", function(fs)
+    fs.fail_append_open = true
+  end, "spool-open-failed")
+
+  verify_disk_fault("short write disk-full analog is explicit", function(fs)
+    fs.short_write = true
+  end, "spool-write-failed")
+
+  verify_disk_fault("partial append mutation is rejected", function(fs)
+    fs.verify_fault = "partial-append"
+  end, "spool-size-failed")
+
+  verify_disk_fault("post-append size mismatch is rejected", function(fs)
+    fs.verify_fault = "size-mismatch"
+  end, "spool-size-failed")
+
+  verify_disk_fault("bounded prefix guard detects prior-byte corruption", function(fs)
+    fs.verify_fault = "prior-byte"
+  end, "spool-verify-failed", true)
+
+  succeeds("large spool uses bounded reads and constant-size hook state", function()
+    local system = new_system({ max_frames = 32 })
+    system:new_generation(true)
+    for sequence = 2, 2001 do
+      system:add_line(sequence, { marker = "large", ordinal = sequence })
+    end
+    system.fs:reset_io_stats()
+    for _ = 1, 64 do
+      system:advance(0.25)
+    end
+    equal(system.runtime:status().pending_count, 0)
+    local state = system.export.state
+    local spool = system.fs.files[normalized(state.spool_path)]
+    equal(state.spool_size, #spool)
+    equal(state.spool_content, nil)
+    check(#spool > system.export.budgets.max_spool_bytes_per_cycle)
+    check(system.fs.io_stats.max_single_read <= system.export.budgets.max_spool_bytes_per_cycle)
+    check(system.fs.io_stats.max_single_read < #spool, "normal path read the whole lifetime spool")
+    check(system.fs.io_stats.read_bytes < #spool * 2, "read work grew with lifetime spool size")
+  end)
+
+  succeeds("burst overflow becomes an explicit hook health failure", function()
+    local system = new_system({ queue_max_lines = 4 })
+    system:new_generation(true)
+    system:add_line(2, { marker = "burst-2" })
+    system:add_line(3, { marker = "burst-3" })
+    system:add_line(4, { marker = "burst-4" })
+    local accepted = pcall(function()
+      system:add_line(5, { marker = "overflow" })
+    end)
+    check(not accepted, "overflow was unexpectedly accepted")
+    local frame_ok = pcall(function()
+      system:advance(0.25)
+    end)
+    check(frame_ok, "overflow escaped callback protection")
+    check(system.export.state.stuck)
+    check(system.export.state.failure_count > 0)
+    check(system:contains("queue-overflow generation=1 category=bridge-queue-overflow"))
+    local stop_ok = pcall(system.callbacks.onSimulationStop)
+    check(stop_ok, "overflow stop escaped callback protection")
+    check(system:contains("stuck=true unspooled=unknown"))
   end)
 
   succeeds("ack failure re-peeks and appends byte-identical duplicates", function()
@@ -622,16 +794,81 @@ local function run_mapping(mapping)
     end
     system:advance(0.25)
     equal(system.export.state.last_acked_sequence, 0)
+    equal(system.export.state.spool_verified_sequence, 2)
+    equal(system.export.state.last_acked_sequence, math.min(0, system.export.state.spool_verified_sequence))
+    check(system.topology.status_calls >= 1, "genuine failure did not read mission status")
     check(system:contains("ack-failed"))
-    local once = system.export.state.spool_content
+    local spool_path = normalized(system.export.state.spool_path)
+    local once = system.fs.files[spool_path]
     system:advance(0.5)
     equal(system.export.state.last_acked_sequence, 2)
-    equal(system.export.state.spool_content, once .. once)
-    local midpoint = #system.export.state.spool_content / 2
-    equal(
-      string.sub(system.export.state.spool_content, 1, midpoint),
-      string.sub(system.export.state.spool_content, midpoint + 1)
+    equal(system.fs.files[spool_path], once .. once)
+    local midpoint = #system.fs.files[spool_path] / 2
+    equal(string.sub(system.fs.files[spool_path], 1, midpoint), string.sub(system.fs.files[spool_path], midpoint + 1))
+  end)
+
+  succeeds("executed ACK with lost response reconciles and new event identity flows", function()
+    local system = new_system()
+    system:new_generation(true)
+    system:add_line(2, { marker = "lost-response" })
+    local applied = 0
+    local original_ack = system.runtime.ack
+    system.runtime.ack = function(runtime, sequence)
+      local before = runtime:status().last_acked_sequence
+      local ok, marker = original_ack(runtime, sequence)
+      if ok and runtime:status().last_acked_sequence > before then
+        applied = applied + 1
+      end
+      return ok, marker
+    end
+    system.transport_fault.ack_response = "lost"
+    system.transport_fault.status_response = "mangled"
+    system:advance(0.25)
+    equal(system.export.state.last_acked_sequence, 0)
+    system:add_line(3, { marker = "after-lost-response" })
+    system:advance(0.5)
+    equal(system.export.state.last_acked_sequence, 2)
+    equal(system.export.state.spool_verified_sequence, 2)
+    equal(applied, 1)
+    check(system.topology.status_calls >= 1, "mission status frontier was not read")
+    system:advance(0.25)
+    equal(system.export.state.last_acked_sequence, 3)
+    equal(system.export.state.last_known_unspooled, 0)
+    equal(applied, 2)
+    local spool = system.fs.files[normalized(system.export.state.spool_path)]
+    local expected_id = system.export.state.producer_id .. ":" .. system.export.state.run_key .. ":3"
+    check(string.find(spool, '"event_id":"' .. expected_id .. '"', 1, true), "event identity changed")
+    equal(system:count("peek-failed"), 0)
+    check(system:contains("ack-reconciled generation=1 cursor=2"))
+  end)
+
+  succeeds("mangled ACK response reconciles without advancing past verified spool", function()
+    local system = new_system()
+    system:new_generation(true)
+    system:add_line(2, { marker = "mangled-response" })
+    system.transport_fault.ack_response = "mangled"
+    system:advance(0.25)
+    equal(system.runtime:status().last_acked_sequence, 2)
+    equal(system.export.state.spool_verified_sequence, 2)
+    equal(system.export.state.last_acked_sequence, 2)
+    check(system.export.state.last_acked_sequence <= system.export.state.spool_verified_sequence)
+    check(system:contains("ack-reconciled generation=1 cursor=2"))
+    local expected_id = system.export.state.producer_id .. ":" .. system.export.state.run_key .. ":2"
+    check(
+      string.find(
+        system.fs.files[normalized(system.export.state.spool_path)],
+        '"event_id":"' .. expected_id .. '"',
+        1,
+        true
+      )
     )
+  end)
+
+  succeeds("reconciliation cursor is the minimum frontier in both orderings", function()
+    local system = new_system()
+    equal(system.export.reconciled_cursor(3, 7), 3)
+    equal(system.export.reconciled_cursor(9, 4), 4)
+    equal(system.export.reconciled_cursor(0, 0), 0)
   end)
 
   succeeds("second mission load gets a fresh isolated run spool", function()
@@ -671,7 +908,7 @@ local function run_mapping(mapping)
     equal(system:count("transport-unavailable"), 1)
   end)
 
-  succeeds("stop callback performs one final durable drain", function()
+  succeeds("stop callback drains to a mission-authoritative empty peek", function()
     local system = new_system()
     system:new_generation(true)
     system:advance(0.25)
@@ -681,17 +918,72 @@ local function run_mapping(mapping)
     equal(system.runtime:status().last_acked_sequence, 2)
     check(string.find(system.fs.files[normalized(system.export.state.spool_path)], "stop-event", 1, true))
     check(system:contains("STOP generation=1 spooled=2 spool="))
+    check(system:contains("stuck=false unspooled=0"))
+  end)
+
+  succeeds("stop with an already empty queue reports verified zero", function()
+    local system = new_system()
+    system:new_generation(true)
+    system:advance(0.25)
+    equal(system.runtime:status().pending_count, 0)
+    local before = system.topology.round_trips
+    system.callbacks.onSimulationStop()
+    equal(system.topology.round_trips - before, 1)
+    check(system.export.state.queue_empty_verified)
+    check(system:contains("stuck=false unspooled=0"))
+  end)
+
+  succeeds("stop budget exhaustion reports known pending tail", function()
+    local system = new_system({ max_frames = 1, stop_max_cycles = 2 })
+    system:new_generation(true)
+    for sequence = 2, 5 do
+      system:add_line(sequence, { marker = "stop-backlog", ordinal = sequence })
+    end
+    local before = system.topology.round_trips
+    system.callbacks.onSimulationStop()
+    equal(system.runtime:status().pending_count, 3)
+    equal(system.export.state.last_known_unspooled, 3)
+    check(not system.export.state.queue_empty_verified)
+    check(system:contains("stuck=false unspooled=3"))
+    check(system.topology.round_trips - before <= 7, "stop exceeded its cycle/eval budget")
+  end)
+
+  succeeds("lost ACK response at stop reconciles and drains to verified empty", function()
+    local system = new_system({ max_frames = 1 })
+    system:new_generation(true)
+    system:add_line(2, { marker = "pending-after-stop-frame" })
+    system.transport_fault.ack_response = "lost"
+    system.callbacks.onSimulationStop()
+    equal(system.runtime:status().last_acked_sequence, 2)
+    equal(system.runtime:status().pending_count, 0)
+    equal(system.export.state.last_acked_sequence, 2)
+    equal(system.export.state.spool_verified_sequence, 2)
+    equal(system.export.state.phase, "idle")
+    local expected_id = system.export.state.producer_id .. ":" .. system.export.state.run_key .. ":1"
+    check(
+      string.find(
+        system.fs.files[normalized(system.export.state.spool_path)],
+        '"event_id":"' .. expected_id .. '"',
+        1,
+        true
+      )
+    )
+    check(system:contains("STOP generation=1 spooled=2 spool="))
+    check(system:contains("stuck=false unspooled=0"))
   end)
 
   succeeds("stop with transport gone is clean and reports unknown loss", function()
-    local system = new_system()
+    local system = new_system({ stop_max_cycles = 4 })
     system:new_generation(true)
     system:add_line(2, { marker = "lost-at-stop" })
     system.hook_env.net = nil
-    system.callbacks.onSimulationStop()
+    local before = system.topology.round_trips
+    local stop_ok = pcall(system.callbacks.onSimulationStop)
+    check(stop_ok, "transport failure escaped stop callback")
     equal(system.runtime:status().pending_count, 2)
     check(system:contains("STOP generation=1"))
     check(system:contains("unspooled=unknown"))
+    check(system.topology.round_trips - before <= 4, "failed stop exceeded its cycle budget")
   end)
 
   succeeds("unexpected peek error backs off and the next cycle recovers", function()

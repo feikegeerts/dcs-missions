@@ -5,9 +5,9 @@
 -- invokes a_do_script. The inlined bridge_frame block below must remain
 -- behavior-identical to telemetry/bridge_frame.lua.
 --
--- Acceptance is durable only after append, close, reopen, and an exact byte
--- comparison. A clean stop performs one best-effort final cycle; it cannot
--- prevent loss when a mission crashes before the hook accepts in-memory events.
+-- Acceptance is durable only after append, close, reopen, and bounded exact
+-- verification of the append region. Stop draining is bounded and reports zero
+-- unspooled events only after a mission-authoritative empty peek.
 
 local config = rawget(_G, "TELEMETRY_BRIDGE_HOOK_CONFIG") or {}
 local LOG_TAG = config.log_tag or "TELEMETRY_BRIDGE_HOOK"
@@ -15,6 +15,10 @@ local DEFAULT_MAX_FRAMES = config.max_frames or 32
 local MIN_FRAMES = config.min_frames or 1
 local POLL_INTERVAL = config.poll_interval_s or 0.25
 local MAX_BACKOFF = config.max_backoff_s or 4.0
+local STOP_MAX_CYCLES = config.stop_max_cycles or 32
+local VERIFY_PREFIX_BYTES = config.verify_prefix_bytes or 256
+local MAX_SPOOL_BYTES_PER_CYCLE = 65536
+local MAX_MISSION_EVALS_PER_CYCLE = 3
 local TELEMETRY_DIR_NAME = config.telemetry_dir_name or "telemetry"
 local BRIDGE_DIR_NAME = config.bridge_dir_name or "telemetry-bridge"
 local PRODUCER_FILE_NAME = config.producer_id_file_name or "producer-id"
@@ -382,6 +386,90 @@ local function write_and_verify(path, mode, bytes, expected)
   return read_all(path) == expected or nil
 end
 
+local function file_size(path)
+  if type(lfs) ~= "table" or type(lfs.attributes) ~= "function" then
+    return nil
+  end
+  local ok, size = pcall(lfs.attributes, path, "size")
+  return ok and type(size) == "number" and size >= 0 and size or nil
+end
+
+local function read_region(path, offset, count)
+  if type(io) ~= "table" or type(io.open) ~= "function" then
+    return nil
+  end
+  local open_ok, file = pcall(io.open, path, "rb")
+  if not open_ok or not file then
+    return nil
+  end
+  local seek_ok, position = pcall(file.seek, file, "set", offset)
+  local read_ok, content = false, nil
+  if seek_ok and position == offset then
+    read_ok, content = pcall(file.read, file, count)
+  end
+  pcall(file.close, file)
+  return read_ok and content or nil
+end
+
+local function append_and_verify(path, bytes, expected_size)
+  local pre_size = file_size(path)
+  if pre_size == nil and expected_size == 0 then
+    pre_size = 0
+  end
+  if pre_size ~= expected_size then
+    return nil, "spool-size-failed"
+  end
+
+  local prefix_count = math.min(pre_size, VERIFY_PREFIX_BYTES)
+  local prefix_offset = pre_size - prefix_count
+  local prefix_before = prefix_count > 0 and read_region(path, prefix_offset, prefix_count) or ""
+  if prefix_before == nil then
+    return nil, "spool-read-failed"
+  end
+
+  if type(io) ~= "table" or type(io.open) ~= "function" then
+    return nil, "spool-open-failed"
+  end
+  local open_ok, file = pcall(io.open, path, "ab")
+  if not open_ok or not file then
+    return nil, "spool-open-failed"
+  end
+  local write_ok, write_result = pcall(file.write, file, bytes)
+  local flush_ok, flush_result = pcall(file.flush, file)
+  local close_ok, close_result = pcall(file.close, file)
+  if
+    not write_ok
+    or write_result == nil
+    or not flush_ok
+    or flush_result == nil
+    or not close_ok
+    or close_result == nil
+  then
+    return nil, "spool-write-failed"
+  end
+
+  local mutator = config.test_spool_verify_mutator
+  if type(mutator) == "function" then
+    pcall(mutator, path, pre_size, string.len(bytes))
+  end
+
+  local post_size = file_size(path)
+  if post_size ~= pre_size + string.len(bytes) then
+    return nil, "spool-size-failed"
+  end
+  if prefix_count > 0 and read_region(path, prefix_offset, prefix_count) ~= prefix_before then
+    return nil, "spool-verify-failed"
+  end
+  local appended = read_region(path, pre_size, string.len(bytes))
+  if appended == nil then
+    return nil, "spool-read-failed"
+  end
+  if appended ~= bytes then
+    return nil, "spool-verify-failed"
+  end
+  return post_size
+end
+
 local function make_producer_id()
   if not ensure_storage_directories() then
     return nil
@@ -419,12 +507,15 @@ local state = {
   producer_id = producer_id,
   generation = 0,
   last_acked_sequence = 0,
+  spool_verified_sequence = 0,
+  last_known_unspooled = nil,
   failure_count = 0,
   next_poll_at = 0,
   stuck = false,
   busy = false,
   max_frames = DEFAULT_MAX_FRAMES,
-  spool_content = "",
+  spool_size = 0,
+  queue_empty_verified = false,
   missing_runtime = false,
   transport_logged = false,
 }
@@ -560,12 +651,15 @@ local function begin_generation()
   state.generation = state.generation + 1
   state.phase = "handshaking"
   state.last_acked_sequence = 0
+  state.spool_verified_sequence = 0
+  state.last_known_unspooled = nil
   state.failure_count = 0
   state.next_poll_at = clock_now()
   state.stuck = producer_id == nil
   state.busy = false
   state.max_frames = DEFAULT_MAX_FRAMES
-  state.spool_content = ""
+  state.spool_size = 0
+  state.queue_empty_verified = false
   state.missing_runtime = false
   state.transport_logged = false
   state.run_key = make_run_key()
@@ -621,12 +715,13 @@ end
 
 local function spool_lines(decoded)
   local appended = table.concat(decoded.lines, "\n") .. "\n"
-  local expected = state.spool_content .. appended
-  if not write_and_verify(state.spool_path, "ab", appended, expected) then
+  local verified_size, category = append_and_verify(state.spool_path, appended, state.spool_size)
+  if not verified_size then
     state.failure_count = state.failure_count + 1
     state.stuck = true
     write_log(
-      "spool-verify-failed generation=%d at-sequence=%d..%d bytes=%d",
+      "%s generation=%d at-sequence=%d..%d bytes=%d",
+      category,
       state.generation,
       decoded.first_sequence,
       decoded.last_sequence,
@@ -634,54 +729,126 @@ local function spool_lines(decoded)
     )
     return nil
   end
-  state.spool_content = expected
+  state.spool_size = verified_size
+  state.spool_verified_sequence = math.max(state.spool_verified_sequence, decoded.last_sequence)
   return true
 end
 
+local function nonnegative_integer(value)
+  return type(value) == "number"
+    and value == value
+    and value ~= math.huge
+    and value ~= -math.huge
+    and value >= 0
+    and math.floor(value) == value
+end
+
+local function reconciled_cursor(mission_acked, spool_verified)
+  if not nonnegative_integer(mission_acked) or not nonnegative_integer(spool_verified) then
+    return nil
+  end
+  return math.min(mission_acked, spool_verified)
+end
+
+local function reconcile_ack_frontiers()
+  local source = 'local bridge = _G.duel_telemetry_bridge; if bridge == nil then return "ERR|bridge-not-present" end; '
+    .. "local status = bridge:status(); return status.last_acked_sequence, status.first_pending_sequence, status.pending_count"
+  local values, transport_error, count = mission_eval(source)
+  if not values then
+    if transport_error == "transport-unavailable" then
+      mark_transport_unavailable(transport_error)
+    end
+    return nil, transport_error
+  end
+
+  local mission_acked = values[1]
+  local first_pending = values[2]
+  local pending_count = values[3]
+  if
+    count ~= 3
+    or not nonnegative_integer(mission_acked)
+    or not nonnegative_integer(pending_count)
+    or (pending_count == 0 and first_pending ~= nil)
+    or (pending_count > 0 and first_pending ~= mission_acked + 1)
+  then
+    return nil, "status-invalid"
+  end
+
+  local cursor = reconciled_cursor(mission_acked, state.spool_verified_sequence)
+  state.last_acked_sequence = cursor
+  state.last_known_unspooled = math.max(0, mission_acked + pending_count - state.spool_verified_sequence)
+  return cursor, nil, mission_acked
+end
+
 local function poll_cycle()
+  state.queue_empty_verified = false
   local from_sequence = state.last_acked_sequence + 1
-  local frame
-  while true do
-    local source = 'local bridge = _G.duel_telemetry_bridge; if bridge == nil then return "ERR|bridge-not-present" end; '
-      .. "local value, err = bridge:peek("
-      .. tostring(from_sequence)
-      .. ", "
-      .. tostring(state.max_frames)
-      .. '); if value == nil then return "ERR|" .. tostring(err) end; return value'
-    local values, transport_error = mission_eval(source)
-    if not values then
-      if transport_error == "transport-unavailable" then
-        mark_transport_unavailable(transport_error)
-      else
-        write_log("hook-error transport generation=%d category=%s", state.generation, transport_error)
-        schedule_failure()
-      end
-      return
-    end
-    frame = values[1]
-    if frame == "ERR|frame-too-large" then
-      if state.max_frames <= MIN_FRAMES then
-        state.stuck = true
-        write_log("frame-stuck generation=%d at-sequence=%d", state.generation, from_sequence)
-        return
-      end
-      state.max_frames = math.max(MIN_FRAMES, math.floor(state.max_frames / 2))
+  local source = 'local bridge = _G.duel_telemetry_bridge; if bridge == nil then return "ERR|bridge-not-present" end; '
+    .. "local value, err = bridge:peek("
+    .. tostring(from_sequence)
+    .. ", "
+    .. tostring(state.max_frames)
+    .. '); if value == nil then return "ERR|" .. tostring(err) end; return value'
+  local values, transport_error = mission_eval(source)
+  if not values then
+    if transport_error == "transport-unavailable" then
+      mark_transport_unavailable(transport_error)
     else
-      break
+      write_log("hook-error transport generation=%d category=%s", state.generation, transport_error)
+      schedule_failure()
     end
+    return "failed"
+  end
+  local frame = values[1]
+  if frame == "ERR|frame-too-large" then
+    if state.max_frames <= MIN_FRAMES then
+      state.stuck = true
+      write_log("frame-stuck generation=%d at-sequence=%d", state.generation, from_sequence)
+      return "stuck"
+    end
+    state.max_frames = math.max(MIN_FRAMES, math.floor(state.max_frames / 2))
+    return "retry-smaller"
   end
   if frame == "" then
+    state.queue_empty_verified = true
+    state.last_known_unspooled = 0
     state.next_poll_at = clock_now() + POLL_INTERVAL
-    return
+    return "empty"
   end
   if type(frame) ~= "string" or string.sub(frame, 1, 4) == "ERR|" then
+    if frame == "ERR|bridge queue overflow" then
+      state.failure_count = state.failure_count + 1
+      state.stuck = true
+      write_log("queue-overflow generation=%d category=bridge-queue-overflow", state.generation)
+      return "stuck"
+    end
+    if frame == "ERR|bridge queue from_index is stale" then
+      local previous = state.last_acked_sequence
+      local cursor, reconcile_error, mission_acked = reconcile_ack_frontiers()
+      if cursor and cursor > previous then
+        state.max_frames = DEFAULT_MAX_FRAMES
+        state.failure_count = 0
+        state.next_poll_at = clock_now() + POLL_INTERVAL
+        write_log(
+          "ack-reconciled generation=%d cursor=%d mission=%d verified=%d",
+          state.generation,
+          cursor,
+          mission_acked,
+          state.spool_verified_sequence
+        )
+        return "reconciled"
+      end
+      if reconcile_error == "transport-unavailable" then
+        return "stuck"
+      end
+    end
     write_log(
       "peek-failed generation=%d error=redacted bytes=%d",
       state.generation,
       type(frame) == "string" and math.min(#frame, 120) or 0
     )
     schedule_failure()
-    return
+    return "failed"
   end
   local decoded = bridge_frame.decode(frame)
   if
@@ -698,26 +865,41 @@ local function poll_cycle()
       state.failure_count,
       #frame
     )
-    return
+    return "failed"
   end
   if not spool_lines(decoded) then
-    return
+    return "stuck"
   end
   local ack_source = 'local bridge = _G.duel_telemetry_bridge; if bridge == nil then return "ERR|bridge-not-present" end; '
     .. "local ok, err = bridge:ack("
     .. tostring(decoded.last_sequence)
     .. '); if ok then return "OK" else return "ERR|" .. tostring(err) end'
-  local ack_values, ack_transport_error = mission_eval(ack_source)
+  local ack_values = mission_eval(ack_source)
   if not ack_values or ack_values[1] ~= "OK" then
-    if ack_transport_error == "transport-unavailable" then
-      mark_transport_unavailable(ack_transport_error)
-    else
+    local cursor, reconcile_error, mission_acked = reconcile_ack_frontiers()
+    if cursor and cursor >= decoded.last_sequence then
+      state.max_frames = DEFAULT_MAX_FRAMES
+      state.failure_count = 0
+      state.next_poll_at = clock_now() + POLL_INTERVAL
+      write_log(
+        "ack-reconciled generation=%d cursor=%d mission=%d verified=%d",
+        state.generation,
+        cursor,
+        mission_acked,
+        state.spool_verified_sequence
+      )
+      return "reconciled"
+    end
+    if reconcile_error ~= "transport-unavailable" then
       write_log("ack-failed generation=%d at-sequence=%d category=redacted", state.generation, decoded.last_sequence)
       schedule_failure()
     end
-    return
+    return "failed"
   end
   state.last_acked_sequence = decoded.last_sequence
+  if state.last_known_unspooled ~= nil then
+    state.last_known_unspooled = math.max(0, state.last_known_unspooled - decoded.count)
+  end
   state.max_frames = DEFAULT_MAX_FRAMES
   state.failure_count = 0
   state.next_poll_at = clock_now() + POLL_INTERVAL
@@ -730,26 +912,29 @@ local function poll_cycle()
     decoded.payload_bytes,
     state.spool_path
   )
+  return "progress"
 end
 
 local function run_ready_cycle(force)
   if state.stuck or state.busy then
-    return
+    return "skipped"
   end
   local now = clock_now()
   if not force and now < state.next_poll_at then
-    return
+    return "throttled"
   end
   state.busy = true
+  local result
   if state.phase == "handshaking" then
     handshake()
   elseif state.phase == "draining" then
-    poll_cycle()
+    result = poll_cycle()
   elseif state.phase == "idle" and state.missing_runtime then
     state.phase = "handshaking"
     handshake()
   end
   state.busy = false
+  return result
 end
 
 local callbacks = {}
@@ -766,9 +951,26 @@ function callbacks.onSimulationStop()
   local was_draining = state.phase == "draining"
   state.phase = "stopping"
   if was_draining and not state.stuck then
+    state.queue_empty_verified = false
+    state.last_known_unspooled = nil
     state.phase = "draining"
-    run_ready_cycle(true)
+    local cycles = 0
+    while cycles < STOP_MAX_CYCLES and not state.stuck and not state.queue_empty_verified do
+      cycles = cycles + 1
+      run_ready_cycle(true)
+    end
+    if not state.stuck and not state.queue_empty_verified then
+      reconcile_ack_frontiers()
+    end
     state.phase = "stopping"
+  end
+  local unspooled = "unknown"
+  if not state.stuck then
+    if state.queue_empty_verified then
+      unspooled = "0"
+    elseif state.last_known_unspooled ~= nil and state.last_known_unspooled > 0 then
+      unspooled = tostring(state.last_known_unspooled)
+    end
   end
   write_log(
     "STOP generation=%d spooled=%d spool=%s failures=%d stuck=%s unspooled=%s",
@@ -777,7 +979,7 @@ function callbacks.onSimulationStop()
     tostring(state.spool_path),
     state.failure_count,
     tostring(state.stuck),
-    state.stuck and "unknown" or "0"
+    unspooled
   )
   state.phase = "idle"
 end
@@ -805,7 +1007,18 @@ end
 -- Test-only inspection is injected by the offline mock. Production config is
 -- absent, so no extra hook global is created in DCS.
 if type(config.test_export) == "function" then
-  pcall(config.test_export, { bridge_frame = bridge_frame, state = state, validate_token = validate_token })
+  pcall(config.test_export, {
+    bridge_frame = bridge_frame,
+    budgets = {
+      max_mission_evals_per_cycle = MAX_MISSION_EVALS_PER_CYCLE,
+      max_spool_bytes_per_cycle = MAX_SPOOL_BYTES_PER_CYCLE,
+      stop_max_cycles = STOP_MAX_CYCLES,
+      verify_prefix_bytes = VERIFY_PREFIX_BYTES,
+    },
+    reconciled_cursor = reconciled_cursor,
+    state = state,
+    validate_token = validate_token,
+  })
 end
 
 local callback_api
