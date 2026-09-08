@@ -42,6 +42,13 @@ collector identity. The owner then replaces `{{TELEMETRY_INGEST_TOKEN}}` without
 printing it. The rendered file must not enter source, artifacts, tickets, logs,
 or broadly readable backups.
 
+The template wraps the token value in double quotes and the owner pastes the raw
+token between the existing quotes (no added quotes). This is required, not
+cosmetic: WinSW and the boot task both start Node with Node's `--env-file`,
+which uses dotenv-style parsing where `#` starts an inline comment, so an
+unquoted token containing `#` is truncated at the first `#` and the ingest
+endpoint rejects the request with HTTP 401. Keep the quotes.
+
 Never define the token globally at machine or user scope: DCS must not inherit
 it. WinSW starts Node with Node's `--env-file`, so the wrapper has no token-bearing
 environment. The collector starts exactly one helper subprocess: the lifecycle

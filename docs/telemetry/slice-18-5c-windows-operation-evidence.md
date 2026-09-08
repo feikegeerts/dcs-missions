@@ -139,3 +139,41 @@ subprocesses" sentence was factually wrong and has been corrected to document
 the single CIM helper subprocess and the token-stripped environment.
 Final battery after this addendum: `npm run check` green (10 files / 121
 tests), `git diff --check` 0.
+
+### Live token fix + service account (orchestrator, 2026-09-08 evening)
+
+During the pre-flight bring-up the running collector returned
+`HTTP 401: authorization rejected` on every authenticated POST. The Vercel
+endpoint was correct: an auth probe with the known-good token returned `400
+invalid-batch-envelope` (auth passed; only the intentionally-empty body was
+rejected), while a quoted (50-char) variant returned `401 unauthorized`. The
+cause was collector-side: Node's `--env-file` parses the settings file with
+dotenv-style rules where `#` starts an inline comment, and the ingest token
+contains `#`, so the unquoted `TELEMETRY_INGEST_TOKEN=` line was truncated at
+the first `#` (loaded 20 of 48 chars; the loaded value is a strict prefix and
+the first `#` is at index 20). Fix: double-quote the value in the rendered
+settings file (`TELEMETRY_INGEST_TOKEN="<token>"`); Node then strips the quotes
+and loads all 48 chars (verified by hash equality of the loaded value against
+the raw file value). The durable fix is in
+`collector/ops/collector-service-settings.template` (placeholder now wrapped in
+quotes) and the runbook documents the `#`/`--env-file` gotcha. The settings
+file ACL was temporarily widened (owner `:M`) to apply the edit and restored to
+the original three `:R` grants afterward. After restarting the service, the
+persisted delivery circuit closed on its next probe, the backlog drained to
+zero, and both pre-flight runs (`run-20260908T083013Z`,
+`run-20260908T083033Z`) delivered to production.
+
+Service account: the dedicated identity `dcs-telemetry-coll` (the XML
+`serviceaccount`) could not be made to run on this build — WinSW v2.12.0 exits
+1064 for a user-account service on this Windows version (no 4625 logon
+failure; the account profile is created but the wrapper aborts before Node
+starts). The collector is therefore running as LocalSystem (SYSTEM), which is
+an approved principal under the provisioned ACLs (SYSTEM holds the same
+read/write grants as the dedicated identity). This is a time-boxed,
+trusted-local interim for the flight; the least-privilege dedicated-identity
+posture is blocked by the WinSW 1064 issue and needs a follow-up (investigate
+the WinSW 1064 / account right, or use the Task Scheduler boot-task fallback,
+which logs on as the dedicated identity with `LogonType=Password` and does not
+go through the WinSW service wrapper). Owner decision 2026-09-08 evening:
+proceed with LocalSystem for the flight; revisit the durable dedicated-identity
+posture afterward.

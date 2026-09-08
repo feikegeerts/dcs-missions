@@ -1,4 +1,11 @@
 # Copy to an ACL-restricted, service-private path outside the repository.
 # Populate only after access is limited to Administrators, SYSTEM, and the
 # dedicated collector service identity.
-TELEMETRY_INGEST_TOKEN={{TELEMETRY_INGEST_TOKEN}}
+#
+# Keep the token double-quoted. Both the WinSW wrapper and the boot task start
+# Node with Node's own `--env-file`, which parses the file with dotenv-style
+# rules where `#` begins an inline comment. An unquoted token containing `#`
+# is truncated at the first `#` and the ingest endpoint rejects the request
+# with HTTP 401. Paste the RAW token between the existing quotes and do not add
+# your own (the token must not itself contain a `"` character).
+TELEMETRY_INGEST_TOKEN="{{TELEMETRY_INGEST_TOKEN}}"
