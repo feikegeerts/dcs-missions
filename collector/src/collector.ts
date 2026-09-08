@@ -38,7 +38,15 @@ export interface CollectionSummary {
   would_quarantine: number;
   duplicate_quarantines: number;
   cursor_advances: number;
+  bytes_read: number;
+  incidents: CollectionIncident[];
   runs: RunSpoolSummary[];
+}
+
+export interface CollectionIncident {
+  path: string;
+  kind: "identity-reset" | "truncation";
+  detail: string;
 }
 
 export interface CollectorOptions {
@@ -46,6 +54,7 @@ export interface CollectorOptions {
   spool: DurableSpool;
   validator: EventValidator;
   dryRun?: boolean;
+  maxBytesPerPass?: number;
   hooks?: CollectorHooks;
 }
 
@@ -67,6 +76,7 @@ export class Collector {
   private readonly spool: DurableSpool;
   private readonly validator: EventValidator;
   private readonly dryRun: boolean;
+  private readonly maxBytesPerPass: number;
   private readonly hooks: CollectorHooks;
   private readonly dryRunEventsById = new Map<string, DryRunEvent>();
   private readonly dryRunEventsBySequence = new Map<string, DryRunEvent>();
@@ -77,6 +87,13 @@ export class Collector {
     this.spool = options.spool;
     this.validator = options.validator;
     this.dryRun = options.dryRun ?? false;
+    this.maxBytesPerPass = options.maxBytesPerPass ?? Infinity;
+    if (
+      this.maxBytesPerPass !== Infinity &&
+      (!Number.isSafeInteger(this.maxBytesPerPass) || this.maxBytesPerPass < 1)
+    ) {
+      throw new Error("maxBytesPerPass must be a positive safe integer");
+    }
     this.hooks = options.hooks ?? {};
   }
 
@@ -96,6 +113,8 @@ export class Collector {
       would_quarantine: 0,
       duplicate_quarantines: 0,
       cursor_advances: 0,
+      bytes_read: 0,
+      incidents: [],
       runs: [],
     };
 
@@ -105,6 +124,9 @@ export class Collector {
       .sort();
 
     for (const path of files) {
+      if (summary.bytes_read >= this.maxBytesPerPass) {
+        break;
+      }
       summary.files_seen += 1;
       this.collectFile(path, summary);
     }
@@ -128,13 +150,25 @@ export class Collector {
         !sameIdentity(storedCursor.identity, identity)
       ) {
         summary.identity_resets += 1;
+        summary.incidents.push({
+          path: sourcePath,
+          kind: "identity-reset",
+          detail: "persisted file identity differs from the current source",
+        });
         cursor = emptyCursor(sourcePath, identity);
       } else if (cursor.offset > size) {
         summary.truncation_resets += 1;
+        summary.incidents.push({
+          path: sourcePath,
+          kind: "truncation",
+          detail: `persisted offset ${cursor.offset} exceeds source size ${size}`,
+        });
         cursor = emptyCursor(sourcePath, identity);
       }
 
-      const remaining = Buffer.alloc(size - cursor.offset);
+      const available = size - cursor.offset;
+      const passBudget = this.maxBytesPerPass - summary.bytes_read;
+      const remaining = Buffer.alloc(Math.min(available, passBudget));
       const baseOffset = cursor.offset;
       let bytesRead = 0;
       while (bytesRead < remaining.length) {
@@ -150,6 +184,7 @@ export class Collector {
         }
         bytesRead += count;
       }
+      summary.bytes_read += bytesRead;
       const captured = remaining.subarray(0, bytesRead);
 
       let lineStart = 0;
@@ -187,6 +222,17 @@ export class Collector {
           storedCursor.offset !== cursor.offset)
       ) {
         this.persistCursor(cursor, summary);
+      }
+      if (!this.dryRun) {
+        this.spool.recordSourceTail({
+          sourcePath,
+          producerId: cursor.producer_id,
+          runKey: cursor.run_key,
+          observedSize: size,
+          durableOffset: cursor.offset,
+          tailState: partialLength > 0 ? "partial" : "clear",
+          observedAt: new Date().toISOString(),
+        });
       }
     } finally {
       closeSync(descriptor);

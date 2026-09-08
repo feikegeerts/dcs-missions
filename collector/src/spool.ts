@@ -53,6 +53,53 @@ interface PrunableRunRow {
   event_count: number;
 }
 
+interface RunRetryRow {
+  producer_id: string;
+  run_key: string;
+  attempt_count: number;
+  next_attempt_at: string | null;
+  last_classification: string | null;
+  last_error: string | null;
+  blocked_at_sequence: number | null;
+  blocked_event_id: string | null;
+  blocked_reason: string | null;
+}
+
+interface CircuitRow {
+  open_since: string;
+  next_probe_at: string;
+  attempt_count: number;
+  last_status: string;
+}
+
+interface LifecycleRow {
+  observation_key: string;
+  producer_id: string;
+  run_key: string;
+  hook_generation: number | null;
+  process_binding_json: string;
+  reason: string;
+  evidence_identity: string;
+  tail_state: string;
+  observed_at: string;
+  state: string;
+  attempt_count: number;
+  next_attempt_at: string | null;
+  last_classification: string | null;
+  last_error: string | null;
+  sent_at: string | null;
+}
+
+interface SourceTailRow {
+  source_path: string;
+  producer_id: string | null;
+  run_key: string | null;
+  observed_size: number;
+  durable_offset: number;
+  tail_state: string;
+  observed_at: string;
+}
+
 export interface DeliveryHealthRecord {
   producerId: string;
   runKey: string;
@@ -82,14 +129,72 @@ export interface RunSpoolSummary {
   next_deliverable_sequence: number | null;
 }
 
+export interface RunRetryState {
+  producerId: string;
+  runKey: string;
+  attemptCount: number;
+  nextAttemptAt: string | null;
+  lastClassification: string | null;
+  lastError: string | null;
+  blockedAtSequence: number | null;
+  blockedEventId: string | null;
+  blockedReason: string | null;
+}
+
+export interface DeliveryCircuitState {
+  openSince: string;
+  nextProbeAt: string;
+  attemptCount: number;
+  lastStatus: string;
+}
+
+export type LifecycleTailState = "clear" | "unknown";
+export type LifecycleState = "pending" | "sent" | "terminal";
+
+export interface LifecycleObservationRecord {
+  observationKey: string;
+  producerId: string;
+  runKey: string;
+  hookGeneration: number | null;
+  processBinding: Record<string, unknown>;
+  reason: string;
+  evidenceIdentity: string;
+  tailState: LifecycleTailState;
+  observedAt: string;
+  state: LifecycleState;
+  attemptCount: number;
+  nextAttemptAt: string | null;
+  lastClassification: string | null;
+  lastError: string | null;
+  sentAt: string | null;
+}
+
+export interface SourceTailRecord {
+  sourcePath: string;
+  producerId: string | null;
+  runKey: string | null;
+  observedSize: number;
+  durableOffset: number;
+  tailState: "clear" | "partial";
+  observedAt: string;
+}
+
 export class DurableSpool {
   readonly databasePath: string;
   private readonly database: Database.Database;
 
-  constructor(databasePath: string) {
+  constructor(databasePath: string, options: { readonly?: boolean } = {}) {
     this.databasePath = databasePath;
-    mkdirSync(dirname(databasePath), { recursive: true });
-    this.database = new Database(databasePath);
+    if (options.readonly !== true) {
+      mkdirSync(dirname(databasePath), { recursive: true });
+    }
+    this.database = new Database(databasePath, {
+      readonly: options.readonly ?? false,
+      fileMustExist: options.readonly ?? false,
+    });
+    if (options.readonly === true) {
+      return;
+    }
     this.database.pragma("journal_mode = WAL");
     this.database.pragma("synchronous = FULL");
     this.database.pragma("foreign_keys = ON");
@@ -198,6 +303,64 @@ export class DurableSpool {
         cursor.producer_id,
         cursor.run_key,
       );
+  }
+
+  recordSourceTail(record: SourceTailRecord): void {
+    this.database
+      .prepare(
+        `INSERT INTO source_tail_state (
+          source_path, producer_id, run_key, observed_size, durable_offset,
+          tail_state, observed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(source_path) DO UPDATE SET
+          producer_id = excluded.producer_id,
+          run_key = excluded.run_key,
+          observed_size = excluded.observed_size,
+          durable_offset = excluded.durable_offset,
+          tail_state = excluded.tail_state,
+          observed_at = excluded.observed_at`,
+      )
+      .run(
+        record.sourcePath,
+        record.producerId,
+        record.runKey,
+        record.observedSize,
+        record.durableOffset,
+        record.tailState,
+        record.observedAt,
+      );
+  }
+
+  listSourceTails(): SourceTailRecord[] {
+    if (!this.tableExists("source_tail_state")) {
+      return [];
+    }
+    const rows = this.database
+      .prepare(`SELECT * FROM source_tail_state ORDER BY source_path`)
+      .all() as SourceTailRow[];
+    return rows.map((row) => ({
+      sourcePath: row.source_path,
+      producerId: row.producer_id,
+      runKey: row.run_key,
+      observedSize: row.observed_size,
+      durableOffset: row.durable_offset,
+      tailState: row.tail_state as SourceTailRecord["tailState"],
+      observedAt: row.observed_at,
+    }));
+  }
+
+  runHasPartialTail(producerId: string, runKey: string): boolean {
+    if (!this.tableExists("source_tail_state")) {
+      return false;
+    }
+    const row = this.database
+      .prepare(
+        `SELECT 1 AS one FROM source_tail_state
+         WHERE producer_id = ? AND run_key = ? AND tail_state = 'partial'
+         LIMIT 1`,
+      )
+      .get(producerId, runKey) as { one: number } | undefined;
+    return row !== undefined;
   }
 
   quarantine(record: QuarantineRecord): "inserted" | "duplicate" {
@@ -458,6 +621,271 @@ export class DurableSpool {
     }));
   }
 
+  getRunRetryState(producerId: string, runKey: string): RunRetryState | null {
+    const row = this.database
+      .prepare(
+        `SELECT * FROM run_retry_state WHERE producer_id = ? AND run_key = ?`,
+      )
+      .get(producerId, runKey) as RunRetryRow | undefined;
+    return row === undefined ? null : mapRunRetry(row);
+  }
+
+  listRunRetryStates(): RunRetryState[] {
+    if (!this.tableExists("run_retry_state")) {
+      return [];
+    }
+    const rows = this.database
+      .prepare(`SELECT * FROM run_retry_state ORDER BY producer_id, run_key`)
+      .all() as RunRetryRow[];
+    return rows.map(mapRunRetry);
+  }
+
+  recordRunRetry(record: {
+    producerId: string;
+    runKey: string;
+    attemptCount: number;
+    nextAttemptAt: string;
+    classification: string;
+    error: string;
+  }): void {
+    this.database
+      .prepare(
+        `INSERT INTO run_retry_state (
+          producer_id, run_key, attempt_count, next_attempt_at,
+          last_classification, last_error
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(producer_id, run_key) DO UPDATE SET
+          attempt_count = excluded.attempt_count,
+          next_attempt_at = excluded.next_attempt_at,
+          last_classification = excluded.last_classification,
+          last_error = excluded.last_error`,
+      )
+      .run(
+        record.producerId,
+        record.runKey,
+        record.attemptCount,
+        record.nextAttemptAt,
+        record.classification,
+        record.error,
+      );
+  }
+
+  clearRunRetry(producerId: string, runKey: string): void {
+    this.database
+      .prepare(
+        `UPDATE run_retry_state SET attempt_count = 0, next_attempt_at = NULL,
+          last_classification = NULL, last_error = NULL
+         WHERE producer_id = ? AND run_key = ? AND blocked_at_sequence IS NULL`,
+      )
+      .run(producerId, runKey);
+  }
+
+  blockRun(record: {
+    producerId: string;
+    runKey: string;
+    sequence: number;
+    eventId: string | null;
+    reason: string;
+    classification: string;
+  }): void {
+    this.database
+      .prepare(
+        `INSERT INTO run_retry_state (
+          producer_id, run_key, attempt_count, next_attempt_at,
+          last_classification, last_error, blocked_at_sequence,
+          blocked_event_id, blocked_reason
+        ) VALUES (?, ?, 0, NULL, ?, ?, ?, ?, ?)
+        ON CONFLICT(producer_id, run_key) DO UPDATE SET
+          next_attempt_at = NULL,
+          last_classification = excluded.last_classification,
+          last_error = excluded.last_error,
+          blocked_at_sequence = excluded.blocked_at_sequence,
+          blocked_event_id = excluded.blocked_event_id,
+          blocked_reason = excluded.blocked_reason`,
+      )
+      .run(
+        record.producerId,
+        record.runKey,
+        record.classification,
+        record.reason,
+        record.sequence,
+        record.eventId,
+        record.reason,
+      );
+  }
+
+  getDeliveryCircuit(): DeliveryCircuitState | null {
+    if (!this.tableExists("delivery_circuit")) {
+      return null;
+    }
+    const row = this.database
+      .prepare(`SELECT * FROM delivery_circuit WHERE singleton = 1`)
+      .get() as CircuitRow | undefined;
+    return row === undefined
+      ? null
+      : {
+          openSince: row.open_since,
+          nextProbeAt: row.next_probe_at,
+          attemptCount: row.attempt_count,
+          lastStatus: row.last_status,
+        };
+  }
+
+  openDeliveryCircuit(record: {
+    at: string;
+    nextProbeAt: string;
+    attemptCount: number;
+    status: string;
+  }): void {
+    this.database
+      .prepare(
+        `INSERT INTO delivery_circuit (
+          singleton, open_since, next_probe_at, attempt_count, last_status
+        ) VALUES (1, ?, ?, ?, ?)
+        ON CONFLICT(singleton) DO UPDATE SET
+          open_since = CASE
+            WHEN delivery_circuit.open_since IS NULL THEN excluded.open_since
+            ELSE delivery_circuit.open_since
+          END,
+          next_probe_at = excluded.next_probe_at,
+          attempt_count = excluded.attempt_count,
+          last_status = excluded.last_status`,
+      )
+      .run(record.at, record.nextProbeAt, record.attemptCount, record.status);
+  }
+
+  closeDeliveryCircuit(): void {
+    this.database
+      .prepare(`DELETE FROM delivery_circuit WHERE singleton = 1`)
+      .run();
+  }
+
+  insertLifecycleObservation(record: {
+    observationKey: string;
+    producerId: string;
+    runKey: string;
+    hookGeneration: number | null;
+    processBinding: Record<string, unknown>;
+    reason: string;
+    evidenceIdentity: string;
+    tailState: LifecycleTailState;
+    observedAt: string;
+  }): "inserted" | "duplicate" {
+    const result = this.database
+      .prepare(
+        `INSERT OR IGNORE INTO lifecycle_outbox (
+          observation_key, producer_id, run_key, hook_generation,
+          process_binding_json, reason, evidence_identity, tail_state, observed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        record.observationKey,
+        record.producerId,
+        record.runKey,
+        record.hookGeneration,
+        canonicalJson(record.processBinding),
+        record.reason,
+        record.evidenceIdentity,
+        record.tailState,
+        record.observedAt,
+      );
+    return result.changes === 0 ? "duplicate" : "inserted";
+  }
+
+  listLifecycleObservations(): LifecycleObservationRecord[] {
+    if (!this.tableExists("lifecycle_outbox")) {
+      return [];
+    }
+    const rows = this.database
+      .prepare(
+        `SELECT * FROM lifecycle_outbox ORDER BY observed_at, observation_key`,
+      )
+      .all() as LifecycleRow[];
+    return rows.map(mapLifecycle);
+  }
+
+  recordLifecycleOutcome(record: {
+    observationKey: string;
+    at: string;
+    classification: string;
+    statusCode: number | null;
+    error: string | null;
+    state: LifecycleState;
+    nextAttemptAt: string | null;
+  }): void {
+    this.database.transaction(() => {
+      const current = this.database
+        .prepare(
+          `SELECT attempt_count FROM lifecycle_outbox WHERE observation_key = ?`,
+        )
+        .get(record.observationKey) as { attempt_count: number } | undefined;
+      if (current === undefined) {
+        throw new Error(
+          `unknown lifecycle observation ${record.observationKey}`,
+        );
+      }
+      const attemptCount = current.attempt_count + 1;
+      this.database
+        .prepare(
+          `INSERT INTO lifecycle_attempts (
+            observation_key, attempt_number, attempted_at, classification,
+            status_code, error
+          ) VALUES (?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          record.observationKey,
+          attemptCount,
+          record.at,
+          record.classification,
+          record.statusCode,
+          record.error,
+        );
+      this.database
+        .prepare(
+          `UPDATE lifecycle_outbox SET
+            state = ?, attempt_count = ?, next_attempt_at = ?,
+            last_classification = ?, last_error = ?, sent_at = CASE
+              WHEN ? = 'sent' THEN ? ELSE sent_at END
+           WHERE observation_key = ?`,
+        )
+        .run(
+          record.state,
+          attemptCount,
+          record.nextAttemptAt,
+          record.classification,
+          record.error,
+          record.state,
+          record.at,
+          record.observationKey,
+        );
+    })();
+  }
+
+  resolveLifecycleWithoutRequest(
+    observationKey: string,
+    classification: string,
+  ): void {
+    this.database
+      .prepare(
+        `UPDATE lifecycle_outbox SET state = 'terminal', next_attempt_at = NULL,
+          last_classification = ?, last_error = NULL
+         WHERE observation_key = ?`,
+      )
+      .run(classification, observationKey);
+  }
+
+  lifecycleAttemptCount(observationKey: string): number {
+    if (!this.tableExists("lifecycle_attempts")) {
+      return 0;
+    }
+    const row = this.database
+      .prepare(
+        `SELECT COUNT(*) AS count FROM lifecycle_attempts WHERE observation_key = ?`,
+      )
+      .get(observationKey) as CountRow;
+    return row.count;
+  }
+
   pruneDeliveredRuns(dryRun: boolean): PruneResult {
     const prune = this.database.transaction(() => {
       const rows = this.database
@@ -470,9 +898,31 @@ export class DurableSpool {
           INNER JOIN run_delivery_state AS state
             ON state.producer_id = events.producer_id
             AND state.run_key = events.run_key
-          GROUP BY events.producer_id, events.run_key
-          HAVING state.acknowledged_through = MAX(events.event_sequence)
-          ORDER BY events.producer_id, events.run_key`,
+           GROUP BY events.producer_id, events.run_key
+           HAVING state.acknowledged_through = MAX(events.event_sequence)
+             AND (
+               MAX(CASE WHEN events.event_type = 'mission.ended' THEN 1 ELSE 0 END) = 1
+               OR EXISTS (
+                 SELECT 1 FROM lifecycle_outbox AS terminal_lifecycle
+                 WHERE terminal_lifecycle.producer_id = events.producer_id
+                   AND terminal_lifecycle.run_key = events.run_key
+                   AND terminal_lifecycle.state = 'sent'
+                   AND terminal_lifecycle.tail_state = 'clear'
+               )
+             )
+             AND NOT EXISTS (
+               SELECT 1 FROM lifecycle_outbox AS lifecycle
+               WHERE lifecycle.producer_id = events.producer_id
+                 AND lifecycle.run_key = events.run_key
+                 AND lifecycle.state = 'pending'
+             )
+             AND NOT EXISTS (
+               SELECT 1 FROM run_retry_state AS retry
+               WHERE retry.producer_id = events.producer_id
+                 AND retry.run_key = events.run_key
+                 AND retry.blocked_at_sequence IS NOT NULL
+             )
+           ORDER BY events.producer_id, events.run_key`,
         )
         .all() as PrunableRunRow[];
       const prunedRuns = rows.map((row) => ({
@@ -522,6 +972,15 @@ export class DurableSpool {
       .prepare(`SELECT COUNT(*) AS count FROM ${table}`)
       .get() as CountRow;
     return row.count;
+  }
+
+  private tableExists(table: string): boolean {
+    const row = this.database
+      .prepare(
+        `SELECT 1 AS one FROM sqlite_master WHERE type = 'table' AND name = ?`,
+      )
+      .get(table) as { one: number } | undefined;
+    return row !== undefined;
   }
 
   private getEventRowById(eventId: string): EventRow | undefined {
@@ -610,6 +1069,107 @@ export class DurableSpool {
         last_error TEXT,
         PRIMARY KEY (producer_id, run_key)
       );
+
+      CREATE TABLE IF NOT EXISTS run_retry_state (
+        producer_id TEXT NOT NULL,
+        run_key TEXT NOT NULL,
+        attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+        next_attempt_at TEXT,
+        last_classification TEXT,
+        last_error TEXT,
+        blocked_at_sequence INTEGER,
+        blocked_event_id TEXT,
+        blocked_reason TEXT,
+        PRIMARY KEY (producer_id, run_key)
+      );
+
+      CREATE TABLE IF NOT EXISTS delivery_circuit (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+        open_since TEXT NOT NULL,
+        next_probe_at TEXT NOT NULL,
+        attempt_count INTEGER NOT NULL CHECK (attempt_count >= 1),
+        last_status TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS lifecycle_outbox (
+        observation_key TEXT PRIMARY KEY,
+        producer_id TEXT NOT NULL,
+        run_key TEXT NOT NULL,
+        hook_generation INTEGER,
+        process_binding_json TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        evidence_identity TEXT NOT NULL,
+        tail_state TEXT NOT NULL CHECK (tail_state IN ('clear', 'unknown')),
+        observed_at TEXT NOT NULL,
+        state TEXT NOT NULL DEFAULT 'pending'
+          CHECK (state IN ('pending', 'sent', 'terminal')),
+        attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+        next_attempt_at TEXT,
+        last_classification TEXT,
+        last_error TEXT,
+        sent_at TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS lifecycle_outbox_run
+        ON lifecycle_outbox (producer_id, run_key, state, next_attempt_at);
+
+      CREATE TABLE IF NOT EXISTS lifecycle_attempts (
+        observation_key TEXT NOT NULL,
+        attempt_number INTEGER NOT NULL,
+        attempted_at TEXT NOT NULL,
+        classification TEXT NOT NULL,
+        status_code INTEGER,
+        error TEXT,
+        PRIMARY KEY (observation_key, attempt_number),
+        FOREIGN KEY (observation_key) REFERENCES lifecycle_outbox(observation_key)
+      );
+
+      CREATE TABLE IF NOT EXISTS source_tail_state (
+        source_path TEXT PRIMARY KEY,
+        producer_id TEXT,
+        run_key TEXT,
+        observed_size INTEGER NOT NULL CHECK (observed_size >= 0),
+        durable_offset INTEGER NOT NULL CHECK (durable_offset >= 0),
+        tail_state TEXT NOT NULL CHECK (tail_state IN ('clear', 'partial')),
+        observed_at TEXT NOT NULL
+      );
     `);
   }
+}
+
+function mapRunRetry(row: RunRetryRow): RunRetryState {
+  return {
+    producerId: row.producer_id,
+    runKey: row.run_key,
+    attemptCount: row.attempt_count,
+    nextAttemptAt: row.next_attempt_at,
+    lastClassification: row.last_classification,
+    lastError: row.last_error,
+    blockedAtSequence: row.blocked_at_sequence,
+    blockedEventId: row.blocked_event_id,
+    blockedReason: row.blocked_reason,
+  };
+}
+
+function mapLifecycle(row: LifecycleRow): LifecycleObservationRecord {
+  return {
+    observationKey: row.observation_key,
+    producerId: row.producer_id,
+    runKey: row.run_key,
+    hookGeneration: row.hook_generation,
+    processBinding: JSON.parse(row.process_binding_json) as Record<
+      string,
+      unknown
+    >,
+    reason: row.reason,
+    evidenceIdentity: row.evidence_identity,
+    tailState: row.tail_state as LifecycleTailState,
+    observedAt: row.observed_at,
+    state: row.state as LifecycleState,
+    attemptCount: row.attempt_count,
+    nextAttemptAt: row.next_attempt_at,
+    lastClassification: row.last_classification,
+    lastError: row.last_error,
+    sentAt: row.sent_at,
+  };
 }

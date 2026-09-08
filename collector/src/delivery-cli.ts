@@ -1,5 +1,5 @@
-import { readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { deliver } from "./delivery.js";
@@ -8,9 +8,15 @@ import {
   type ProcessBinding,
 } from "./abort-signal.js";
 import { DurableSpool } from "./spool.js";
+import {
+  acquireOwnership,
+  OwnershipConflictError,
+  readOwner,
+  releaseOwnership,
+} from "./ownership.js";
 
 const USAGE =
-  "usage: delivery [status | prune] --state <state-directory> [--url <base>] [--dcs-log <path>] [--producer-id-file <path>] [--dcs-pid <id> --dcs-created-at <ISO> --dcs-run-key <key> --hook-generation <n> --dcs-image <name> --dcs-process-scope <text> --dcs-profile <path> --telemetry-input <path>] [--dry-run]";
+  "usage: delivery [status | prune] --state <state-directory> [--input <telemetry-directory>] [--schema <path>] [--lock-port <n>] [--url <base>] [--dcs-log <path>] [--producer-id-file <path>] [--dcs-pid <id> --dcs-created-at <ISO> --dcs-run-key <key> --hook-generation <n> --dcs-image <name> --dcs-process-scope <text> --dcs-profile <path> --telemetry-input <path>] [--dry-run]";
 
 export interface CliOptions {
   mode: "deliver" | "status" | "prune";
@@ -20,6 +26,9 @@ export interface CliOptions {
   dcsLog?: string;
   producerIdFile?: string;
   processBinding?: ProcessBinding;
+  input?: string;
+  schema: string;
+  lockPort?: number;
 }
 
 export interface StatusOutput {
@@ -31,6 +40,15 @@ export interface StatusOutput {
       last_attempt_at: string | null;
       last_success_at: string | null;
       last_error: string | null;
+      retry_attempt_count: number;
+      next_retry_at: string | null;
+      retry_classification: string | null;
+      retry_error: string | null;
+      blocked_at_sequence: number | null;
+      blocked_event_id: string | null;
+      blocked_reason: string | null;
+      lifecycle_pending: number;
+      tail_uncertain: boolean;
     }
   >;
   totals: {
@@ -42,12 +60,22 @@ export interface StatusOutput {
     last_attempt_at: string | null;
     last_success_at: string | null;
   };
+  circuit: {
+    open: boolean;
+    open_since: string | null;
+    next_probe_at: string | null;
+    attempt_count: number;
+    last_status: string | null;
+  };
+  lifecycle_outbox: ReturnType<DurableSpool["listLifecycleObservations"]>;
+  source_tails: ReturnType<DurableSpool["listSourceTails"]>;
 }
 
 export function parseCliArguments(
   arguments_: string[],
   webUrl = process.env.TELEMETRY_WEB_URL,
 ): CliOptions {
+  const moduleDirectory = dirname(fileURLToPath(import.meta.url));
   let mode: CliOptions["mode"] = "deliver";
   let argumentIndex = 0;
   const first = arguments_[0];
@@ -73,6 +101,9 @@ export function parseCliArguments(
     if (
       ![
         "--state",
+        "--input",
+        "--schema",
+        "--lock-port",
         "--url",
         "--dcs-log",
         "--producer-id-file",
@@ -174,11 +205,28 @@ export function parseCliArguments(
     }
   }
 
+  const lockPortText = values.get("--lock-port");
+  const lockPort =
+    lockPortText === undefined ? undefined : Number(lockPortText);
+  if (
+    lockPort !== undefined &&
+    (!Number.isSafeInteger(lockPort) || lockPort < 1 || lockPort > 65_535)
+  ) {
+    throw new Error("--lock-port must be an integer from 1 through 65535");
+  }
+
   return {
     mode,
     state: resolve(state),
     url: values.get("--url") ?? webUrl ?? "http://localhost:3000",
     dryRun,
+    ...(values.has("--input")
+      ? { input: resolve(values.get("--input")!) }
+      : {}),
+    schema: resolve(
+      values.get("--schema") ?? defaultSchemaPath(moduleDirectory),
+    ),
+    ...(lockPort === undefined ? {} : { lockPort }),
     ...(values.has("--dcs-log")
       ? { dcsLog: resolve(values.get("--dcs-log")!) }
       : {}),
@@ -189,6 +237,26 @@ export function parseCliArguments(
   };
 }
 
+function defaultSchemaPath(moduleDirectory: string): string {
+  const sourceTreePath = join(
+    moduleDirectory,
+    "..",
+    "..",
+    "contracts",
+    "telemetry-event-v1.schema.json",
+  );
+  return existsSync(sourceTreePath)
+    ? sourceTreePath
+    : join(
+        moduleDirectory,
+        "..",
+        "..",
+        "..",
+        "contracts",
+        "telemetry-event-v1.schema.json",
+      );
+}
+
 export function runStatus(
   spool: DurableSpool,
   nowProvider: () => string = () => new Date().toISOString(),
@@ -197,13 +265,37 @@ export function runStatus(
   const healthByRun = new Map(
     health.map((row) => [`${row.producerId}\0${row.runKey}`, row]),
   );
+  const retryByRun = new Map(
+    spool
+      .listRunRetryStates()
+      .map((row) => [`${row.producerId}\0${row.runKey}`, row]),
+  );
+  const lifecycle = spool.listLifecycleObservations();
   const runs = spool.listRuns().map((run) => {
     const row = healthByRun.get(`${run.producer_id}\0${run.run_key}`);
+    const retry = retryByRun.get(`${run.producer_id}\0${run.run_key}`);
+    const pending = lifecycle.filter(
+      (item) =>
+        item.producerId === run.producer_id &&
+        item.runKey === run.run_key &&
+        item.state === "pending",
+    );
     return {
       ...run,
       last_attempt_at: row?.lastAttemptAt ?? null,
       last_success_at: row?.lastSuccessAt ?? null,
       last_error: row?.lastError ?? null,
+      retry_attempt_count: retry?.attemptCount ?? 0,
+      next_retry_at: retry?.nextAttemptAt ?? null,
+      retry_classification: retry?.lastClassification ?? null,
+      retry_error: retry?.lastError ?? null,
+      blocked_at_sequence: retry?.blockedAtSequence ?? null,
+      blocked_event_id: retry?.blockedEventId ?? null,
+      blocked_reason: retry?.blockedReason ?? null,
+      lifecycle_pending: pending.length,
+      tail_uncertain:
+        pending.some((item) => item.tailState === "unknown") ||
+        spool.runHasPartialTail(run.producer_id, run.run_key),
     };
   });
   return {
@@ -220,7 +312,29 @@ export function runStatus(
       last_attempt_at: latestTimestamp(health.map((row) => row.lastAttemptAt)),
       last_success_at: latestTimestamp(health.map((row) => row.lastSuccessAt)),
     },
+    circuit: statusCircuit(spool),
+    lifecycle_outbox: lifecycle,
+    source_tails: spool.listSourceTails(),
   };
+}
+
+function statusCircuit(spool: DurableSpool): StatusOutput["circuit"] {
+  const circuit = spool.getDeliveryCircuit();
+  return circuit === null
+    ? {
+        open: false,
+        open_since: null,
+        next_probe_at: null,
+        attempt_count: 0,
+        last_status: null,
+      }
+    : {
+        open: true,
+        open_since: circuit.openSince,
+        next_probe_at: circuit.nextProbeAt,
+        attempt_count: circuit.attemptCount,
+        last_status: circuit.lastStatus,
+      };
 }
 
 export function runPrune(spool: DurableSpool, dryRun: boolean): object {
@@ -250,8 +364,49 @@ export async function runCli(
     );
   }
 
-  const spool = new DurableSpool(join(parsed.state, "collector.sqlite3"));
+  const databasePath = join(parsed.state, "collector.sqlite3");
+  if (parsed.mode === "status" && !existsSync(databasePath)) {
+    const output: StatusOutput = {
+      mode: "status",
+      spool_path: databasePath,
+      generated_at: (options.nowProvider ?? (() => new Date().toISOString()))(),
+      runs: [],
+      totals: { runs: 0, events_spooled: 0, quarantined: 0 },
+      latest: { last_attempt_at: null, last_success_at: null },
+      circuit: {
+        open: false,
+        open_since: null,
+        next_probe_at: null,
+        attempt_count: 0,
+        last_status: null,
+      },
+      lifecycle_outbox: [],
+      source_tails: [],
+    };
+    (options.print ?? console.log)(JSON.stringify(output, null, 2));
+    return 0;
+  }
+
+  const diagnosticOwner = readOwner(parsed.state);
+  const ownershipInput =
+    parsed.input ??
+    parsed.processBinding?.inputPath ??
+    diagnosticOwner?.canonical_input ??
+    parsed.state;
+  const lock =
+    parsed.mode === "status"
+      ? undefined
+      : await acquireOwnership({
+          input: ownershipInput,
+          state: parsed.state,
+          schema: parsed.schema,
+          port: parsed.lockPort,
+        });
+  let spool: DurableSpool | undefined;
   try {
+    spool = new DurableSpool(databasePath, {
+      readonly: parsed.mode === "status",
+    });
     let output: object;
     let exitCode = 0;
     if (parsed.mode === "status") {
@@ -279,7 +434,10 @@ export async function runCli(
     (options.print ?? console.log)(JSON.stringify(output, null, 2));
     return exitCode;
   } finally {
-    spool.close();
+    spool?.close();
+    if (lock !== undefined) {
+      await releaseOwnership(lock);
+    }
   }
 }
 
@@ -326,6 +484,6 @@ if (
     console.error(
       token.length === 0 ? message : message.split(token).join("[REDACTED]"),
     );
-    process.exitCode = 1;
+    process.exitCode = error instanceof OwnershipConflictError ? 3 : 1;
   }
 }

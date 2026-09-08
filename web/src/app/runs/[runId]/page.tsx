@@ -1,7 +1,9 @@
 import Link from "next/link";
 
+import { AutoRefresh } from "@/components/auto-refresh";
 import { RunReport } from "@/components/run-report";
 import { parsePageNumber } from "@/telemetry/run-filters";
+import { displayRunStatus } from "@/telemetry/run-status";
 import { NeonTelemetryStore } from "@/telemetry/store";
 
 export const dynamic = "force-dynamic";
@@ -16,11 +18,13 @@ export default async function RunPage({
   const { runId } = await params;
   const { eventsPage } = await searchParams;
   const store = new NeonTelemetryStore();
+  const now = new Date();
   try {
     const run = await store.getRunByRunKey(runId);
     if (!run) {
       return (
         <main>
+          <AutoRefresh displayStatus={null} renderToken={now.getTime()} />
           <p>
             <Link href="/">← Missions</Link>
           </p>
@@ -37,26 +41,33 @@ export default async function RunPage({
         store.listAssistAttributions(run.producerId, run.runKey),
         store.listRunParticipants(run.producerId, run.runKey),
       ]);
+    const runDisplayStatus =
+      run.status === "active" ||
+      run.status === "aborted" ||
+      run.status === "ended"
+        ? displayRunStatus(run.status, new Date(run.updatedAt), now)
+        : null;
     return (
-      <RunReport
-        data={{
-          run,
-          runEvents,
-          expenditures,
-          losses,
-          kills,
-          assists,
-          participants,
-        }}
-        page={parsePageNumber(eventsPage)}
-      />
+      <>
+        <AutoRefresh
+          displayStatus={runDisplayStatus}
+          renderToken={now.getTime()}
+        />
+        <RunReport
+          data={{
+            run,
+            runEvents,
+            expenditures,
+            losses,
+            kills,
+            assists,
+            participants,
+          }}
+          page={parsePageNumber(eventsPage)}
+        />
+      </>
     );
-  } catch {
-    return (
-      <main>
-        <h1 className="hud-title">Run unavailable</h1>
-        <div className="hud-empty">TELEMETRY DATABASE UNAVAILABLE</div>
-      </main>
-    );
+  } catch (error) {
+    throw error;
   }
 }

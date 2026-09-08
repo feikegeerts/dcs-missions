@@ -1,5 +1,6 @@
 import Link from "next/link";
 
+import { AutoRefresh } from "@/components/auto-refresh";
 import { formatDashboardDateTime } from "@/telemetry/dates";
 import {
   DASHBOARD_RUN_SCOPE_LIMIT,
@@ -26,6 +27,7 @@ export default async function PlayersPage({
 }: {
   searchParams: Promise<{ classification?: string; q?: string }>;
 }) {
+  const renderToken = Date.now();
   try {
     const params = await searchParams;
     const classificationFilter = parseClassificationFilter(
@@ -120,6 +122,7 @@ export default async function PlayersPage({
 
     return (
       <main>
+        <AutoRefresh displayStatus={null} renderToken={renderToken} />
         <p className="hud-crumbs">
           <span>Players</span>
         </p>
@@ -209,12 +212,7 @@ export default async function PlayersPage({
         </div>
       </main>
     );
-  } catch {
-    return (
-      <main>
-        <h1 className="hud-title">Players</h1>
-        <div className="hud-empty">TELEMETRY DATABASE UNAVAILABLE</div>
-      </main>
-    );
+  } catch (error) {
+    throw error;
   }
 }

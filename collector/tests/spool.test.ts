@@ -321,7 +321,7 @@ describe("durable spool ordering", () => {
     const database = openSpool();
     const fullyAcknowledged = [
       eventAt(1, "run-complete"),
-      eventAt(2, "run-complete"),
+      eventAt(2, "run-complete", undefined, "mission.ended"),
     ];
     const partiallyAcknowledged = [
       eventAt(1, "run-partial"),
@@ -393,7 +393,10 @@ describe("durable spool ordering", () => {
 
   it("reports a prune dry-run without changing events or acknowledgements", () => {
     const database = openSpool();
-    const events = [eventAt(1), eventAt(2)];
+    const events = [
+      eventAt(1),
+      eventAt(2, undefined, undefined, "mission.ended"),
+    ];
     events.forEach((event) => database.insertEvent(event));
     events.forEach((event) => database.acknowledge(event.event_id));
     const before = database.listRuns();

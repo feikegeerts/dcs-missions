@@ -7,6 +7,40 @@ service, modify databases, deploy, commit/push, or start/extend an overnight
 Loop. Applicable Gate E checkpoints in the
 [master plan](../telemetry-implementation-plan.md) still apply.
 
+**Owner deployment decisions — 2026-09-07 (after live test runs):**
+(1) Collection cadence: **~5 seconds**, not ~1 second (owner: 1 s is too
+often; 5 s is fine). (2) Dashboard refresh must **not** be a full-page
+reload (reaffirming §3), and the aggressive cadence applies **only while a
+mission is active**; active detection uses existing public reads (stored run
+status + `displayRunStatus` heartbeat staleness, unchanged 10-minute
+`STALE_AFTER_MS`) — no new backend. (3) Delivery destination: **production**
+origin (`dcs-missions.vercel.app`). (4) Secret provisioning: handled by the
+**local orchestrator session (Qwen 3.8)**; cloud workers (spark/luna/sol)
+must never receive credentials. (5) Retention: **unbounded for now** (owner
+has TB-scale storage); no auto-prune remains a non-goal. (6) Alerts: owner
+proposes a **dashboard section** for collector health — mechanism sketched in
+§5 item 4, pending owner confirmation. (7) Latency: owner accepts
+**~5-second-class healthy latency**; with the 5 s scan the worst-case healthy
+lag is ~8 s (5 s collection + 2 s refresh); exact p50/p95 agreed before
+S18.5-e. (8) Spool input path confirmed from the hook source:
+`C:\Users\g_for\Saved Games\DCS.dcs_serverrelease\Logs\telemetry\` (the hook
+spools under `Logs\telemetry` from `lfs.writedir()`; the producer file lives
+under `Logs\telemetry-bridge`). Collector state dir and service identity
+remain owner choices for S18.5-c; they do not block offline S18.5-a/b/d
+(paths are collector configuration). Still **not** authorized by this
+document: installing a service, modifying databases, deploying, commit/push,
+or starting/extending an overnight Loop.
+
+**Owner runtime authorization — 2026-09-07 (during the overnight Loop):**
+the owner expanded the Loop's hard limits for validation purposes:
+(1) the dedicated server may be started/used for live testing of Slice 18.5
+work; (2) ingesting live test runs to the **production** stack is approved;
+(3) test runs may be cleaned up from the production database after all
+testing is complete. Live validation is performed by the orchestrator
+session (it holds the credential path); cloud workers remain offline and
+receive no credentials. S18.5-c service installation and any Neon migration
+application remain owner-gated checkpoints.
+
 ## 1. Outcome and unchanged boundaries
 
 Start a mission; source-derived shots, costs, losses, kills, assists, and status
@@ -65,22 +99,26 @@ are historical evidence, not tests executed by this planning update.
 | Filesystem notifications + reconciliation | Optional later latency hint. Notifications can be missed/coalesced; periodic scanning remains authoritative. |
 | Hook-to-local IPC | No supported nonblocking mechanism established. Not required or authorized; never replace durable spooling. |
 | Browser polling | Initial near-live presentation. Request existing dynamic pages/public reads; preserve UI state. |
-| Full-page reload | Manual/temporary fallback only; avoid disrupting pagination/scroll. |
+| Full-page reload | Manual/temporary fallback only; avoid disrupting pagination/scroll. Owner reaffirmed 2026-09-07: the automatic refresh must not be a full-page reload |
 | SSE | Possible later one-way fan-out after measuring load and hosted connection limits. Still needs durable catch-up. |
 | WebSockets / managed realtime | Not initially needed; additional infrastructure, connection lifecycle and publication failure boundaries. |
 | Neon polling / LISTEN-NOTIFY | No separate database poller/listener. Browser requests cause normal server-side queries. Notifications would not be a durable queue. |
 | Other DCS paths | Existing callbacks/nested bridge are the selected path. DCS-gRPC, Tacview realtime and export/log alternatives are not established substitutes for these normalized peek/ack events. |
 
-Starting settings: collection every ~1 second, prompt delivery of available
-partial batches, one HTTP request at a time, visible active-page refresh ~2
-seconds. Keep existing 100-event/1 MiB request bounds unless separately reviewed.
-Never wait for 100 events, a stable file, or mission end. Optional notification
-mode must retain a bounded periodic reconciliation interval (initially 5–10
-seconds). Polling-only mode continues its ~1-second scan.
+Starting settings (owner-adjusted 2026-09-07): collection every ~5 seconds
+(owner: 1 second is too often; 5 seconds is fine), prompt delivery of
+available partial batches, one HTTP request at a time, visible active-page
+refresh ~2 seconds. Keep existing 100-event/1 MiB request bounds unless
+separately reviewed. Never wait for 100 events, a stable file, or mission
+end. Optional notification mode must retain a bounded periodic
+reconciliation interval (initially 5–10 seconds). Polling-only mode
+continues its ~5-second scan.
 
-Healthy event-to-screen target: roughly **2–5 seconds**, not a verified SLA.
+Healthy event-to-screen target: roughly **5–8 seconds** worst case with the
+5-second scan (owner-accepted 2026-09-07 as ~5-second-class acceptable
+latency; exact p50/p95 target agreed before S18.5-e), not a verified SLA.
 Budget approximately 0.5–1 second for the hook (pending clock validation), up to
-1 second for collection, measured HTTP/projection time, and up to 2 seconds for
+5 seconds for collection, measured HTTP/projection time, and up to 2 seconds for
 browser refresh. Cold starts, backlog and outages extend it. Measure with
 correlated test markers and wall-clock observations; shipping event wall time
 may be null, so do not subtract simulation time from server wall time.
@@ -255,7 +293,9 @@ matrix passes without duplicate facts, lost retained records or false abortion.
 ### S18.5-c — Windows operation and recovery
 
 **Depends on:** a/b. **Boundary:** collector operational configuration templates,
-status/logging tests and runbook; actual installation/secret handling is owner-gated.
+status/logging tests and runbook, and (if the owner confirmation below holds)
+the collector status-POST client + web status route/table/dashboard section
+(offline-verifiable); actual installation/secret handling is owner-gated.
 
 - Prefer a WinSW-managed Windows service under a dedicated least-privilege
   identity, at boot independently of DCS, with bounded restart delay, rotating
@@ -268,6 +308,12 @@ status/logging tests and runbook; actual installation/secret handling is owner-g
   solely in the web backend and public read responses free of private metadata.
 - Report backlog count/bytes/age, disk space, last successful delivery, next retry,
   quarantine/block reason, lifecycle pending state and source-tail uncertainty.
+  Destination (owner proposal 2026-09-07, mechanism pending owner
+  confirmation): a dashboard "Collector health" section fed by a compact
+  status POST from the collector to a new token-authenticated web route
+  (existing Bearer ingest token), persisted as a small single-row-upserted
+  table; schema/API change ⇒ Sol + owner-gated migration. No external
+  alerting for now.
 - Retain NDJSON and SQLite; **no automatic prune**. Existing prune eligibility
   only means currently acknowledged, not terminal: prevent cleanup of active or
   lifecycle-pending runs. Any later retention policy needs terminal/ACK/lifecycle
@@ -287,6 +333,14 @@ Sol owns Next.js/React request/lifecycle correctness, not just visual formatting
 - Start with `router.refresh()` or equivalent existing public requests on visible
   active views (~2 seconds), single-flight and with cleanup on navigation/unmount.
   Preserve search/filter/pagination/scroll; refresh immediately on focus/reconnect.
+  Active-mission gate (owner decision 2026-09-07): the aggressive cadence runs
+  only while the displayed run (or the latest run on the home/mission index
+  pages) has display status `active` per the existing `displayRunStatus`
+  derivation (stored `active` + heartbeat within the unchanged 10-minute
+  `STALE_AFTER_MS`); detection needs no new backend. On `stale`/`ended`/
+  `aborted` fall to a slow cadence (initially 30–60 s) plus focus/reconnect
+  refresh; never stop entirely (a stale run may resume, and late final facts
+  must still arrive).
 - Back off failures, retain last good content, slow hidden/ended views, and keep
   eventual checks for late final facts. Do not stop forever on the first abort.
 - Separate browser connection/view freshness from latest source observation and
@@ -316,18 +370,38 @@ redacted. Do not claim a timeout or missing heartbeat is proof of mission death.
 ## 5. Operational decisions and authorization gates
 
 Approved design direction: collector on the DCS host, all unacknowledged backlog,
-one owner, persistent service, ~1-second collection/~2-second visible refresh.
-Deployment still needs the owner to confirm:
+one owner, persistent service, ~5-second collection/~2-second visible refresh
+(owner-adjusted 2026-09-07). Deployment gates, with 2026-09-07 owner
+resolutions:
 
-1. Exact server/profile/input/state paths and service identity; no guessing among
-   similarly named Saved Games profiles or replacing the dev `.miz`.
-2. Test versus production HTTPS destination and permission for API/DB writes.
-3. Secret provisioning and service installation mechanism, handled by the owner/
-   orchestrator rather than delegated with credentials.
-4. Available disk/retention capacity and alert destination; no silent eviction.
-5. Expected public audience/query budget and measured latency/callback acceptance.
-   Public live tactical visibility and participant-label exposure remain risks;
-   do not expand public fields or claim user privacy controls exist.
+1. Exact server/profile/input/state paths and service identity — **partially
+   resolved 2026-09-07:** spool input confirmed as
+   `C:\Users\g_for\Saved Games\DCS.dcs_serverrelease\Logs\telemetry\` (hook
+   `lfs.writedir()`-derived; no guessing among the other Saved Games profiles).
+   Collector state directory and service identity remain owner choices for
+   S18.5-c; they do not block offline S18.5-a/b/d (paths are collector
+   configuration).
+2. Test versus production HTTPS destination and permission for API/DB writes —
+   **resolved 2026-09-07:** production origin (`dcs-missions.vercel.app`).
+3. Secret provisioning and service installation mechanism — **resolved
+   2026-09-07:** handled by the local orchestrator session (Qwen 3.8); cloud
+   workers must never receive credentials (consistent with the existing
+   never-delegate-secrets rule).
+4. Available disk/retention capacity and alert destination; no silent eviction —
+   **retention resolved 2026-09-07:** unbounded for now (owner storage),
+   no auto-prune unchanged. **Alert destination (owner proposal 2026-09-07,
+   mechanism pending owner confirmation):** a dashboard "Collector health"
+   section fed by a compact status POST from the collector to a new
+   token-authenticated web route (existing Bearer ingest token), persisted as a
+   small single-row-upserted table; see the S18.5-c reporting bullet. No
+   external alerting for now.
+5. Expected public audience/query budget and measured latency/callback acceptance —
+   **latency partially resolved 2026-09-07:** owner accepts ~5-second-class
+   healthy latency; with the 5 s collection scan the worst-case healthy lag is
+   ~8 s (5 s collection + 2 s refresh). Exact p50/p95 target and public query
+   budget to be agreed before S18.5-e. Public live tactical visibility and
+   participant-label exposure remain risks; do not expand public fields or
+   claim user privacy controls exist.
 
 Missing deployment choices block deployment, not unrelated approved offline
 fixtures/UI planning. Resolve genuine lifecycle/schema decisions in S16-p8;

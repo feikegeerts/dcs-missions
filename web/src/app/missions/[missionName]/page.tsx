@@ -1,5 +1,6 @@
 import Link from "next/link";
 
+import { AutoRefresh } from "@/components/auto-refresh";
 import { RunLink } from "@/components/run-link";
 import {
   DASHBOARD_RUN_SCOPE_LIMIT,
@@ -85,6 +86,7 @@ export default async function MissionDossierPage({
           ? displayRunStatus(run.status, new Date(run.updatedAt), now)
           : ("active" as DisplayRunStatus),
     }));
+    const latestDisplay = withDisplay[0]?.display ?? null;
     const matching = withDisplay.filter(
       ({ run, display }) =>
         (statusFilter === "all" || display === statusFilter) &&
@@ -192,6 +194,10 @@ export default async function MissionDossierPage({
 
     return (
       <main>
+        <AutoRefresh
+          displayStatus={latestDisplay}
+          renderToken={now.getTime()}
+        />
         <p className="hud-crumbs">
           <Link href="/">Missions</Link>
           <span className="sep">/</span>
@@ -361,12 +367,7 @@ export default async function MissionDossierPage({
         </div>
       </main>
     );
-  } catch {
-    return (
-      <main>
-        <h1 className="hud-title">Mission unavailable</h1>
-        <div className="hud-empty">TELEMETRY DATABASE UNAVAILABLE</div>
-      </main>
-    );
+  } catch (error) {
+    throw error;
   }
 }

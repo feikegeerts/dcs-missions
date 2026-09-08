@@ -44,6 +44,15 @@ describe("delivery CLI status and prune modes", () => {
       runs: [],
       totals: { runs: 0, events_spooled: 0, quarantined: 0 },
       latest: { last_attempt_at: null, last_success_at: null },
+      circuit: {
+        open: false,
+        open_since: null,
+        next_probe_at: null,
+        attempt_count: 0,
+        last_status: null,
+      },
+      lifecycle_outbox: [],
+      source_tails: [],
     });
   });
 
@@ -79,11 +88,59 @@ describe("delivery CLI status and prune modes", () => {
     });
   });
 
+  it("shows durable circuit, retry blocker, lifecycle, and tail state", () => {
+    const database = openSpool();
+    const event = cloneEvent(fixture("01-mission-started.json"));
+    database.insertEvent(event);
+    database.recordRunRetry({
+      producerId: event.producer_id,
+      runKey: event.run_key,
+      attemptCount: 2,
+      nextAttemptAt: "2026-09-06T03:02:00.000Z",
+      classification: "http-503",
+      error: "HTTP 503",
+    });
+    database.openDeliveryCircuit({
+      at: "2026-09-06T03:00:00.000Z",
+      nextProbeAt: "2026-09-06T03:01:00.000Z",
+      attemptCount: 1,
+      status: "HTTP 401: authorization rejected",
+    });
+    database.recordSourceTail({
+      sourcePath: "run.ndjson",
+      producerId: event.producer_id,
+      runKey: event.run_key,
+      observedSize: 10,
+      durableOffset: 9,
+      tailState: "partial",
+      observedAt: "2026-09-06T03:00:00.000Z",
+    });
+
+    const status = runStatus(database);
+    expect(status.runs[0]).toMatchObject({
+      retry_attempt_count: 2,
+      next_retry_at: "2026-09-06T03:02:00.000Z",
+      tail_uncertain: true,
+    });
+    expect(status.circuit).toMatchObject({
+      open: true,
+      next_probe_at: "2026-09-06T03:01:00.000Z",
+      last_status: "HTTP 401: authorization rejected",
+    });
+    expect(status.source_tails[0]?.tailState).toBe("partial");
+  });
+
   it("prints prune dry-run output without mutation", async () => {
     const database = openSpool();
-    const event = fixture("01-mission-started.json");
+    const event = cloneEvent(fixture("01-mission-started.json"));
+    const ended = cloneEvent(event);
+    ended.event_id = `${event.event_id}:ended`;
+    ended.event_sequence = 2;
+    ended.event_type = "mission.ended";
     database.insertEvent(event);
+    database.insertEvent(ended);
     database.acknowledge(event.event_id);
+    database.acknowledge(ended.event_id);
     database.close();
     spool = undefined;
     const printed: string[] = [];
@@ -100,20 +157,26 @@ describe("delivery CLI status and prune modes", () => {
         {
           producerId: event.producer_id,
           runKey: event.run_key,
-          eventCount: 1,
+          eventCount: 2,
         },
       ],
-      total_events_pruned: 1,
+      total_events_pruned: 2,
     });
     spool = new DurableSpool(join(workspace!.state, "collector.sqlite3"));
-    expect(spool.eventCount()).toBe(1);
+    expect(spool.eventCount()).toBe(2);
   });
 
   it("prints prune output and removes delivered events", async () => {
     const database = openSpool();
-    const event = fixture("01-mission-started.json");
+    const event = cloneEvent(fixture("01-mission-started.json"));
+    const ended = cloneEvent(event);
+    ended.event_id = `${event.event_id}:ended`;
+    ended.event_sequence = 2;
+    ended.event_type = "mission.ended";
     database.insertEvent(event);
+    database.insertEvent(ended);
     database.acknowledge(event.event_id);
+    database.acknowledge(ended.event_id);
     database.close();
     spool = undefined;
     const printed: string[] = [];
@@ -126,7 +189,7 @@ describe("delivery CLI status and prune modes", () => {
     expect(JSON.parse(printed[0]!) as Record<string, unknown>).toMatchObject({
       mode: "prune",
       dry_run: false,
-      total_events_pruned: 1,
+      total_events_pruned: 2,
     });
     spool = new DurableSpool(join(workspace!.state, "collector.sqlite3"));
     expect(spool.eventCount()).toBe(0);

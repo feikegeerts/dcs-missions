@@ -39,6 +39,11 @@ export interface HookStopObservation {
   runKey: string;
 }
 
+export interface LifecycleStopObservation extends HookStopObservation {
+  evidenceIdentity: string;
+  tailState: "clear" | "unknown";
+}
+
 export interface HookRunObservation {
   generation: number;
   runKey: string;
@@ -93,12 +98,23 @@ export function decideAbortSignal(args: {
 }
 
 export function stopObservations(dcsLogText: string): HookStopObservation[] {
-  const observations: HookStopObservation[] = [];
+  return lifecycleStopObservations(dcsLogText).map(
+    ({ generation, runKey }) => ({
+      generation,
+      runKey,
+    }),
+  );
+}
+
+export function lifecycleStopObservations(
+  dcsLogText: string,
+): LifecycleStopObservation[] {
+  const observations: LifecycleStopObservation[] = [];
   const stopLine =
-    /TELEMETRY_BRIDGE_HOOK STOP generation=(\d+) spooled=\d+ spool=(.*?) failures=\S+ stuck=\S+ unspooled=\S+/g;
+    /TELEMETRY_BRIDGE_HOOK STOP generation=(\d+) spooled=(\d+) spool=(.*?) failures=(\S+) stuck=(\S+) unspooled=(\S+)/g;
   for (const match of dcsLogText.matchAll(stopLine)) {
     const generationText = match[1];
-    const spoolPath = match[2];
+    const spoolPath = match[3];
     if (generationText === undefined || spoolPath === undefined) {
       continue;
     }
@@ -113,7 +129,16 @@ export function stopObservations(dcsLogText: string): HookStopObservation[] {
       runKey !== undefined &&
       runKey.length > 0
     ) {
-      observations.push({ generation, runKey });
+      const fullEvidence = match[0];
+      observations.push({
+        generation,
+        runKey,
+        evidenceIdentity: fullEvidence,
+        tailState:
+          match[4] === "0" && match[5] === "nil" && match[6] === "0"
+            ? "clear"
+            : "unknown",
+      });
     }
   }
   return observations;

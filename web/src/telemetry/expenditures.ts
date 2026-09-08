@@ -358,7 +358,12 @@ export function aggregateExpenditures(
     unpricedCount,
     partial: unpricedCount > 0,
     groups: [...groups.values()]
-      .sort((left, right) => left.firstEventSequence - right.firstEventSequence)
+      .sort((left, right) => {
+        if (left.knownSubtotalCents !== right.knownSubtotalCents) {
+          return right.knownSubtotalCents > left.knownSubtotalCents ? 1 : -1;
+        }
+        return left.firstEventSequence - right.firstEventSequence;
+      })
       .map((group) => {
         const rest: Record<string, unknown> = { ...group };
         delete rest.firstEventSequence;

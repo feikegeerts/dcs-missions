@@ -183,9 +183,12 @@ describe("spool delivery", () => {
       );
     });
 
-    const first = await deliver(
-      deliveryOptions(database, recorder, { maxAttempts: 1 }),
-    );
+    let now = "2026-09-07T00:00:00.000Z";
+    const options = deliveryOptions(database, recorder, {
+      nowProvider: () => now,
+      randomProvider: () => 0.5,
+    });
+    const first = await deliver(options);
     expect(first).toMatchObject({
       had_failure: true,
       totals: { batches_posted: 1, events_posted: 16 },
@@ -193,7 +196,8 @@ describe("spool delivery", () => {
     });
     expect(database.listRuns()[0]?.acknowledged_through).toBe(0);
 
-    const second = await deliver(deliveryOptions(database, recorder));
+    now = "2026-09-07T00:00:01.000Z";
+    const second = await deliver(options);
     expect(second).toMatchObject({
       had_failure: false,
       totals: { accepted: 13, duplicates: 3, events_posted: 16 },
@@ -241,8 +245,7 @@ describe("spool delivery", () => {
 
     recorder.calls.length = 0;
     const second = await deliver(deliveryOptions(database, recorder));
-    expect(recorder.calls).toHaveLength(1);
-    expect(eventsFrom(recorder.calls[0]!)[0]?.event_sequence).toBe(5);
+    expect(recorder.calls).toHaveLength(0);
     expect(second.runs[0]).toMatchObject({
       state: "blocked",
       acknowledged_through: 4,
@@ -256,6 +259,7 @@ describe("spool delivery", () => {
     const database = setup([events]);
     const recorder = recordFetch((call) => acceptedResponse(bodyFrom(call)));
 
+    const first = await deliver(deliveryOptions(database, recorder));
     const summary = await deliver(deliveryOptions(database, recorder));
 
     expect(recorder.calls).toHaveLength(2);
@@ -264,16 +268,14 @@ describe("spool delivery", () => {
         eventsFrom(call).map((event) => event.event_sequence),
       ),
     ).toEqual([contiguous(1, 100), contiguous(101, 50)]);
+    expect(first.totals.events_posted + summary.totals.events_posted).toBe(150);
     expect(summary).toMatchObject({
-      totals: { batches_posted: 2, events_posted: 150, accepted: 150 },
+      totals: { batches_posted: 1, events_posted: 50, accepted: 50 },
       runs: [
         {
           state: "complete",
           acknowledged_through: 150,
-          batches: [
-            { seq_start: 1, seq_end: 100, event_count: 100 },
-            { seq_start: 101, seq_end: 150, event_count: 50 },
-          ],
+          batches: [{ seq_start: 101, seq_end: 150, event_count: 50 }],
         },
       ],
     });
@@ -309,9 +311,12 @@ describe("spool delivery", () => {
     expect(maxBodyBytes).toBeLessThan(Math.min(...fiveEventSizes));
     const recorder = recordFetch((call) => acceptedResponse(bodyFrom(call)));
 
-    const summary = await deliver(
-      deliveryOptions(database, recorder, { maxBodyBytes }),
-    );
+    let summary;
+    for (let pass = 0; pass < 4; pass += 1) {
+      summary = await deliver(
+        deliveryOptions(database, recorder, { maxBodyBytes }),
+      );
+    }
 
     expect(recorder.calls).toHaveLength(4);
     expect(
@@ -325,7 +330,7 @@ describe("spool delivery", () => {
       contiguous(13, 4),
     ]);
     expect(summary).toMatchObject({
-      totals: { batches_posted: 4, events_posted: 16 },
+      totals: { batches_posted: 1, events_posted: 4 },
       runs: [{ state: "complete", acknowledged_through: 16 }],
     });
   });
@@ -365,7 +370,7 @@ describe("spool delivery", () => {
     expect(database.getDeliveryHealth()).toEqual([]);
   });
 
-  it("posts an abort when the DCS process is not running", async () => {
+  it("retains a process-stop observation when its source tail is unknown", async () => {
     const events = makeRun(2, "run-process-dead", undefined, false);
     const database = setup([events]);
     const recorder = recordFetch((call) =>
@@ -384,25 +389,15 @@ describe("spool delivery", () => {
     );
     const abortCalls = recorder.calls.filter(isAbortCall);
 
-    expect(abortCalls).toHaveLength(1);
-    expect(String(abortCalls[0]!.input)).toBe(
-      `${baseUrl}/api/telemetry/runs/run-process-dead`,
-    );
-    expect(abortCalls[0]!.init?.headers).toEqual({
-      "content-type": "application/json",
-      authorization: `Bearer ${testToken}`,
-    });
-    expect(bodyFrom(abortCalls[0]!)).toBe(
-      '{"reason":"dcs-process-not-running","producer_id":"delivery-producer"}',
-    );
+    expect(abortCalls).toHaveLength(0);
     expect(summary.abort_signals).toEqual([
       {
         producerId: "delivery-producer",
         runKey: "run-process-dead",
         reason: "dcs-process-not-running",
-        posted: true,
-        retryRequired: false,
-        status: 200,
+        generation: 9,
+        posted: false,
+        retryRequired: true,
       },
     ]);
   });
@@ -465,11 +460,14 @@ describe("spool delivery", () => {
     );
     const abortCalls = recorder.calls.filter(isAbortCall);
 
-    expect(abortCalls).toHaveLength(1);
-    expect(String(abortCalls[0]!.input)).toContain("/run-rapid-old");
-    expect(bodyFrom(abortCalls[0]!)).toBe(
-      '{"reason":"simulation-stop-observed","producer_id":"delivery-producer","generation":11}',
-    );
+    expect(abortCalls).toHaveLength(0);
+    expect(summary.abort_signals).toEqual([
+      expect.objectContaining({
+        runKey: "run-rapid-old",
+        posted: false,
+        retryRequired: true,
+      }),
+    ]);
     expect(summary.runs).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -545,10 +543,8 @@ describe("spool delivery", () => {
 
     const summary = await deliver(
       deliveryOptions(database, recorder, {
-        processObservationProvider: () =>
-          boundProcessObservation("run-abort-fails", "known-not-running"),
         dcsLogTextProvider: () =>
-          "TELEMETRY_BRIDGE_HOOK handshake-ok generation=9 run=run-abort-fails producer=delivery-producer",
+          "TELEMETRY_BRIDGE_HOOK handshake-ok generation=9 run=run-abort-fails producer=delivery-producer\nTELEMETRY_BRIDGE_HOOK STOP generation=9 spooled=2 spool=C:/telemetry/run-abort-fails.ndjson failures=0 stuck=nil unspooled=0",
       }),
     );
 
@@ -558,7 +554,7 @@ describe("spool delivery", () => {
       expect.objectContaining({
         posted: false,
         retryRequired: true,
-        error: "abort failed with [REDACTED]",
+        error: "network error: abort failed with [REDACTED]",
       }),
     ]);
   });
@@ -580,10 +576,8 @@ describe("spool delivery", () => {
     const summary = await deliver(
       deliveryOptions(database, recorder, {
         timeoutMs: 1,
-        processObservationProvider: () =>
-          boundProcessObservation("run-abort-timeout", "known-not-running"),
         dcsLogTextProvider: () =>
-          "TELEMETRY_BRIDGE_HOOK handshake-ok generation=9 run=run-abort-timeout producer=delivery-producer",
+          "TELEMETRY_BRIDGE_HOOK handshake-ok generation=9 run=run-abort-timeout producer=delivery-producer\nTELEMETRY_BRIDGE_HOOK STOP generation=9 spooled=2 spool=C:/telemetry/run-abort-timeout.ndjson failures=0 stuck=nil unspooled=0",
       }),
     );
 
@@ -674,7 +668,7 @@ describe("spool delivery", () => {
         runKey: "run-health-failure",
         lastAttemptAt: "2026-09-06T00:00:00.000Z",
         lastSuccessAt: "2026-09-05T00:00:00.000Z",
-        lastError: "HTTP 400: invalid [REDACTED]",
+        lastError: "blocked at sequence 1: HTTP 400: invalid [REDACTED]",
       },
     ]);
   });
@@ -705,137 +699,62 @@ describe("spool delivery", () => {
     });
   });
 
-  it("retries a timeout and a 500 before delivering successfully", async () => {
+  it("persists exponential retry deadlines and resumes only when due", async () => {
     const events = makeRun(16, "run-transient-success");
     const database = setup([events]);
-    const delays: number[] = [];
-    const recorder = recordFetch((call, index) => {
-      if (index === 0) {
-        return new Promise<Response>((_resolve, reject) => {
-          call.init?.signal?.addEventListener(
-            "abort",
-            () => reject(new Error("aborted by timeout")),
-            { once: true },
-          );
-        });
-      }
-      if (index === 1) {
-        return new Response("temporary server error", { status: 500 });
-      }
-      return acceptedResponse(bodyFrom(call));
-    });
-    vi.useFakeTimers();
-
-    try {
-      const delivery = deliver(
-        deliveryOptions(database, recorder, {
-          timeoutMs: 10,
-          sleepImpl: async (ms) => {
-            delays.push(ms);
-          },
-        }),
-      );
-      await vi.advanceTimersByTimeAsync(10);
-      const summary = await delivery;
-
-      expect(recorder.calls).toHaveLength(3);
-      expect(recorder.calls.map(bodyFrom)).toEqual([
-        bodyFrom(recorder.calls[0]!),
-        bodyFrom(recorder.calls[0]!),
-        bodyFrom(recorder.calls[0]!),
-      ]);
-      expect(delays).toEqual([1000, 2000]);
-      expect(summary).toMatchObject({
-        had_failure: false,
-        runs: [
-          {
-            state: "complete",
-            attempts: 3,
-            acknowledged_through: 16,
-          },
-        ],
-      });
-      expect(summary.runs[0]).not.toHaveProperty("error");
-      expect(database.listRuns()[0]?.acknowledged_through).toBe(16);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("stops after exhausting transient network retries", async () => {
-    const events = makeRun(16, "run-transient-exhausted");
-    const database = setup([events]);
-    const delays: number[] = [];
-    const recorder = recordFetch((_call, index) => {
-      throw new Error(`network down ${index + 1}`);
-    });
-
-    const summary = await deliver(
-      deliveryOptions(database, recorder, {
-        sleepImpl: async (ms) => {
-          delays.push(ms);
-        },
-      }),
+    let now = "2026-09-07T00:00:00.000Z";
+    const recorder = recordFetch((call, index) =>
+      index < 2
+        ? new Response("temporary server error", { status: 500 })
+        : acceptedResponse(bodyFrom(call)),
     );
-
-    expect(recorder.calls).toHaveLength(3);
-    expect(delays).toEqual([1000, 2000]);
-    expect(summary).toMatchObject({
-      had_failure: true,
-      runs: [
-        {
-          state: "error",
-          attempts: 3,
-          acknowledged_through: 0,
-          error: "network error: network down 3 (after 3 attempts)",
-        },
-      ],
+    const options = deliveryOptions(database, recorder, {
+      nowProvider: () => now,
+      randomProvider: () => 0.5,
     });
-    expect(database.listRuns()[0]?.acknowledged_through).toBe(0);
+
+    await deliver(options);
+    expect(
+      database.getRunRetryState("delivery-producer", "run-transient-success"),
+    ).toMatchObject({
+      attemptCount: 1,
+      nextAttemptAt: "2026-09-07T00:00:01.000Z",
+    });
+    await deliver(options);
+    expect(recorder.calls).toHaveLength(1);
+    now = "2026-09-07T00:00:01.000Z";
+    await deliver(options);
+    expect(
+      database.getRunRetryState("delivery-producer", "run-transient-success"),
+    ).toMatchObject({
+      attemptCount: 2,
+      nextAttemptAt: "2026-09-07T00:00:03.000Z",
+    });
+    now = "2026-09-07T00:00:03.000Z";
+    const summary = await deliver(options);
+    expect(recorder.calls).toHaveLength(3);
+    expect(summary.runs[0]).toMatchObject({ state: "complete", attempts: 1 });
   });
 
-  it("retries HTTP 429 before delivering successfully", async () => {
+  it("honors and clamps Retry-After for HTTP 429", async () => {
     const events = makeRun(16, "run-rate-limited");
     const database = setup([events]);
-    const delays: number[] = [];
-    const recorder = recordFetch((call, index) =>
-      index === 0
-        ? new Response("rate limited", { status: 429 })
-        : acceptedResponse(bodyFrom(call)),
+    const recorder = recordFetch(
+      () =>
+        new Response("rate limited", {
+          status: 429,
+          headers: { "retry-after": "999999" },
+        }),
     );
-
     const summary = await deliver(
       deliveryOptions(database, recorder, {
-        sleepImpl: async (ms) => {
-          delays.push(ms);
-        },
+        nowProvider: () => "2026-09-07T00:00:00.000Z",
       }),
     );
-
-    expect(summary.runs[0]).toMatchObject({ state: "complete", attempts: 2 });
-    expect(delays).toEqual([1000]);
-  });
-
-  it("retries HTTP 5xx before delivering successfully", async () => {
-    const events = makeRun(16, "run-service-unavailable");
-    const database = setup([events]);
-    const delays: number[] = [];
-    const recorder = recordFetch((call, index) =>
-      index === 0
-        ? new Response("service unavailable", { status: 503 })
-        : acceptedResponse(bodyFrom(call)),
-    );
-
-    const summary = await deliver(
-      deliveryOptions(database, recorder, {
-        sleepImpl: async (ms) => {
-          delays.push(ms);
-        },
-      }),
-    );
-
-    expect(summary.runs[0]).toMatchObject({ state: "complete", attempts: 2 });
-    expect(delays).toEqual([1000]);
+    expect(summary.runs[0]).toMatchObject({
+      attempts: 1,
+      next_retry_at: "2026-09-07T00:10:00.000Z",
+    });
   });
 
   it("fails HTTP 400 immediately without a retry delay", async () => {
@@ -855,9 +774,10 @@ describe("spool delivery", () => {
     );
 
     expect(summary.runs[0]).toMatchObject({
-      state: "error",
+      state: "blocked",
       attempts: 1,
-      error: "HTTP 400: bad request",
+      blocked_at_sequence: 1,
+      blocked_reason: "HTTP 400: bad request",
     });
     expect(delays).toEqual([]);
   });
@@ -929,31 +849,9 @@ describe("spool delivery", () => {
     expect(summary.runs[0]).toMatchObject({
       state: "error",
       attempts: 1,
-      error: "network error: offline (after 1 attempts)",
+      error: "network error: offline",
     });
     expect(delays).toEqual([]);
-  });
-
-  it("repeats the last retry delay when the delay list is short", async () => {
-    const events = makeRun(16, "run-short-delay-list");
-    const database = setup([events]);
-    const delays: number[] = [];
-    const recorder = recordFetch(() => {
-      throw new Error("offline");
-    });
-
-    const summary = await deliver(
-      deliveryOptions(database, recorder, {
-        maxAttempts: 3,
-        retryDelaysMs: [500],
-        sleepImpl: async (ms) => {
-          delays.push(ms);
-        },
-      }),
-    );
-
-    expect(summary.runs[0]).toMatchObject({ state: "error", attempts: 3 });
-    expect(delays).toEqual([500, 500]);
   });
 
   it("records one attempt and no retry delay for a clean delivery", async () => {
@@ -1019,7 +917,7 @@ describe("spool delivery", () => {
         {
           state: "error",
           acknowledged_through: 0,
-          error: expect.stringContaining('{"error":"unauthorized"}'),
+          error: "HTTP 401: authorization rejected",
         },
       ],
     });

@@ -113,11 +113,16 @@ describe("NDJSON collector", () => {
     expect(context.spool.getCursor(source)?.offset).toBe(
       Buffer.byteLength(complete),
     );
+    expect(context.spool.listSourceTails()[0]).toMatchObject({
+      sourcePath: source,
+      tailState: "partial",
+    });
 
     appendFileSync(source, `${second.slice(split)}\n`, "utf8");
     const secondPass = collect();
     expect(secondPass).toMatchObject({ spooled: 1, partial_files: 0 });
     expect(context.spool.eventCount()).toBe(2);
+    expect(context.spool.listSourceTails()[0]?.tailState).toBe("clear");
   });
 
   it("handles new run files independently", () => {

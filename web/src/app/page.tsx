@@ -1,5 +1,6 @@
 import Link from "next/link";
 
+import { AutoRefresh } from "@/components/auto-refresh";
 import { formatDashboardDate } from "@/telemetry/dates";
 import {
   DASHBOARD_RUN_SCOPE_LIMIT,
@@ -83,6 +84,10 @@ export default async function MissionsPage({
 
     return (
       <main>
+        <AutoRefresh
+          displayStatus={latestDisplay}
+          renderToken={now.getTime()}
+        />
         <h1 className="hud-title">Missions</h1>
         <p className="hud-subtitle">
           Mission types recorded on this server · {runs.length} run
@@ -207,12 +212,7 @@ export default async function MissionsPage({
         </div>
       </main>
     );
-  } catch {
-    return (
-      <main>
-        <h1 className="hud-title">Missions</h1>
-        <div className="hud-empty">TELEMETRY DATABASE UNAVAILABLE</div>
-      </main>
-    );
+  } catch (error) {
+    throw error;
   }
 }

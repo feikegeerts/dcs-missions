@@ -255,6 +255,37 @@ describe("expenditure drilldown", () => {
     ]);
   });
 
+  it("sorts groups by expenditure value from high to low", () => {
+    const expenditure = projections([
+      firedEvent({
+        sequence: 1,
+        weaponDcsType: "AIM_9X",
+        participantId: "ucid-low",
+        displayName: "Low spender",
+        assetKey: "aerial-low.u1.g1",
+      }),
+      firedEvent({
+        sequence: 2,
+        weaponDcsType: "AIM_120C",
+        participantId: "ucid-high",
+        displayName: "High spender",
+        assetKey: "aerial-high.u1.g1",
+      }),
+    ]);
+
+    const drilldown = aggregateExpenditures(expenditure);
+
+    expect(
+      drilldown.groups.map((group) => [
+        group.participantDisplayName,
+        group.knownSubtotalCents,
+      ]),
+    ).toEqual([
+      ["High spender", 105000000],
+      ["Low spender", 44709300],
+    ]);
+  });
+
   it("uses the latest participant name while preserving event snapshots", () => {
     const events = [
       firedEvent({

@@ -1,5 +1,6 @@
 import Link from "next/link";
 
+import { AutoRefresh } from "@/components/auto-refresh";
 import { RunLink } from "@/components/run-link";
 import {
   aggregatePlayerCareer,
@@ -28,6 +29,7 @@ export default async function PlayerProfilePage({
   params: Promise<{ playerId: string }>;
   searchParams: Promise<{ classification?: string }>;
 }) {
+  const renderToken = Date.now();
   try {
     const { playerId } = await params;
     const query = await searchParams;
@@ -74,6 +76,7 @@ export default async function PlayerProfilePage({
     if (participantId === null) {
       return (
         <main>
+          <AutoRefresh displayStatus={null} renderToken={renderToken} />
           <p className="hud-crumbs">
             <Link href="/players">Players</Link>
           </p>
@@ -177,6 +180,7 @@ export default async function PlayerProfilePage({
 
     return (
       <main>
+        <AutoRefresh displayStatus={null} renderToken={renderToken} />
         <p className="hud-crumbs">
           <Link href="/players">Players</Link>
           <span className="sep">/</span>
@@ -305,12 +309,7 @@ export default async function PlayerProfilePage({
         </div>
       </main>
     );
-  } catch {
-    return (
-      <main>
-        <h1 className="hud-title">Pilot unavailable</h1>
-        <div className="hud-empty">TELEMETRY DATABASE UNAVAILABLE</div>
-      </main>
-    );
+  } catch (error) {
+    throw error;
   }
 }
