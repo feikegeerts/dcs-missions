@@ -46,6 +46,7 @@ local function run_mapping(mapping)
       fail_size = false,
       fail_write = false,
       short_write = false,
+      close_nil_on_success = false,
     }
 
     function fs:reset_io_stats()
@@ -146,6 +147,9 @@ local function run_mapping(mapping)
       function handle:close()
         self.fs.files[self.path] = self.content
         self.closed = true
+        if self.fs.close_nil_on_success then
+          return nil
+        end
         return true
       end
       return handle
@@ -694,6 +698,19 @@ local function run_mapping(mapping)
     equal(system.runtime:status().last_acked_sequence, 0)
     check(system.export.state.stuck)
     check(system:contains("spool-verify-failed"))
+  end)
+
+  succeeds("dcs-compatible nil close still verifies and acknowledges", function()
+    local system = new_system()
+    system.fs.close_nil_on_success = true
+    system:new_generation(true)
+    system:add_line(2, { marker = "dcs-close-nil" })
+    system:advance(0.25)
+    equal(system.runtime:status().last_acked_sequence, 2)
+    check(not system.export.state.stuck)
+    check(system:contains("drained generation=1 from=1..2"))
+    local spool = system.fs.files[normalized(system.export.state.spool_path)]
+    check(string.find(spool, "dcs-close-nil", 1, true), "spool missing appended event")
   end)
 
   local function verify_disk_fault(name, configure, expected_category, seed_first)

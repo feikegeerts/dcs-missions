@@ -435,16 +435,16 @@ local function append_and_verify(path, bytes, expected_size)
     return nil, "spool-open-failed"
   end
   local write_ok, write_result = pcall(file.write, file, bytes)
-  local flush_ok, flush_result = pcall(file.flush, file)
-  local close_ok, close_result = pcall(file.close, file)
-  if
-    not write_ok
-    or write_result == nil
-    or not flush_ok
-    or flush_result == nil
-    or not close_ok
-    or close_result == nil
-  then
+  -- Successful flush/close are gated on pcall success only. DCS may return
+  -- nil on a successful close (no return values), so result truthiness is
+  -- not a failure signal here; post-write size plus bounded prefix and
+  -- appended-byte readback below is the authoritative persistence proof.
+  -- A successful Lua 5.1 write returns a truthy value, so a nil write
+  -- result still indicates a write failure (for example disk-full short
+  -- write) even when no exception was raised.
+  local flush_ok = pcall(file.flush, file)
+  local close_ok = pcall(file.close, file)
+  if not write_ok or write_result == nil or not flush_ok or not close_ok then
     return nil, "spool-write-failed"
   end
 
