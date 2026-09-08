@@ -2,11 +2,7 @@ import Link from "next/link";
 
 import { AutoRefresh } from "@/components/auto-refresh";
 import { formatDashboardDateTime } from "@/telemetry/dates";
-import {
-  DASHBOARD_RUN_SCOPE_LIMIT,
-  latestHumanLabel,
-  publicPlayerIdFor,
-} from "@/telemetry/dashboard";
+import { latestHumanLabel, publicPlayerIdFor } from "@/telemetry/dashboard";
 import {
   matchesClassification,
   parseClassificationFilter,
@@ -36,9 +32,7 @@ export default async function PlayersPage({
     const query = (params.q ?? "").trim().toLowerCase();
     const store = new NeonTelemetryStore();
     const runs = (
-      await store.listRuns(
-        DASHBOARD_RUN_SCOPE_LIMIT,
-        0,
+      await store.listCareerRuns(
         classificationFilter === "all" ? null : classificationFilter,
       )
     ).filter((run) =>

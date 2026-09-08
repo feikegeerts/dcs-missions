@@ -5,7 +5,6 @@ import { RunLink } from "@/components/run-link";
 import {
   aggregatePlayerCareer,
   buildRunScoreboard,
-  DASHBOARD_RUN_SCOPE_LIMIT,
   extractAssetSnapshots,
   extractSortieOwners,
   formatPartialCost,
@@ -38,9 +37,7 @@ export default async function PlayerProfilePage({
     );
     const store = new NeonTelemetryStore();
     const runs = (
-      await store.listRuns(
-        DASHBOARD_RUN_SCOPE_LIMIT,
-        0,
+      await store.listCareerRuns(
         classificationFilter === "all" ? null : classificationFilter,
       )
     ).filter((run) =>

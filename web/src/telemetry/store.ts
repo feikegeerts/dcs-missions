@@ -447,6 +447,21 @@ export class NeonTelemetryStore implements TelemetryStore {
       });
   }
 
+  /** Career views must include all retained runs, not the dashboard page cap. */
+  async listCareerRuns(
+    classification: "test" | "historical" | null = null,
+  ): Promise<RunRow[]> {
+    return getDb()
+      .select()
+      .from(missionRuns)
+      .where(
+        classification === null
+          ? undefined
+          : eq(missionRuns.runClassification, classification),
+      )
+      .orderBy(desc(missionRuns.updatedAt));
+  }
+
   async listRuns(
     limit = 100,
     offset = 0,
