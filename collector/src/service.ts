@@ -8,6 +8,7 @@ import { defaultProcessObservationProvider } from "./abort-signal.js";
 import { Collector } from "./collector.js";
 import { deliver, validateDeliveryBaseUrl } from "./delivery.js";
 import type { DeliveryOptions, DeliverySummary } from "./delivery.js";
+import { buildHealthStatus, postHealthStatus } from "./health-post.js";
 import {
   acquireOwnership,
   canonicalizeOwnershipPaths,
@@ -41,6 +42,8 @@ export interface ServiceOptions {
 
 export interface ServiceDependencies {
   fetchImpl?: typeof fetch;
+  /** Separate double for health POSTs; production uses global fetch. */
+  healthFetchImpl?: typeof fetch;
   print?: (message: string) => void;
   setTimeoutImpl?: (
     callback: () => void,
@@ -219,6 +222,7 @@ export class ServiceController extends EventEmitter {
         )
         .finally(() => {
           this.deliveryInFlight = undefined;
+          void this.postCollectorHealth();
         });
     }
     this.deliveryTimer = this.dependencies.setTimeoutImpl(
@@ -235,6 +239,72 @@ export class ServiceController extends EventEmitter {
     if (this.deliveryTimer !== undefined) {
       this.dependencies.clearTimeoutImpl(this.deliveryTimer);
       this.deliveryTimer = undefined;
+    }
+  }
+
+  private async postCollectorHealth(): Promise<void> {
+    try {
+      const healthFetchImpl =
+        this.dependencies.healthFetchImpl ??
+        (this.dependencies.fetchImpl === undefined ? fetch : undefined);
+      // Existing injected delivery doubles are scoped to ingest/lifecycle
+      // payloads. Tests or embedders opt health into the same transport
+      // explicitly with healthFetchImpl.
+      if (healthFetchImpl === undefined) return;
+      const service = (await serviceStatus(this.options)) as {
+        operational_status: object;
+      };
+      const circuit = this.spool.getDeliveryCircuit();
+      const blocked = this.spool
+        .listRunRetryStates()
+        .filter(
+          (row) => row.blockedAtSequence !== null && row.blockedReason !== null,
+        )
+        .map((row) => ({
+          runKey: row.runKey,
+          blockedAtSequence: row.blockedAtSequence!,
+          blockedReason: row.blockedReason!,
+        }));
+      const operational = service.operational_status as Record<string, unknown>;
+      const stateDisk = (
+        operational.disk as Record<string, unknown> | undefined
+      )?.state as Record<string, unknown> | undefined;
+      const available = stateDisk?.available_bytes;
+      const diskFreeBytesState =
+        typeof available === "string" && /^\d+$/.test(available)
+          ? Number(available)
+          : null;
+      const result = await postHealthStatus({
+        url: `${this.options.url.replace(/\/+$/, "")}/api/telemetry/collector-health`,
+        token: this.options.token,
+        fetchImpl: healthFetchImpl,
+        status: buildHealthStatus({
+          canonicalInput: this.lock.canonicalInput,
+          operationalStatus: service.operational_status,
+          circuit: circuit === null ? null : { open: true },
+          blocked,
+          diskFreeBytesState:
+            diskFreeBytesState !== null &&
+            Number.isSafeInteger(diskFreeBytesState)
+              ? diskFreeBytesState
+              : null,
+          collectorVersion: "unknown",
+        }),
+      });
+      if (!result.ok) {
+        this.log({
+          kind: "collector-health-post-failure",
+          ...(result.httpStatus === undefined
+            ? {}
+            : { http_status: result.httpStatus }),
+          reason: result.reason ?? "unknown",
+        });
+      }
+    } catch (error: unknown) {
+      this.log({
+        kind: "collector-health-post-failure",
+        reason: redact(errorMessage(error), this.options.token),
+      });
     }
   }
 
