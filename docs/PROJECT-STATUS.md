@@ -1,5 +1,20 @@
 # Project status
 
+**Slice 18.5 complete + section 6.4 merged — 2026-09-13:** Integrated
+acceptance (S18.5-e) passed on both legs with the persistent
+`DcsTelemetryCollector` service as the sole delivery path (dev leg 18/18
+gapless, 300 s auto-stop, source→production p50 7.670 s / p95 8.962 s;
+stock-scripting hook leg 11/11 gapless, mission-authoritative empty-peek
+stop, 6.5 s final delivery). Test runs were cleaned from production in one
+owner-approved transaction; the 2-run baseline was re-verified. Section 6.4
+gameplay (lives, wave escalation, in-fiction messages) and the S18.5-c
+collector-health dashboard are merged to `main` (`bb299d7`, `47277e2`);
+migration `web/drizzle/0005_wakeful_redwing.sql` is committed but **not
+applied** (owner-gated). The collector service is the steady-state default
+(installed + left running, reversible — see
+`docs/telemetry/slice-18-5c-windows-runbook.md`). Evidence:
+`docs/telemetry/slice-18-5-e-evidence.md`.
+
 **Live hook repair — 2026-09-12:** The stock GameGUI file API returns no values
 on successful write/flush/close and has no `seek` method. This blocked export
 after `mission.started`, even with a healthy collector. The installed hook now
@@ -29,10 +44,12 @@ on offline-only evidence but is not complete stock mission/combat or near-live
 acceptance. Collector automation and browser refresh are still not implemented.
 Older snapshots below are historical and do not override this addendum.
 
-**Last updated:** 2026-09-07 (Slices 13 + 14 complete, committed/pushed
-`ac8e37e`, migrations 0003+0004 in Neon and live-ingest verified; Slice 15
-B/C pushed; demo runs cleaned from Neon; STYLUA-CRLF fixed uncommitted).
-Read this first when coming back.
+**Last updated:** 2026-09-13 (Slice 18.5 complete and S18.5-e integrated
+acceptance passed; section 6.4 gameplay + S18.5-c collector-health dashboard
+merged to `main` as `47277e2` / `bb299d7`; migrations 0003+0004 applied in
+Neon, `0005_wakeful_redwing` committed and **not applied** — owner-gated;
+collector service installed and left running per owner default). Read this
+first when coming back.
 
 **Night shift 2026-09-06:** Slice 15 Increment B + HUD reskin committed
 `d8d901b` and Slice 15 Increment C committed `36f8252` (both pushed;
@@ -474,6 +491,26 @@ how to verify, and `docs/dev-setup.md §8` for the build/QA loop.
       for telemetry Slice 14.
 - [x] Replace per-player bandit resets with whole-package waves. Partial red
       losses are held; the 30-second timer starts after the final red loss.
+- [x] Give each human player a finite, configurable number of lives. Track lives
+      across aircraft losses/rejoins and end the mission once no human player has
+      any lives remaining; define the terminal-state handling and announcement.
+      Implemented 2026-09-13: `LIVES_PER_PLAYER` (default 3) keyed on UCID with a
+      slot fallback, per run; reconnect keeps lives; zero-life players are
+      excluded from the package; the terminal state announces and stops waves.
+      Offline-verified; live human-in-seat validation parked.
+- [x] Make bandit waves progressively harder. Decide whether escalation adds one
+      bandit every 3 or every 5 completed waves (or use another cadence), then
+      define the maximum package size and difficulty knobs. Implemented
+      2026-09-13: one extra bandit per 3 completed waves
+      (`extra = math.floor(waveNumber / 3)`), package size
+      `math.min(#players + extra, MAX_PACKAGE_SIZE)` with the cap at 8.
+      Offline-verified; live validation parked.
+- [x] Rework player-facing in-game messages. Audit the current exact event
+      reports and either replace them with concise immersive/narrative messages
+      or remove non-essential messages, while retaining only messages needed for
+      player orientation and the mission-end state. Reworked 2026-09-13 to a
+      concise in-fiction voice (final strings reported to the owner for review);
+      offline-verified, live validation parked.
 - [ ] Validate 2v2, 3v3, and 4v4 package geometry/tasking on the dedicated
       server and inspect the result in Tacview.
 - [x] Install/configure Tacview for
@@ -591,7 +628,12 @@ Slice 10 (approved and completed 2026-09-03 on branch
   idempotent; the current-aircraft AAM-gap priority and values were reviewed,
   and Slice 12 is approved. Existing runs remain unassigned and unpriced.
 
-Telemetry now has priority over the optional MIST respawn work.
+Telemetry now has priority over the optional MIST respawn work. Slices
+12–18.5 (projection/dashboard increments, ordnance catalogue v2, the
+near-live collector service, and integrated acceptance) are recorded in the
+dated addenda at the top and in the `docs/telemetry/` evidence docs; the
+collector-health migration `web/drizzle/0005_wakeful_redwing.sql` is
+committed and **not applied** (owner-gated).
 
 ---
 

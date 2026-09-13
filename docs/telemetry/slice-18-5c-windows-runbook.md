@@ -14,6 +14,27 @@ restarts: SQLite/WAL, cursors, retry and circuit deadlines, lifecycle outbox,
 source tails, and ownership metadata are recovery state. A normal restart must
 never select or initialize a fresh state directory.
 
+## Steady-state operation (final owner decision, 2026-09-13)
+
+The final default is that the `DcsTelemetryCollector` WinSW service is
+**installed and left running** (automatic start) on this machine: that is the
+steady state, not a time-boxed flight posture. The service holds the spool
+ownership lock and continuously collects and delivers to the pinned production
+origin. Never start a second ad-hoc collector instance against the same
+input/state pair — the single-owner lock makes it exit with an ownership
+conflict, and a competing process is a support incident, not a workaround.
+
+Identity interim: on this build a dedicated user-account service exits 1064,
+so the service runs as LocalSystem (SYSTEM) — an approved, documented interim
+(see `slice-18-5c-windows-operation-evidence.md`). The least-privilege
+dedicated identity remains the target; revisit via the Task Scheduler boot
+task fallback (logs on as the dedicated identity) or after the WinSW 1064
+cause is resolved.
+
+Reversibility: uninstall at any time per "Logs, retention, and uninstall" —
+stop the service, verify lock release, uninstall via WinSW, and keep
+state/input under restricted ACLs. Uninstall never implies deletion or prune.
+
 ## WinSW installation design (owner/admin)
 
 1. Build with Node 22+ and stage `collector/dist`, runtime dependencies, and the
