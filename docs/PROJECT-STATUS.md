@@ -225,6 +225,14 @@ Verified end-to-end on the dedicated server (logs from 2026-07-26 session):
   units to an already spawned group.
 - 🧪 F10 menu now uses **Respawn bandit wave** as an explicit forced package
   reset. Kill messages label the total as `Team kills`.
+- 🧪 Mixed-donor random waves + per-wave random profile + defer-to-ME
+  (implemented, pending live validation): each wave clones a uniform-random
+  donor from Bandit-1..Bandit-10 with a random spawn altitude (15,000–25,000 ft),
+  CAP altitude (15,000–30,000 ft), CAP speed (350–550 kt), and spawn distance
+  (55–85 sm); ROE/alarm/reaction-on-threat are no longer force-set so the
+  per-donor ME settings carry through. Offline Lua + stylua green; Tacview
+  geometry/tasking check and the uninstalled-module Su-33 donor behavior still
+  need a live run.
 - ✅ Score counter increments, displays via F10 message, resets.
 - ✅ Round 1 heading randomization on player slot (visible in HSI).
 - ✅ `stylua --check` passes on both missions.

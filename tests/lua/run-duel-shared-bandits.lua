@@ -4,6 +4,12 @@
 -- src/missions/duel-dynamic/main.lua.  The mocks below deliberately expose
 -- only the DCS/MOOSE surface used by that file.
 --
+-- The mission picks a uniform-random donor from Bandit-1..Bandit-10 per wave
+-- with a per-wave random altitude/speed/distance profile, and it defers
+-- group options to the ME.  The assertions below cover that design plus the
+-- package lifecycle, including graceful degradation when a donor's
+-- SPAWN:New returns nil (e.g. uninstalled module).
+--
 -- Run from the repository root:
 --   lua5.1 tests/lua/run-duel-shared-bandits.lua
 
@@ -33,11 +39,38 @@ end
 
 local BLUE = 2
 local RED = 1
-local MIN_SEPARATION_M = 60 * 1609.344
-local MAX_SEPARATION_M = MIN_SEPARATION_M + 20000
+local MIN_SEPARATION_M = 55 * 1609.344
+local MAX_SEPARATION_M = 85 * 1609.344
+local MIN_SPAWN_ALT_M = 15000 * 0.3048
+local MAX_SPAWN_ALT_M = 25000 * 0.3048
+local MIN_CAP_ALT_FT = 15000
+local MAX_CAP_ALT_FT = 30000
+local MIN_CAP_SPEED_KT = 350
+local MAX_CAP_SPEED_KT = 550
 local FOUR_NM_M = 4 * 1852
 
 local PLAYER_GROUP_NAMES = { "Aerial-1", "Aerial-2", "Aerial-3", "Aerial-4" }
+local BANDIT_GROUP_NAMES = {
+  "Bandit-1",
+  "Bandit-2",
+  "Bandit-3",
+  "Bandit-4",
+  "Bandit-5",
+  "Bandit-6",
+  "Bandit-7",
+  "Bandit-8",
+  "Bandit-9",
+  "Bandit-10",
+}
+
+local function isBanditDonor(name)
+  for _, donor in ipairs(BANDIT_GROUP_NAMES) do
+    if name == donor then
+      return true
+    end
+  end
+  return false
+end
 
 -- =====================================================================
 -- Bounded DCS/MOOSE mocks
@@ -231,8 +264,12 @@ local allWrappers = {}
 local spawnersByTemplate = {}
 local constructedSpawners = {}
 
-local SPAWN = {}
+local SPAWN = { failTemplates = {}, newCalls = {} }
 function SPAWN:New(templateName)
+  SPAWN.newCalls[#SPAWN.newCalls + 1] = templateName
+  if SPAWN.failTemplates[templateName] then
+    return nil
+  end
   local spawner = {
     template = templateName,
     grouping = nil,
@@ -373,12 +410,22 @@ local auftrags = {}
 local interceptAuftrags = {}
 local AUFTRAG = {}
 function AUFTRAG:NewCAP(zone, altitude, speed)
-  local mission = { kind = "CAP", zone = zone, altitude = altitude, speed = speed }
+  -- Like the real AUFTRAG:NewCAP, bake optionROE + optionROT first.  The
+  -- mission must nil them out (defer-to-ME) before handing the mission to
+  -- the flight group.
+  local mission = {
+    kind = "CAP",
+    zone = zone,
+    altitude = altitude,
+    speed = speed,
+    optionROE = "BAKED_ROE",
+    optionROT = "BAKED_ROT",
+  }
   auftrags[#auftrags + 1] = mission
   return mission
 end
 function AUFTRAG:NewINTERCEPT(targetGroup)
-  local mission = { kind = "INTERCEPT", target = targetGroup }
+  local mission = { kind = "INTERCEPT", target = targetGroup, optionROE = "BAKED_ROE", optionAlarm = "BAKED_ALARM" }
   interceptAuftrags[#interceptAuftrags + 1] = mission
   return mission
 end
@@ -409,6 +456,26 @@ function env.warning(message)
 end
 function env.error(message)
   recordLog("ERROR", message)
+end
+
+-- Mock telemetry asset adapter: records the configured (donor) name each
+-- spawned wave is registered with, so the test can assert the ACTUAL donor
+-- name is passed instead of a fixed template name.
+local assetRegistrations = {}
+local playerRegistrations = {}
+local despawnCalls = {}
+local mockAssetAdapter = {}
+function mockAssetAdapter.register_bandit_group(adapterSelf, group, configured_name, sim_time)
+  assetRegistrations[#assetRegistrations + 1] = { group_name = group:GetName(), configured_name = configured_name }
+  return { { asset_key = "mock.u1.g1" } }
+end
+function mockAssetAdapter.register_player_group(adapterSelf, group)
+  playerRegistrations[#playerRegistrations + 1] = { group_name = group:GetName() }
+  return { asset_key = "mock-player" }
+end
+function mockAssetAdapter.despawn_group(adapterSelf, group)
+  despawnCalls[#despawnCalls + 1] = { group_name = group:GetName() }
+  return true
 end
 
 -- =====================================================================
@@ -460,6 +527,7 @@ _G.ENUMS = ENUMS
 _G.coalition = coalition
 _G.MY_SCRIPTS_ROOT = "src/"
 _G.TELEMETRY_DEVELOPMENT_ENABLED = false
+_G.duel_telemetry_runtime = { asset = mockAssetAdapter }
 
 local function restoreGlobals()
   for _, name in ipairs(GLOBAL_NAMES) do
@@ -591,13 +659,51 @@ local function logContains(fragment)
   return false
 end
 
+local function liveCentroid()
+  local sumX, sumY, sumZ, count = 0, 0, 0, 0
+  for _, name in ipairs(PLAYER_GROUP_NAMES) do
+    if playerAlive[name] then
+      local coord = playerCoords[name]
+      sumX = sumX + coord.x
+      sumY = sumY + coord.y
+      sumZ = sumZ + coord.z
+      count = count + 1
+    end
+  end
+  if count == 0 then
+    return nil
+  end
+  return newCoordinate(sumX / count, sumY / count, sumZ / count)
+end
+
+-- After a second main.lua load (missing-donor phase), the newest watcher for
+-- an event belongs to the newest chunk.  Earlier tests use findWatcher (the
+-- first match, i.e. the first chunk's watcher).
+local function findLatestWatcher(event)
+  local found = nil
+  for _, watcher in ipairs(watchers) do
+    for _, handledEvent in ipairs(watcher.handled_events) do
+      if handledEvent == event then
+        found = watcher
+      end
+    end
+  end
+  return found
+end
+
+local function killPackageFully(deadWatcher, wrapper)
+  for _, unit in ipairs(wrapper.units) do
+    fireBanditEvent(deadWatcher, "OnEventDead", wrapper, unit.name)
+  end
+end
+
 local currentPackage = nil
 
 -- =====================================================================
 -- Assertions follow the package-wave acceptance scenario.
 -- =====================================================================
 
-succeeds("1. deferred init and the distinct three-second assembly spawn one package", function()
+succeeds("1. deferred init builds one spawner per donor and the assembly spawns one package", function()
   local mainPath = "src/missions/duel-dynamic/main.lua"
   dofile(mainPath)
 
@@ -606,11 +712,17 @@ succeeds("1. deferred init and the distinct three-second assembly spawn one pack
   check(initSchedule ~= nil, "init poll scheduler was not captured")
   equal(runSchedule(initSchedule), false, "init poll did not stop after initialization")
 
-  equal(#constructedSpawners, 1, "deferred init constructed an unexpected number of SPAWN objects")
-  check(spawnersByTemplate["Bandit-1"] ~= nil, "Bandit-1 spawner was not constructed")
-  check(spawnersByTemplate["Bandit-2"] == nil, "Bandit-2 spawner was constructed")
-  check(spawnersByTemplate["Bandit-3"] == nil, "Bandit-3 spawner was constructed")
-  check(spawnersByTemplate["Bandit-1"].on_spawn_group ~= nil, "Bandit-1 OnSpawnGroup callback missing")
+  equal(#SPAWN.newCalls, 10, "deferred init did not attempt SPAWN:New for all 10 donors")
+  local attempted = {}
+  for _, name in ipairs(SPAWN.newCalls) do
+    attempted[name] = true
+  end
+  for _, donor in ipairs(BANDIT_GROUP_NAMES) do
+    check(attempted[donor], "SPAWN:New was not attempted for " .. donor)
+    check(spawnersByTemplate[donor] ~= nil, donor .. " spawner was not constructed")
+    check(spawnersByTemplate[donor].on_spawn_group ~= nil, donor .. " OnSpawnGroup callback missing")
+  end
+  equal(#constructedSpawners, 10, "deferred init constructed an unexpected number of SPAWN objects")
   equal(#spawnRecords, 0, "deferred init spawned before the assembly delay")
 
   local assemblySchedule = findPendingSchedule(3, false)
@@ -619,12 +731,22 @@ succeeds("1. deferred init and the distinct three-second assembly spawn one pack
 
   equal(#spawnRecords, 1, "initial assembly did not spawn exactly one group")
   local spawn = latestSpawn()
-  equal(spawn.template, "Bandit-1", "initial package used the wrong template")
-  check(spawn.wrapper:GetName():find("^Bandit%-1#%d%d%d$") ~= nil, "package wrapper name is not Bandit-1#NNN")
+  check(isBanditDonor(spawn.template), "initial package used a template outside Bandit-1..Bandit-10")
+  check(
+    spawn.wrapper:GetName():find("^Bandit%-%d+#%d%d%d$") ~= nil,
+    "package wrapper name is not Bandit-N#NNN, got " .. spawn.wrapper:GetName()
+  )
   equal(spawn.grouping, 2, "initial package was not configured as a two-ship group")
   equal(spawn.wrapper.unit_count, 2, "initial package wrapper has the wrong unit count")
   equal(#spawn.wrapper.units, 2, "initial package does not contain two units")
-  equal(spawnersByTemplate["Bandit-1"].grouping_calls[1], 2, "InitGrouping(2) was not applied")
+  equal(spawnersByTemplate[spawn.template].grouping_calls[1], 2, "InitGrouping(2) was not applied")
+  equal(#assetRegistrations, 1, "initial package did not register exactly one bandit asset")
+  equal(
+    assetRegistrations[1].configured_name,
+    spawn.template,
+    "bandit asset registration did not pass the actual donor name"
+  )
+  equal(assetRegistrations[1].group_name, spawn.wrapper:GetName(), "bandit asset registration has the wrong group")
   currentPackage = spawn.wrapper
 end)
 
@@ -632,11 +754,8 @@ succeeds("2. package geometry is a close formation at the configured separation"
   local spawn = latestSpawn()
   local centroid = arithmeticCentroid("Aerial-1", "Aerial-3")
   local distance = centroid:Get2DDistance(spawn.coordinate)
-  check(distance >= MIN_SEPARATION_M - 0.001, "package anchor is inside the 60 statute-mile minimum")
-  check(
-    distance <= MAX_SEPARATION_M + 0.001,
-    "package anchor exceeds the configured 60 statute-mile plus 20 km maximum"
-  )
+  check(distance >= MIN_SEPARATION_M - 0.001, "package anchor is inside the 55 statute-mile minimum")
+  check(distance <= MAX_SEPARATION_M + 0.001, "package anchor exceeds the 55–85 statute-mile ring maximum")
 
   for i, unit in ipairs(spawn.wrapper.units) do
     check(
@@ -749,7 +868,7 @@ succeeds("6. the completed package schedules one delayed replacement", function(
 
   equal(#spawnRecords, spawnsBefore + 1, "delayed package scheduler did not spawn exactly one group")
   local spawn = latestSpawn()
-  equal(spawn.template, "Bandit-1", "delayed package used the wrong template")
+  check(isBanditDonor(spawn.template), "delayed package used a template outside Bandit-1..Bandit-10")
   equal(spawn.grouping, 2, "delayed package did not retain grouping 2")
   equal(#liveWrappers(), 1, "delayed package did not replace the defeated package")
   currentPackage = spawn.wrapper
@@ -861,6 +980,150 @@ succeeds("12. the valid scenario logs no environment errors", function()
   for _, entry in ipairs(logs) do
     check(entry.level ~= "ERROR", "error log: " .. entry.message)
   end
+end)
+
+succeeds("13. waves vary the donor and stay inside the random profile bounds", function()
+  local deadWatcher = findWatcher(EVENTS.Dead)
+  check(deadWatcher ~= nil, "dead/crash watcher is missing")
+  local spawnsBefore = #spawnRecords
+  local auftragsBefore = #auftrags
+  local registrationsBefore = #assetRegistrations
+  local centroid = liveCentroid()
+  check(centroid ~= nil, "no live player centroid for the bounds loop")
+  check(
+    playerAlive["Aerial-1"] and playerAlive["Aerial-2"] and playerAlive["Aerial-3"] and playerAlive["Aerial-4"],
+    "all four blue players are not alive for the bounds loop"
+  )
+
+  local wavesToSimulate = 8
+  for _ = 1, wavesToSimulate do
+    killPackageFully(deadWatcher, currentPackage)
+    local respawnSchedule = findPendingSchedule(30, false)
+    check(respawnSchedule ~= nil, "bounds-loop wave defeat did not schedule the next wave")
+    runSchedule(respawnSchedule)
+    currentPackage = latestSpawn().wrapper
+  end
+
+  equal(#spawnRecords, spawnsBefore + wavesToSimulate, "bounds loop did not spawn exactly one group per wave")
+  equal(#assetRegistrations, registrationsBefore + wavesToSimulate, "bounds loop did not register one asset per wave")
+
+  local donorsSeen = {}
+  for i = spawnsBefore + 1, #spawnRecords do
+    local spawn = spawnRecords[i]
+    check(isBanditDonor(spawn.template), "wave used a template outside Bandit-1..Bandit-10")
+    donorsSeen[spawn.template] = true
+    check(
+      spawn.coordinate.y >= MIN_SPAWN_ALT_M - 0.001 and spawn.coordinate.y <= MAX_SPAWN_ALT_M + 0.001,
+      string.format("wave spawn altitude %.0f m is outside 15000–25000 ft", spawn.coordinate.y)
+    )
+    local distance = centroid:Get2DDistance(spawn.coordinate)
+    check(
+      distance >= MIN_SEPARATION_M - 0.001 and distance <= MAX_SEPARATION_M + 0.001,
+      string.format("wave spawn distance %.0f m is outside 55–85 statute miles", distance)
+    )
+    local registration = assetRegistrations[registrationsBefore + (i - spawnsBefore)]
+    equal(registration.configured_name, spawn.template, "wave asset registration did not pass the actual donor name")
+    equal(registration.group_name, spawn.wrapper:GetName(), "wave asset registration has the wrong group")
+  end
+
+  local distinctDonors = 0
+  for _ in pairs(donorsSeen) do
+    distinctDonors = distinctDonors + 1
+  end
+  check(distinctDonors >= 2, "bounds loop never varied the donor across " .. wavesToSimulate .. " waves")
+
+  for i = auftragsBefore + 1, #auftrags do
+    local mission = auftrags[i]
+    check(
+      mission.altitude >= MIN_CAP_ALT_FT and mission.altitude <= MAX_CAP_ALT_FT,
+      string.format("CAP altitude %s ft is outside 15000–30000 ft", tostring(mission.altitude))
+    )
+    check(
+      mission.speed >= MIN_CAP_SPEED_KT and mission.speed <= MAX_CAP_SPEED_KT,
+      string.format("CAP speed %s kt is outside 350–550 kt", tostring(mission.speed))
+    )
+  end
+
+  check(logContains(", donor Bandit-"), "spawn log does not name the chosen donor")
+  check(logContains(" mi from blue centroid"), "spawn log does not report statute miles")
+end)
+
+succeeds("14. group options defer to the ME: baked AUFTRAG options are nilled, no live options set", function()
+  check(#flightGroups > 0, "no flight groups were tasked")
+  for _, flightGroup in ipairs(flightGroups) do
+    for _, mission in ipairs(flightGroup.missions) do
+      equal(mission.optionROE, nil, "AUFTRAG mission kept a baked optionROE")
+      equal(mission.optionROT, nil, "AUFTRAG mission kept a baked optionROT")
+      equal(mission.optionAlarm, nil, "AUFTRAG mission kept a baked optionAlarm")
+    end
+  end
+  for _, wrapper in ipairs(allWrappers) do
+    check(next(wrapper.options) == nil, "live group options were force-set on " .. wrapper:GetName())
+  end
+end)
+
+succeeds("15. a missing donor logs once and init completes with the remaining nine", function()
+  SPAWN.failTemplates = { ["Bandit-8"] = true }
+  local spawnersBefore = #constructedSpawners
+  local callsBefore = #SPAWN.newCalls
+  local spawnsBefore = #spawnRecords
+  local registrationsBefore = #assetRegistrations
+
+  dofile("src/missions/duel-dynamic/main.lua")
+
+  local initSchedule = findPendingSchedule(1, true)
+  check(initSchedule ~= nil, "second init poll scheduler was not captured")
+  equal(runSchedule(initSchedule), false, "second init poll did not stop after initialization")
+
+  equal(#SPAWN.newCalls, callsBefore + 10, "second init did not attempt SPAWN:New for all 10 donors")
+  local attempted = {}
+  for i = callsBefore + 1, #SPAWN.newCalls do
+    attempted[SPAWN.newCalls[i]] = true
+  end
+  for _, donor in ipairs(BANDIT_GROUP_NAMES) do
+    check(attempted[donor], "second init did not attempt SPAWN:New for " .. donor)
+  end
+  equal(#constructedSpawners, spawnersBefore + 9, "second init did not keep exactly the nine surviving donors")
+  check(logContains("SPAWN:New('Bandit-8')"), "missing-donor error log is missing")
+
+  local assemblySchedule = findPendingSchedule(3, false)
+  check(assemblySchedule ~= nil, "second three-second assembly scheduler was not captured")
+  runSchedule(assemblySchedule)
+
+  equal(#spawnRecords, spawnsBefore + 1, "second assembly did not spawn exactly one group")
+  local spawn = latestSpawn()
+  check(spawn.template ~= "Bandit-8", "second assembly spawned from the missing donor")
+  check(isBanditDonor(spawn.template), "second assembly used a template outside Bandit-1..Bandit-10")
+  equal(
+    assetRegistrations[#assetRegistrations].configured_name,
+    spawn.template,
+    "second assembly registration did not pass the actual donor name"
+  )
+  equal(#assetRegistrations, registrationsBefore + 1, "second assembly did not register exactly one asset")
+  _G.duel_missing_donor_package = spawn.wrapper
+end)
+
+succeeds("16. spawnWave only ever picks from the surviving donors", function()
+  local deadWatcher = findLatestWatcher(EVENTS.Dead)
+  check(deadWatcher ~= nil, "second dead/crash watcher is missing")
+  local spawnsBefore = #spawnRecords
+  local wavesToSimulate = 5
+  local package = _G.duel_missing_donor_package
+  check(package ~= nil, "missing-donor package was not captured")
+  for _ = 1, wavesToSimulate do
+    killPackageFully(deadWatcher, package)
+    local respawnSchedule = findPendingSchedule(30, false)
+    check(respawnSchedule ~= nil, "survivor-loop wave defeat did not schedule the next wave")
+    runSchedule(respawnSchedule)
+    package = latestSpawn().wrapper
+  end
+  equal(#spawnRecords, spawnsBefore + wavesToSimulate, "survivor loop did not spawn exactly one group per wave")
+  for i = spawnsBefore + 1, #spawnRecords do
+    local template = spawnRecords[i].template
+    check(template ~= "Bandit-8", "survivor loop spawned from the missing donor")
+    check(isBanditDonor(template), "survivor loop used a template outside Bandit-1..Bandit-10")
+  end
+  _G.duel_missing_donor_package = nil
 end)
 
 restoreGlobals()

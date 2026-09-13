@@ -1,12 +1,21 @@
 -- src/missions/duel-dynamic/main.lua — 1–4 vs 1–4 dynamic spawn.
 -- Player slots: Aerial-1, Aerial-2, Aerial-3, Aerial-4.
--- Red template: Bandit-1 (one late-activated aircraft, cloned to wave size).
+-- Red donors: Bandit-1 .. Bandit-10 (late-activated ME aircraft, one per
+-- donor group). Each wave picks one donor uniformly at random and clones it
+-- to wave size, so airframe, payload, skill, chaff/flare, and ME group
+-- options vary per wave.
 -- Event-driven package waves: one red aircraft per live blue player, cloned
 -- into a single DCS group so the AI fights as a package rather than as isolated
--- duels. A wave spawns in close formation 60+ mi from the blue centroid. Losses
+-- duels. A wave spawns in close formation 55–85 statute mi from the blue
+-- centroid at a per-wave random altitude (15,000–25,000 ft). The package gets
+-- a per-wave random CAP profile (15,000–30,000 ft, 350–550 kt). Losses
 -- do not respawn individually; the next complete package launches only after
 -- every aircraft in the current wave is dead. Bandits are cleaned up when every
 -- player leaves.
+--
+-- Group options defer to the ME: the script never force-sets ROE, alarm
+-- state, or reaction-on-threat on the spawned wave (or on its AUFTRAG), so
+-- the per-donor ME settings carry through untouched.
 --
 -- The whole "world-touching" setup (find player groups, create bandit
 -- SPAWN objects, first-round scatter of player planes) is deferred by 1 s
@@ -29,9 +38,21 @@ env.info("[duel-dynamic] MOOSE loaded")
 -- Player roster and red template allow-list
 -- =====================================================================
 -- ME player-slot names are normal player slots. Red names remain the telemetry
--- allow-list; Bandit-1 is the active one-aircraft template and must be late activated.
+-- allow-list; all 10 Bandit-N groups are active wave donors and must be late
+-- activated in the ME.
 local PLAYER_GROUP_NAMES = { "Aerial-1", "Aerial-2", "Aerial-3", "Aerial-4" }
-local BANDIT_GROUP_NAMES = { "Bandit-1", "Bandit-2", "Bandit-3" }
+local BANDIT_GROUP_NAMES = {
+  "Bandit-1",
+  "Bandit-2",
+  "Bandit-3",
+  "Bandit-4",
+  "Bandit-5",
+  "Bandit-6",
+  "Bandit-7",
+  "Bandit-8",
+  "Bandit-9",
+  "Bandit-10",
+}
 
 -- Load siblings. Bootstrap set _G.MY_SCRIPTS_ROOT to the project src/ path.
 local ROOT = _G.MY_SCRIPTS_ROOT
@@ -183,10 +204,21 @@ end
 -- =====================================================================
 -- Spawn / distance config
 -- =====================================================================
-local MIN_SEPARATION_M = 60 * 1609.344
-local RANDOM_DIST_MIN_M = MIN_SEPARATION_M
-local RANDOM_DIST_MAX_M = MIN_SEPARATION_M + 20000
+-- Distances are STATUTE miles (1609.344 m per mile). Each wave picks a
+-- uniform-random donor plus a uniform-random profile:
+--   spawn distance  55–85 statute mi from the blue centroid
+--   spawn altitude  15,000–25,000 ft (15,000 ft floor)
+--   CAP altitude    15,000–30,000 ft (AUFTRAG:NewCAP altitude, feet)
+--   CAP speed       350–550 kt (AUFTRAG:NewCAP speed, knots)
+local RANDOM_DIST_MIN_M = 55 * 1609.344
+local RANDOM_DIST_MAX_M = 85 * 1609.344
 local SPAWN_ALTITUDE_M = 15000 * 0.3048
+local SPAWN_ALT_MIN_FT = 15000
+local SPAWN_ALT_MAX_FT = 25000
+local CAP_ALT_MIN_FT = 15000
+local CAP_ALT_MAX_FT = 30000
+local CAP_SPEED_MIN_KT = 350
+local CAP_SPEED_MAX_KT = 550
 local RESPAWN_DELAY = 30
 local WAVE_ASSEMBLY_DELAY = 3
 local EMPTY_SERVER_CLEANUP_DELAY = 1
@@ -208,23 +240,15 @@ local INIT_TIMEOUT = 0
 --                  "CAP"       → bandit orbits a zone and engages
 --                  all detected air targets inside it. This is the default
 --                  for package-vs-package fights.
--- BANDIT_ROE     : "WEAPON_FREE" → fire on any detected (most aggressive).
---                  "OPEN_FIRE"   → fire only on identified hostiles.
---                  "HOLD"        → hold fire unless fired upon.
--- BANDIT_ROT     : "EVADE_FIRE"  → break off when fired on (default).
---                  "NO_EVADE"    → never evade.
--- BANDIT_ALARM   : "RED"   → engage on detection (most aggressive).
---                  "AUTO"  → auto switch.
---                  "GREEN" → manual, only fires when told.
--- BANDIT_ALT_FT  : working altitude in feet (energy advantage).
--- BANDIT_SPEED_KT: cruise speed in knots.
 -- BANDIT_CAP_RADIUS_M: CAP zone radius in metres (only used by "CAP").
+-- Code owns only the task plus the CAP radius. ROE, alarm state,
+-- reaction-on-threat, and missile launch mode are per-donor ME settings the
+-- user varies in the mission editor (all donors ROE=WEAPON_FREE;
+-- MISSILE_ATTACK max-range on Bandit-1/5/6/8/9 vs threat-estimate on
+-- Bandit-2/3/4/7/10). The script never force-sets group options, and it
+-- nils out the options AUFTRAG:NewCAP bakes onto the mission object, so the
+-- spawned group keeps its donor ME values.
 local BANDIT_TASK = "CAP"
-local BANDIT_ROE = "WEAPON_FREE"
-local BANDIT_ROT = "EVADE_FIRE"
-local BANDIT_ALARM = "RED"
-local BANDIT_ALT_FT = 25000
-local BANDIT_SPEED_KT = 450
 local BANDIT_CAP_RADIUS_M = 150000 -- 150 km — contains the complete spawn ring around the blue centroid
 
 -- =====================================================================
@@ -240,11 +264,12 @@ end
 -- Helpers
 -- =====================================================================
 
-local function randomOffsetCoord(refCoord, minDistM, maxDistM)
+local function randomOffsetCoord(refCoord, minDistM, maxDistM, spawnAltM)
+  spawnAltM = spawnAltM or SPAWN_ALTITUDE_M
   local dist = randInt(minDistM, maxDistM)
   local angle = randInt(0, 359)
   local newCoord = refCoord:Translate(dist, angle)
-  newCoord:SetY(SPAWN_ALTITUDE_M)
+  newCoord:SetY(spawnAltM)
   return newCoord, angle
 end
 
@@ -299,7 +324,7 @@ end
 -- =====================================================================
 -- Package-wave state (filled in by the deferred init below).
 -- =====================================================================
-local WAVE_TEMPLATE_NAME = BANDIT_GROUP_NAMES[1]
+local waveSpawners = {}
 local waveSpawner = nil
 local currentWaveGroup = nil
 local currentWaveGroupName = nil
@@ -319,7 +344,7 @@ local function telemetryAssetAdapter()
   return runtime and runtime.asset or nil
 end
 
-local function registerBanditAssets(group)
+local function registerBanditAssets(group, donorName)
   local adapter = telemetryAssetAdapter()
   if not adapter then
     if _G.TELEMETRY_DEVELOPMENT_ENABLED == true then
@@ -327,7 +352,7 @@ local function registerBanditAssets(group)
     end
     return
   end
-  local ok, instances, registrationError = pcall(adapter.register_bandit_group, adapter, group, WAVE_TEMPLATE_NAME)
+  local ok, instances, registrationError = pcall(adapter.register_bandit_group, adapter, group, donorName)
   if not ok or not instances then
     env.error(
       "[duel-dynamic][telemetry] bandit asset registration failed: " .. tostring(ok and registrationError or instances)
@@ -439,55 +464,40 @@ local function despawnCurrentWave()
   end
 end
 
-local function taskBanditPackage(bgrp, players, playerCentroid)
+local function taskBanditPackage(bgrp, players, playerCentroid, capAltFt, capSpeedKt)
   if not bgrp or #players == 0 then
     return
   end
 
-  if BANDIT_ROE == "WEAPON_FREE" then
-    pcall(function()
-      bgrp:OptionROEOpenFireWeaponFree()
-    end)
-  elseif BANDIT_ROE == "OPEN_FIRE" then
-    pcall(function()
-      bgrp:OptionROEOpenFire()
-    end)
-  end
-  if BANDIT_ALARM == "RED" then
-    pcall(function()
-      bgrp:OptionAlarmStateRed()
-    end)
-  end
-  if BANDIT_ROT == "EVADE_FIRE" then
-    pcall(function()
-      bgrp:OptionROTEvadeFire()
-    end)
-  end
-
+  -- Defer to the ME: never force-set ROE, alarm state, or
+  -- reaction-on-threat on the spawned group. AUFTRAG:NewCAP bakes
+  -- optionROE/optionROT onto the mission object, and OPSGROUP only applies
+  -- truthy options, so nil them out to leave the donor ME values alone.
   local fg = FLIGHTGROUP:New(bgrp)
   local mission
   local targetDescription
   if BANDIT_TASK == "CAP" then
     local capZone =
       ZONE_RADIUS:New(string.format("BanditWaveCap-%d", waveNumber), playerCentroid:GetVec2(), BANDIT_CAP_RADIUS_M)
-    mission = AUFTRAG:NewCAP(capZone, BANDIT_ALT_FT, BANDIT_SPEED_KT)
+    mission = AUFTRAG:NewCAP(capZone, capAltFt, capSpeedKt)
+    mission.optionROE = nil
+    mission.optionROT = nil
+    mission.optionAlarm = nil
     targetDescription = string.format("blue package centroid (%d players)", #players)
   else
     mission = AUFTRAG:NewINTERCEPT(players[1].group)
-    mission.optionROE = ENUMS.ROE.OpenFireWeaponFree
-    mission.optionAlarm = ENUMS.AlarmState.Red
+    mission.optionROE = nil
+    mission.optionROT = nil
+    mission.optionAlarm = nil
     targetDescription = players[1].name
   end
   fg:AddMission(mission)
   env.info(
     string.format(
-      "[duel-dynamic] tasked %s → %s on %s (ROE=%s, ROT=%s, alarm=%s)",
+      "[duel-dynamic] tasked %s → %s on %s (group options defer to the ME donor settings)",
       bgrp:GetName(),
       BANDIT_TASK,
-      targetDescription,
-      BANDIT_ROE,
-      BANDIT_ROT,
-      BANDIT_ALARM
+      targetDescription
     )
   )
 end
@@ -497,10 +507,18 @@ spawnWave = function(reason)
     env.info(string.format("[duel-dynamic] wave %d still active — spawn request ignored", waveNumber))
     return currentWaveGroup
   end
-  if not waveSpawner then
-    env.error("[duel-dynamic] cannot spawn wave: SPAWN template is not initialized")
+  local candidates = {}
+  for _, donorName in ipairs(BANDIT_GROUP_NAMES) do
+    if waveSpawners[donorName] then
+      candidates[#candidates + 1] = donorName
+    end
+  end
+  if #candidates == 0 then
+    env.error("[duel-dynamic] cannot spawn wave: no bandit SPAWN donor is initialized")
     return nil
   end
+  local donorName = candidates[randInt(1, #candidates)]
+  local spawner = waveSpawners[donorName]
 
   local players, playerCentroid = livePlayerPackage()
   if #players == 0 or not playerCentroid then
@@ -508,25 +526,32 @@ spawnWave = function(reason)
     return nil
   end
 
-  local spawnCoord, bearing = randomOffsetCoord(playerCentroid, RANDOM_DIST_MIN_M, RANDOM_DIST_MAX_M)
+  local spawnAltFt = randInt(SPAWN_ALT_MIN_FT, SPAWN_ALT_MAX_FT)
+  local capAltFt = randInt(CAP_ALT_MIN_FT, CAP_ALT_MAX_FT)
+  local capSpeedKt = randInt(CAP_SPEED_MIN_KT, CAP_SPEED_MAX_KT)
+  local spawnCoord, bearing =
+    randomOffsetCoord(playerCentroid, RANDOM_DIST_MIN_M, RANDOM_DIST_MAX_M, spawnAltFt * 0.3048)
   local heading = (bearing + 180) % 360
-  local distNm = playerCentroid:Get2DDistance(spawnCoord) / 1852
+  local distMi = playerCentroid:Get2DDistance(spawnCoord) / 1609.344
   local size = #players
 
-  waveSpawner:InitGrouping(size)
-  waveSpawner:InitSetUnitRelativePositions(formationPositions(size, heading))
-  waveSpawner:InitHeading(heading)
+  spawner:InitGrouping(size)
+  spawner:InitSetUnitRelativePositions(formationPositions(size, heading))
+  spawner:InitHeading(heading)
 
   env.info(
     string.format(
-      "[duel-dynamic] spawning %d-ship package %.1f nm from blue centroid, heading %03d (%s)",
+      "[duel-dynamic] spawning %d-ship package %.1f mi from blue centroid, heading %03d (%s, donor %s, alt %d ft, speed %d kt)",
       size,
-      distNm,
+      distMi,
       heading,
-      tostring(reason or "requested")
+      tostring(reason or "requested"),
+      donorName,
+      spawnAltFt,
+      capSpeedKt
     )
   )
-  local grp = waveSpawner:SpawnFromCoordinate(spawnCoord)
+  local grp = spawner:SpawnFromCoordinate(spawnCoord)
   if not grp then
     env.error("[duel-dynamic] package wave spawn FAILED")
     return nil
@@ -536,7 +561,7 @@ spawnWave = function(reason)
   currentWaveGroup = grp
   currentWaveGroupName = grp:GetName()
   currentWaveAlive = size
-  taskBanditPackage(grp, players, playerCentroid)
+  taskBanditPackage(grp, players, playerCentroid, capAltFt, capSpeedKt)
   MESSAGE:New(string.format("Wave %d: %d bandit%s inbound", waveNumber, size, size == 1 and "" or "s"), 8)
     :ToCoalition(coalition.side.BLUE)
   return grp
@@ -768,22 +793,43 @@ _G.duel_gameplay_watchers = { player = playerWatcher, bandit = banditWatcher }
 -- already-occupied slot.
 -- =====================================================================
 local function doInit()
-  -- Bandit-1 is a one-aircraft ME template. InitGrouping clones it into a
-  -- true 1/2/3/4-aircraft DCS group for each package wave.
-  waveSpawner = SPAWN:New(WAVE_TEMPLATE_NAME)
-  if not waveSpawner then
-    env.error(
-      string.format(
-        "[duel-dynamic] SPAWN:New('%s') returned nil — check ME group + Late Activation ON",
-        WAVE_TEMPLATE_NAME
+  -- Each Bandit-N donor is a one-aircraft ME template. InitGrouping clones
+  -- the chosen donor into a true 1/2/3/4-aircraft DCS group for each wave.
+  waveSpawners = {}
+  for _, donorName in ipairs(BANDIT_GROUP_NAMES) do
+    local name = donorName
+    local ok, spawner = pcall(function()
+      return SPAWN:New(name)
+    end)
+    if not ok or not spawner then
+      env.error(
+        string.format(
+          "[duel-dynamic] SPAWN:New('%s') failed (%s) — check ME group + Late Activation ON",
+          name,
+          tostring(spawner)
+        )
       )
-    )
+    else
+      local donor = name
+      spawner:OnSpawnGroup(function(grp)
+        registerBanditAssets(grp, donor)
+        env.info(
+          string.format(
+            "[duel-dynamic] package spawned: %s (donor %s) at %s",
+            grp:GetName(),
+            donor,
+            coordStr(grp:GetCoordinate())
+          )
+        )
+      end)
+      waveSpawners[name] = spawner
+    end
+  end
+  if next(waveSpawners) == nil then
+    env.error("[duel-dynamic] no bandit SPAWN donor could be created — init not done, will retry")
     return
   end
-  waveSpawner:OnSpawnGroup(function(grp)
-    registerBanditAssets(grp)
-    env.info(string.format("[duel-dynamic] package spawned: %s at %s", grp:GetName(), coordStr(grp:GetCoordinate())))
-  end)
+  waveSpawner = waveSpawners["Bandit-1"]
 
   -- First-round: randomize the player-slot heading. setPosition with
   -- a heading arg *does* take effect on the client. The position
