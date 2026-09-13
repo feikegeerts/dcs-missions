@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { Barlow_Condensed, Inter } from "next/font/google";
 
+import { NavigationFeedback } from "@/components/navigation-feedback";
 import "./globals.css";
 
 // Next bundles the font files with the app; visitors do not call Google Fonts.
@@ -41,6 +42,7 @@ export default function RootLayout({
           </header>
           {children}
         </div>
+        <NavigationFeedback />
       </body>
     </html>
   );

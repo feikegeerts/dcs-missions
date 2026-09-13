@@ -128,6 +128,36 @@ input::placeholder {
   color: var(--hud-text);
 }
 
+.hud-route-progress {
+  position: fixed;
+  z-index: 10;
+  inset: 0 0 auto;
+  height: 2px;
+  pointer-events: none;
+  opacity: 0;
+  background: var(--hud-green);
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: opacity 120ms ease;
+}
+
+.hud-route-progress-visible {
+  opacity: 1;
+  animation: hud-route-progress 1.4s ease-in-out infinite;
+}
+
+@keyframes hud-route-progress {
+  0% {
+    transform: scaleX(0.05);
+  }
+  70% {
+    transform: scaleX(0.72);
+  }
+  100% {
+    transform: scaleX(0.92);
+  }
+}
+
 .hud-crumbs {
   font-family: var(--hud-sans);
   font-size: 0.72rem;
@@ -358,9 +388,21 @@ input::placeholder {
 }
 
 .mission-card {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
+}
+
+.mission-card h3 a::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+}
+
+.mission-card .mission-meta {
+  position: relative;
+  z-index: 1;
 }
 
 .mission-card h3 {
@@ -426,6 +468,29 @@ input::placeholder {
   padding: 0.7rem 1rem;
   margin-bottom: 1rem;
   font-size: 0.9rem;
+  color: var(--hud-text);
+  transition:
+    background 120ms ease,
+    border-color 120ms ease;
+}
+
+.current-run:hover {
+  background: var(--hud-bg-panel);
+  text-decoration: none;
+}
+
+.current-run-active {
+  border-left-color: var(--hud-green);
+  background:
+    linear-gradient(90deg, rgba(131, 201, 164, 0.12), transparent 65%),
+    var(--hud-bg-panel-2);
+}
+
+.hud-panel.mission-panel-active {
+  border-top-color: var(--hud-green);
+  background:
+    linear-gradient(110deg, rgba(131, 201, 164, 0.1), transparent 85%),
+    var(--hud-bg-panel);
 }
 
 .current-run .hud-mono {

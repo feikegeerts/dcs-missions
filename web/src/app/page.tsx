@@ -6,21 +6,10 @@ import {
   DASHBOARD_RUN_SCOPE_LIMIT,
   groupRunsByMission,
 } from "@/telemetry/dashboard";
-import {
-  matchesClassification,
-  parseClassificationFilter,
-  type ClassificationFilter,
-} from "@/telemetry/run-filters";
 import { displayRunStatus } from "@/telemetry/run-status";
 import { NeonTelemetryStore } from "@/telemetry/store";
 
 export const dynamic = "force-dynamic";
-
-const ALL_CLASSIFICATIONS: readonly ClassificationFilter[] = [
-  "all",
-  "test",
-  "historical",
-];
 
 function formatFreshness(updatedAt: Date, now: Date): string {
   const seconds = Math.max(
@@ -47,21 +36,11 @@ export default async function MissionsPage({
 }: {
   searchParams: Promise<{ classification?: string }>;
 }) {
+  void searchParams;
   try {
-    const params = await searchParams;
-    const classificationFilter = parseClassificationFilter(
-      params.classification,
-    );
     const store = new NeonTelemetryStore();
     const now = new Date();
-    const allRuns = await store.listRuns(
-      DASHBOARD_RUN_SCOPE_LIMIT,
-      0,
-      classificationFilter === "all" ? null : classificationFilter,
-    );
-    const runs = allRuns.filter((run) =>
-      matchesClassification(run.runClassification, classificationFilter),
-    );
+    const runs = await store.listRuns(DASHBOARD_RUN_SCOPE_LIMIT, 0, null);
     const groups = groupRunsByMission(runs);
     const latest =
       runs.length === 0
@@ -79,9 +58,6 @@ export default async function MissionsPage({
         ? null
         : displayRunStatus(latest.status, new Date(latest.updatedAt), now);
 
-    const classificationHref = (classification: string) =>
-      classification === "all" ? "/" : `/?classification=${classification}`;
-
     return (
       <main>
         <AutoRefresh
@@ -95,33 +71,12 @@ export default async function MissionsPage({
         </p>
 
         <div className="hud-grid" style={{ marginTop: "1rem" }}>
-          <section className="hud-panel col-12">
-            <h2>Data scope</h2>
-            <div className="hud-filters">
-              {ALL_CLASSIFICATIONS.map((classification) =>
-                classification === classificationFilter ? (
-                  <span
-                    key={classification}
-                    className="hud-chip hud-chip-active"
-                  >
-                    {classification === "all" ? "all data" : classification}
-                  </span>
-                ) : (
-                  <Link
-                    key={classification}
-                    className="hud-chip"
-                    href={classificationHref(classification)}
-                  >
-                    {classification === "all" ? "all data" : classification}
-                  </Link>
-                ),
-              )}
-            </div>
-          </section>
-
           {latest && (
             <div className="col-12">
-              <div className="current-run">
+              <Link
+                className={`current-run current-run-${latestDisplay ?? "ended"}`}
+                href={`/runs/${encodeURIComponent(latest.runKey)}`}
+              >
                 <div>
                   <strong>{latest.missionName ?? "Unknown mission"}</strong>
                   {" · "}
@@ -139,11 +94,9 @@ export default async function MissionsPage({
                       {latestDisplay === "stale" ? " ◌" : ""}
                     </span>
                   )}{" "}
-                  <Link href={`/runs/${encodeURIComponent(latest.runKey)}`}>
-                    {latestDisplay === "active" ? "Open run →" : "Latest run →"}
-                  </Link>
+                  {latestDisplay === "active" ? "Open run →" : "Latest run →"}
                 </div>
-              </div>
+              </Link>
             </div>
           )}
 
@@ -166,8 +119,21 @@ export default async function MissionsPage({
                   ? a
                   : b,
               );
+              const missionStatus =
+                latestRun.status === "active" ||
+                latestRun.status === "aborted" ||
+                latestRun.status === "ended"
+                  ? displayRunStatus(
+                      latestRun.status,
+                      new Date(latestRun.updatedAt),
+                      now,
+                    )
+                  : "ended";
               return (
-                <section key={entry.key} className="hud-panel col-6">
+                <section
+                  key={entry.key}
+                  className={`hud-panel col-6 mission-panel-${missionStatus}`}
+                >
                   <div className="mission-card">
                     <h3>
                       <Link href={`/missions/${encodeURIComponent(entry.key)}`}>

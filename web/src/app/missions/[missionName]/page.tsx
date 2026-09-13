@@ -9,12 +9,7 @@ import {
   missionCatalogEntry,
   summarizeRunCombat,
 } from "@/telemetry/dashboard";
-import {
-  matchesClassification,
-  parseClassificationFilter,
-  parsePageNumber,
-  type ClassificationFilter,
-} from "@/telemetry/run-filters";
+import { parsePageNumber } from "@/telemetry/run-filters";
 import {
   displayRunStatus,
   type DisplayRunStatus,
@@ -23,15 +18,9 @@ import { NeonTelemetryStore } from "@/telemetry/store";
 
 export const dynamic = "force-dynamic";
 
-const ALL_STATUSES = ["all", "active", "stale", "aborted", "ended"] as const;
+const ALL_STATUSES = ["all", "active", "stale", "ended"] as const;
 
 type StatusFilter = (typeof ALL_STATUSES)[number];
-
-const ALL_CLASSIFICATIONS: readonly ClassificationFilter[] = [
-  "all",
-  "test",
-  "historical",
-];
 
 export default async function MissionDossierPage({
   params,
@@ -40,7 +29,6 @@ export default async function MissionDossierPage({
   params: Promise<{ missionName: string }>;
   searchParams: Promise<{
     status?: string;
-    classification?: string;
     runsPage?: string;
   }>;
 }) {
@@ -54,24 +42,16 @@ export default async function MissionDossierPage({
     const statusFilter: StatusFilter =
       query.status === "active" ||
       query.status === "stale" ||
-      query.status === "aborted" ||
       query.status === "ended"
         ? query.status
         : "all";
-    const classificationFilter = parseClassificationFilter(
-      query.classification,
-    );
     const runsPage = parsePageNumber(query.runsPage);
     const runsOffset = (runsPage - 1) * DOSSIER_RUNS_PER_PAGE;
 
     const store = new NeonTelemetryStore();
     const now = new Date();
     const scoped = (
-      await store.listRuns(
-        DASHBOARD_RUN_SCOPE_LIMIT,
-        0,
-        classificationFilter === "all" ? null : classificationFilter,
-      )
+      await store.listRuns(DASHBOARD_RUN_SCOPE_LIMIT, 0, null)
     ).filter((run) =>
       missionKey === "unknown"
         ? run.missionName === null || run.missionName === ""
@@ -88,9 +68,7 @@ export default async function MissionDossierPage({
     }));
     const latestDisplay = withDisplay[0]?.display ?? null;
     const matching = withDisplay.filter(
-      ({ run, display }) =>
-        (statusFilter === "all" || display === statusFilter) &&
-        matchesClassification(run.runClassification, classificationFilter),
+      ({ display }) => statusFilter === "all" || display === statusFilter,
     );
 
     // Per-run combat facts fan out over this mission's runs only — totals
@@ -168,20 +146,12 @@ export default async function MissionDossierPage({
       ? pageWindow.slice(0, DOSSIER_RUNS_PER_PAGE)
       : pageWindow;
 
-    const buildHref = (overrides: {
-      status?: string;
-      classification?: string;
-      runsPage?: number;
-    }) => {
+    const buildHref = (overrides: { status?: string; runsPage?: number }) => {
       const search = new URLSearchParams();
       const status = overrides.status ?? statusFilter;
-      const classification = overrides.classification ?? classificationFilter;
       const page = overrides.runsPage ?? 1;
       if (status !== "all") {
         search.set("status", status);
-      }
-      if (classification !== "all") {
-        search.set("classification", classification);
       }
       if (page > 1) {
         search.set("runsPage", String(page));
@@ -211,10 +181,7 @@ export default async function MissionDossierPage({
             <h2>Runs in scope</h2>
             <div className="hud-stat">{matching.length}</div>
             <div className="hud-stat-sub">
-              {classificationFilter === "all"
-                ? "all data"
-                : classificationFilter}
-              {statusFilter === "all" ? "" : ` · ${statusFilter}`}
+              {statusFilter === "all" ? "all statuses" : statusFilter}
             </div>
           </section>
           <section className="hud-panel col-4">
@@ -259,24 +226,6 @@ export default async function MissionDossierPage({
                     href={buildHref({ status })}
                   >
                     {status}
-                  </Link>
-                ),
-              )}
-              {ALL_CLASSIFICATIONS.map((classification) =>
-                classification === classificationFilter ? (
-                  <span
-                    key={classification}
-                    className="hud-chip hud-chip-active"
-                  >
-                    {classification === "all" ? "all data" : classification}
-                  </span>
-                ) : (
-                  <Link
-                    key={classification}
-                    className="hud-chip"
-                    href={buildHref({ classification })}
-                  >
-                    {classification === "all" ? "all data" : classification}
                   </Link>
                 ),
               )}
