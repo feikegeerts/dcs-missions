@@ -2,6 +2,7 @@ import Link from "next/link";
 
 import { AutoRefresh } from "@/components/auto-refresh";
 import { RunLink } from "@/components/run-link";
+import { MissionRecord } from "@/components/mission-record";
 import {
   DASHBOARD_RUN_SCOPE_LIMIT,
   DOSSIER_RUNS_PER_PAGE,
@@ -134,6 +135,7 @@ export default async function MissionDossierPage({
             })),
           }),
           humans: participants.length,
+          participants,
           waveSummary: summarizeRunWaves(events),
         };
       }),
@@ -192,72 +194,41 @@ export default async function MissionDossierPage({
 
         <div className="hud-grid" style={{ marginTop: "1rem" }}>
           {isDuelDynamic && (
-            <section className="hud-panel col-12">
-              <h2>HIGH SCORE</h2>
-              {highScore === null ? (
-                <div className="hud-empty">
-                  NO ELIGIBLE HIGH SCORE — NEEDS A COMPLETED RUN WITH OBSERVED
-                  CLEARED WAVES AND FULL BLUE-SIDE PRICING
-                </div>
-              ) : (
-                <>
-                  <dl className="score-figures">
-                    <div className="figure figure-primary">
-                      <dt>Waves cleared</dt>
-                      <dd>{highScore.waveSummary.clearedWaves}</dd>
-                    </div>
-                    <div className="figure figure-cost">
-                      <dt>Blue cost</dt>
-                      <dd>
-                        {formatPartialCost(highScore.summary.blueTotalCents, 0)}
-                      </dd>
-                    </div>
-                    <div className="figure">
-                      <dt>Players</dt>
-                      <dd>{highScore.humans}</dd>
-                    </div>
-                    <div className="figure">
-                      <dt>Run</dt>
-                      <dd>
-                        <RunLink
-                          runKey={highScore.runKey}
-                          startedAt={highScore.startedAt}
-                        />
-                      </dd>
-                    </div>
-                  </dl>
-                  <p className="score-note">
-                    Ranked by most cleared waves, then lowest blue coalition
-                    cost. Exact ties keep the earliest run.
-                  </p>
-                </>
-              )}
-            </section>
+            <MissionRecord
+              record={highScore}
+              participants={
+                highScore
+                  ? (factsByRun.get(highScore.runKey)?.participants ?? [])
+                  : []
+              }
+            />
           )}
 
           <section className="hud-panel col-12">
-            <h2>Filters</h2>
-            <div className="hud-filters">
-              {ALL_STATUSES.map((status) =>
-                status === statusFilter ? (
-                  <span key={status} className="hud-chip hud-chip-active">
-                    {status}
-                  </span>
-                ) : (
-                  <Link
-                    key={status}
-                    className="hud-chip"
-                    href={buildHref({ status })}
-                  >
-                    {status}
-                  </Link>
-                ),
-              )}
+            <div className="mission-history-header">
+              <h2>Run history</h2>
+              <nav className="hud-filters" aria-label="Run history status">
+                {ALL_STATUSES.map((status) =>
+                  status === statusFilter ? (
+                    <span
+                      key={status}
+                      className="hud-chip hud-chip-active"
+                      aria-current="true"
+                    >
+                      {status}
+                    </span>
+                  ) : (
+                    <Link
+                      key={status}
+                      className="hud-chip"
+                      href={buildHref({ status })}
+                    >
+                      {status}
+                    </Link>
+                  ),
+                )}
+              </nav>
             </div>
-          </section>
-
-          <section className="hud-panel col-12">
-            <h2>Run history</h2>
             <div className="hud-pager" style={{ marginBottom: "0.6rem" }}>
               <span>
                 Page {runsPage} · {pageRuns.length} of {matching.length} in
