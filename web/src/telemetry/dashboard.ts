@@ -910,6 +910,8 @@ export type RunCombatSummary = {
   aircraftUnpriced: number;
   totalCents: number;
   partial: boolean;
+  blueTotalCents: number;
+  blueUnpriced: number;
 };
 
 /** Lightweight per-run combat rollup for dossier lists: no roster, no
@@ -928,19 +930,33 @@ export function summarizeRunCombat(input: {
   let ordnanceUnpriced = 0;
   let aircraftCents = 0;
   let aircraftUnpriced = 0;
+  let blueTotalCents = 0;
+  let blueUnpriced = 0;
   for (const expenditure of input.expenditures) {
     shots += 1;
     if (expenditure.unitCostCents === null) {
       ordnanceUnpriced += 1;
+      if (normalizeCoalition(expenditure.coalition) === "blue") {
+        blueUnpriced += 1;
+      }
     } else {
       ordnanceCents = addCents(ordnanceCents, expenditure.unitCostCents);
+      if (normalizeCoalition(expenditure.coalition) === "blue") {
+        blueTotalCents = addCents(blueTotalCents, expenditure.unitCostCents);
+      }
     }
   }
   for (const loss of input.losses) {
     if (loss.unitCostCents === null) {
       aircraftUnpriced += 1;
+      if (normalizeCoalition(loss.coalition) === "blue") {
+        blueUnpriced += 1;
+      }
     } else {
       aircraftCents = addCents(aircraftCents, loss.unitCostCents);
+      if (normalizeCoalition(loss.coalition) === "blue") {
+        blueTotalCents = addCents(blueTotalCents, loss.unitCostCents);
+      }
     }
   }
   for (const kill of input.kills) {
@@ -973,7 +989,171 @@ export function summarizeRunCombat(input: {
     aircraftUnpriced,
     totalCents,
     partial: ordnanceUnpriced + aircraftUnpriced > 0,
+    blueTotalCents,
+    blueUnpriced,
   };
+}
+
+export type RunWaveSummary = {
+  /** True when at least one red package could be identified in the event stream. */
+  observed: boolean;
+  spawnedWaves: number;
+  clearedWaves: number;
+};
+
+type WaveState = {
+  assets: Set<string>;
+  terminalAssets: Set<string>;
+};
+
+function objectRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function assetString(event: TelemetryEvent, field: string): string | null {
+  const asset = objectRecord(event.asset);
+  const value = asset?.[field];
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+/** Asset identities emitted by the current mission use `.uN.gN`. */
+function isGenerationAssetKey(assetKey: string): boolean {
+  return /^(.*)\.u[1-9][0-9]*\.g[1-9][0-9]*$/.test(assetKey);
+}
+
+/**
+ * Each package is registered in one synchronous burst. Sim time is therefore
+ * a safer wave key than the per-unit generation: when a later wave has a
+ * different size, its unit generations do not all share the same number.
+ */
+function waveKeyForSpawn(event: TelemetryEvent): string | null {
+  return Number.isFinite(event.sim_time)
+    ? `sim:${Math.round(event.sim_time * 1000)}`
+    : null;
+}
+
+/**
+ * Count only complete red package waves. A spawned package with one or more
+ * surviving/unobserved units is not a cleared wave, and intentional despawns
+ * never count as a clear. Runs without the current generation-based asset
+ * identity remain unrankable rather than being treated as a zero-wave score.
+ */
+export function summarizeRunWaves(
+  events: readonly TelemetryEvent[],
+): RunWaveSummary {
+  const waves = new Map<string, WaveState>();
+  const waveByAsset = new Map<string, string>();
+  for (const event of events) {
+    const assetKey = assetString(event, "asset_key");
+    if (assetKey === null) {
+      continue;
+    }
+    const coalition = assetString(event, "coalition") ?? event.coalition;
+    if (coalition !== "red") {
+      continue;
+    }
+    if (event.event_type === "asset.spawned") {
+      if (!isGenerationAssetKey(assetKey)) {
+        continue;
+      }
+      const waveKey = waveKeyForSpawn(event);
+      if (waveKey === null) {
+        continue;
+      }
+      let wave = waves.get(waveKey);
+      if (!wave) {
+        wave = { assets: new Set(), terminalAssets: new Set() };
+        waves.set(waveKey, wave);
+      }
+      wave.assets.add(assetKey);
+      waveByAsset.set(assetKey, waveKey);
+    } else if (
+      event.event_type === "asset.dead" ||
+      event.event_type === "asset.crashed"
+    ) {
+      const waveKey = waveByAsset.get(assetKey);
+      if (waveKey !== undefined) {
+        waves.get(waveKey)?.terminalAssets.add(assetKey);
+      }
+    }
+  }
+
+  let clearedWaves = 0;
+  for (const wave of waves.values()) {
+    if (
+      wave.assets.size > 0 &&
+      [...wave.assets].every((assetKey) => wave.terminalAssets.has(assetKey))
+    ) {
+      clearedWaves += 1;
+    }
+  }
+  return {
+    observed: waves.size > 0,
+    spawnedWaves: waves.size,
+    clearedWaves,
+  };
+}
+
+export type HighScoreRun = {
+  runKey: string;
+  producerId: string;
+  startedAt: string | Date | null;
+  humans: number;
+  waveSummary: RunWaveSummary;
+  summary: RunCombatSummary;
+};
+
+/**
+ * Select the mission's single high score. Only ended, observed, fully priced
+ * blue-coalition runs are eligible. Ranking is waves cleared descending, then
+ * blue-side cost ascending; an exact tie keeps the earliest run.
+ */
+export function selectHighScore(
+  runs: readonly (HighScoreRun & {
+    status: string;
+    runClassification?: string | null;
+  })[],
+): HighScoreRun | null {
+  const eligible = runs.filter(
+    (run) =>
+      run.status === "ended" &&
+      run.runClassification !== "test" &&
+      run.waveSummary.observed &&
+      run.summary.blueUnpriced === 0,
+  );
+  eligible.sort((left, right) => {
+    if (left.waveSummary.clearedWaves !== right.waveSummary.clearedWaves) {
+      return right.waveSummary.clearedWaves > left.waveSummary.clearedWaves
+        ? 1
+        : -1;
+    }
+    if (left.summary.blueTotalCents !== right.summary.blueTotalCents) {
+      return left.summary.blueTotalCents < right.summary.blueTotalCents
+        ? -1
+        : 1;
+    }
+    return (
+      compareRunStart(left, right) || left.runKey.localeCompare(right.runKey)
+    );
+  });
+  return eligible[0] ?? null;
+}
+
+function compareRunStart(
+  left: Pick<HighScoreRun, "startedAt">,
+  right: Pick<HighScoreRun, "startedAt">,
+): number {
+  const leftValue =
+    left.startedAt === null
+      ? Number.POSITIVE_INFINITY
+      : new Date(left.startedAt).getTime();
+  const rightValue =
+    right.startedAt === null
+      ? Number.POSITIVE_INFINITY
+      : new Date(right.startedAt).getTime();
+  return leftValue - rightValue;
 }
 
 export type PlayerRunEntry = {

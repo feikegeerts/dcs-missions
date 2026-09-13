@@ -11,7 +11,9 @@ import {
   missionCatalogEntry,
   normalizeCoalition,
   publicPlayerIdFor,
+  selectHighScore,
   summarizeRunCombat,
+  summarizeRunWaves,
   type BuildScoreboardInput,
   type PlayerRunEntry,
 } from "../src/telemetry/dashboard";
@@ -514,6 +516,159 @@ describe("summarizeRunCombat", () => {
       totalCents: 5_050_000,
       partial: true,
     });
+  });
+});
+
+describe("mission high score", () => {
+  it("counts only fully cleared generation-based red package waves", () => {
+    const asset = (assetKey: string) => ({
+      status: "known",
+      kind: "aircraft",
+      asset_key: assetKey,
+      coalition: "red",
+    });
+    const events = [
+      scoreboardEvent(1, "asset.spawned", {
+        sim_time: 100,
+        asset: asset("bandit-1.u1.g1"),
+        coalition: "red",
+      }),
+      scoreboardEvent(2, "asset.spawned", {
+        sim_time: 100,
+        asset: asset("bandit-1.u2.g1"),
+        coalition: "red",
+      }),
+      scoreboardEvent(3, "asset.dead", {
+        sim_time: 100,
+        asset: asset("bandit-1.u1.g1"),
+        coalition: "red",
+      }),
+      scoreboardEvent(4, "asset.crashed", {
+        sim_time: 100,
+        asset: asset("bandit-1.u2.g1"),
+        coalition: "red",
+      }),
+      scoreboardEvent(5, "asset.spawned", {
+        sim_time: 200,
+        asset: asset("bandit-1.u1.g2"),
+        coalition: "red",
+      }),
+      scoreboardEvent(6, "asset.dead", {
+        sim_time: 200,
+        asset: asset("bandit-1.u1.g2"),
+        coalition: "red",
+      }),
+      scoreboardEvent(7, "asset.spawned", {
+        sim_time: 300,
+        asset: asset("bandit-1.u1.g3"),
+        coalition: "red",
+      }),
+      scoreboardEvent(8, "asset.spawned", {
+        sim_time: 300,
+        asset: asset("bandit-1.u2.g2"),
+        coalition: "red",
+      }),
+      scoreboardEvent(9, "asset.dead", {
+        sim_time: 300,
+        asset: asset("bandit-1.u1.g3"),
+        coalition: "red",
+      }),
+      scoreboardEvent(10, "asset.despawned", {
+        sim_time: 300,
+        asset: asset("bandit-1.u2.g2"),
+        coalition: "red",
+      }),
+    ];
+
+    expect(summarizeRunWaves(events)).toEqual({
+      observed: true,
+      spawnedWaves: 3,
+      clearedWaves: 2,
+    });
+    expect(
+      summarizeRunWaves([
+        scoreboardEvent(1, "asset.spawned", {
+          asset: asset("legacy-object-1"),
+          coalition: "red",
+        }),
+      ]),
+    ).toEqual({ observed: false, spawnedWaves: 0, clearedWaves: 0 });
+  });
+
+  it("ranks waves first, then fully priced blue-side cost", () => {
+    const summary = (blueCostCents: number) =>
+      summarizeRunCombat({
+        expenditures: [
+          {
+            participantId: null,
+            participantDisplayName: null,
+            assetKey: "aerial-1.u1.g1",
+            aircraftDcsType: "FA-18C_hornet",
+            coalition: "blue",
+            unitCostCents: blueCostCents,
+          },
+        ],
+        losses: [],
+        kills: [],
+      });
+    const run = (
+      runKey: string,
+      startedAt: string,
+      clearedWaves: number,
+      blueCostCents: number,
+      extras: { status?: string; runClassification?: string | null } = {},
+    ) => ({
+      runKey,
+      producerId: "producer",
+      startedAt,
+      humans: 1,
+      status: extras.status ?? "ended",
+      runClassification: extras.runClassification ?? "historical",
+      waveSummary: { observed: true, spawnedWaves: clearedWaves, clearedWaves },
+      summary: summary(blueCostCents),
+    });
+
+    expect(
+      selectHighScore([
+        run("expensive", "2026-09-02T00:00:00Z", 5, 500_00),
+        run("cheap", "2026-09-03T00:00:00Z", 5, 450_00),
+        run("more-waves", "2026-09-04T00:00:00Z", 6, 900_00),
+        run("test-run", "2026-09-01T00:00:00Z", 99, 1, {
+          runClassification: "test",
+        }),
+      ])?.runKey,
+    ).toBe("more-waves");
+    expect(
+      selectHighScore([
+        run("expensive", "2026-09-02T00:00:00Z", 5, 500_00),
+        run("cheap", "2026-09-03T00:00:00Z", 5, 450_00),
+      ])?.runKey,
+    ).toBe("cheap");
+    expect(
+      selectHighScore([
+        {
+          ...run("unpriced", "2026-09-01T00:00:00Z", 7, 0),
+          summary: summarizeRunCombat({
+            expenditures: [
+              {
+                participantId: null,
+                participantDisplayName: null,
+                assetKey: "aerial-1.u1.g1",
+                aircraftDcsType: "FA-18C_hornet",
+                coalition: "blue",
+                unitCostCents: null,
+              },
+            ],
+            losses: [],
+            kills: [],
+          }),
+        },
+        {
+          ...run("unobserved", "2026-09-02T00:00:00Z", 0, 0),
+          waveSummary: { observed: false, spawnedWaves: 0, clearedWaves: 0 },
+        },
+      ]),
+    ).toBeNull();
   });
 });
 

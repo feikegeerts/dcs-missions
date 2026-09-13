@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { Barlow_Condensed, Inter } from "next/font/google";
+import { Suspense } from "react";
 
 import { NavigationFeedback } from "@/components/navigation-feedback";
 import "./globals.css";
@@ -42,7 +43,9 @@ export default function RootLayout({
           </header>
           {children}
         </div>
-        <NavigationFeedback />
+        <Suspense fallback={null}>
+          <NavigationFeedback />
+        </Suspense>
       </body>
     </html>
   );

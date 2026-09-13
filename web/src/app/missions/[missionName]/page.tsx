@@ -7,7 +7,9 @@ import {
   DOSSIER_RUNS_PER_PAGE,
   formatPartialCost,
   missionCatalogEntry,
+  selectHighScore,
   summarizeRunCombat,
+  summarizeRunWaves,
 } from "@/telemetry/dashboard";
 import { parsePageNumber } from "@/telemetry/run-filters";
 import {
@@ -36,6 +38,7 @@ export default async function MissionDossierPage({
     const { missionName: encodedMission } = await params;
     const query = await searchParams;
     const missionKey = decodeURIComponent(encodedMission);
+    const isDuelDynamic = missionKey === "duel-dynamic";
     const entry = missionCatalogEntry(
       missionKey === "unknown" ? null : missionKey,
     );
@@ -71,17 +74,38 @@ export default async function MissionDossierPage({
       ({ display }) => statusFilter === "all" || display === statusFilter,
     );
 
-    // Per-run combat facts fan out over this mission's runs only — totals
-    // below cover the full filtered scope, never just the displayed page.
+    // The high score is independent of the status filter: a stale or active
+    // run should not hide the best completed historical run. Facts for the
+    // displayed rows are loaded as before; ended non-test runs are added for
+    // high-score evaluation when a status filter hides them.
+    const highScoreCandidates = isDuelDynamic
+      ? scoped.filter(
+          (run) => run.status === "ended" && run.runClassification !== "test",
+        )
+      : [];
+    const runsForFacts = [
+      ...new Map(
+        [...matching.map(({ run }) => run), ...highScoreCandidates].map(
+          (run) => [run.runKey, run],
+        ),
+      ).values(),
+    ];
     const facts = await Promise.all(
-      matching.map(async ({ run }) => {
-        const [expenditures, losses, kills, participants] = await Promise.all([
-          store.listExpenditures(run.producerId, run.runKey),
-          store.listAssetLosses(run.producerId, run.runKey),
-          store.listKillAttributions(run.producerId, run.runKey),
-          store.listRunParticipants(run.producerId, run.runKey),
-        ]);
+      runsForFacts.map(async (run) => {
+        const [expenditures, losses, kills, participants, events] =
+          await Promise.all([
+            store.listExpenditures(run.producerId, run.runKey),
+            store.listAssetLosses(run.producerId, run.runKey),
+            store.listKillAttributions(run.producerId, run.runKey),
+            store.listRunParticipants(run.producerId, run.runKey),
+            isDuelDynamic &&
+            run.status === "ended" &&
+            run.runClassification !== "test"
+              ? store.listRunEvents(run.producerId, run.runKey)
+              : Promise.resolve([]),
+          ]);
         return {
+          run,
           runKey: run.runKey,
           summary: summarizeRunCombat({
             expenditures: expenditures.map((item) => ({
@@ -110,32 +134,22 @@ export default async function MissionDossierPage({
             })),
           }),
           humans: participants.length,
+          waveSummary: summarizeRunWaves(events),
         };
       }),
     );
     const factsByRun = new Map(facts.map((item) => [item.runKey, item]));
-    const totals = facts.reduce(
-      (acc, item) => ({
-        blueKills: acc.blueKills + item.summary.blueKills,
-        redKills: acc.redKills + item.summary.redKills,
-        losses: acc.losses + item.summary.lossCount,
-        ordnanceCents: acc.ordnanceCents + item.summary.ordnanceCents,
-        aircraftCents: acc.aircraftCents + item.summary.aircraftCents,
-        unpriced:
-          acc.unpriced +
-          item.summary.ordnanceUnpriced +
-          item.summary.aircraftUnpriced,
-      }),
-      {
-        blueKills: 0,
-        redKills: 0,
-        losses: 0,
-        ordnanceCents: 0,
-        aircraftCents: 0,
-        unpriced: 0,
-      },
-    );
-    const knownCents = totals.ordnanceCents + totals.aircraftCents;
+    const highScore = isDuelDynamic
+      ? selectHighScore(
+          facts.map((item) => ({
+            ...item.run,
+            startedAt: item.run.startedAt,
+            humans: item.humans,
+            summary: item.summary,
+            waveSummary: item.waveSummary,
+          })),
+        )
+      : null;
 
     const pageWindow = matching.slice(
       runsOffset,
@@ -177,39 +191,49 @@ export default async function MissionDossierPage({
         <p className="hud-subtitle">{entry.description}</p>
 
         <div className="hud-grid" style={{ marginTop: "1rem" }}>
-          <section className="hud-panel col-4">
-            <h2>Runs in scope</h2>
-            <div className="hud-stat">{matching.length}</div>
-            <div className="hud-stat-sub">
-              {statusFilter === "all" ? "all statuses" : statusFilter}
-            </div>
-          </section>
-          <section className="hud-panel col-4">
-            <h2>Coalition kills</h2>
-            <div className="hud-stat">
-              <span className="coalition-name-blue">{totals.blueKills}</span>
-              {" : "}
-              <span className="coalition-name-red">{totals.redKills}</span>
-            </div>
-            <div className="hud-stat-sub">
-              blue : red · {totals.losses} aircraft lost
-            </div>
-          </section>
-          <section className="hud-panel col-4">
-            <h2>Mission cost</h2>
-            <div className="hud-stat">
-              {formatPartialCost(knownCents, totals.unpriced)}
-            </div>
-            <div className="hud-stat-sub">
-              {totals.unpriced > 0 ? (
-                <span className="hud-warning">
-                  known subtotal — pricing incomplete
-                </span>
+          {isDuelDynamic && (
+            <section className="hud-panel col-12">
+              <h2>HIGH SCORE</h2>
+              {highScore === null ? (
+                <div className="hud-empty">
+                  NO ELIGIBLE HIGH SCORE — NEEDS A COMPLETED RUN WITH OBSERVED
+                  CLEARED WAVES AND FULL BLUE-SIDE PRICING
+                </div>
               ) : (
-                "ordnance + aircraft replacement"
+                <>
+                  <dl className="score-figures">
+                    <div className="figure figure-primary">
+                      <dt>Waves cleared</dt>
+                      <dd>{highScore.waveSummary.clearedWaves}</dd>
+                    </div>
+                    <div className="figure figure-cost">
+                      <dt>Blue cost</dt>
+                      <dd>
+                        {formatPartialCost(highScore.summary.blueTotalCents, 0)}
+                      </dd>
+                    </div>
+                    <div className="figure">
+                      <dt>Players</dt>
+                      <dd>{highScore.humans}</dd>
+                    </div>
+                    <div className="figure">
+                      <dt>Run</dt>
+                      <dd>
+                        <RunLink
+                          runKey={highScore.runKey}
+                          startedAt={highScore.startedAt}
+                        />
+                      </dd>
+                    </div>
+                  </dl>
+                  <p className="score-note">
+                    Ranked by most cleared waves, then lowest blue coalition
+                    cost. Exact ties keep the earliest run.
+                  </p>
+                </>
               )}
-            </div>
-          </section>
+            </section>
+          )}
 
           <section className="hud-panel col-12">
             <h2>Filters</h2>
@@ -258,7 +282,7 @@ export default async function MissionDossierPage({
                       <th>Status</th>
                       <th>Humans</th>
                       <th>Blue : Red</th>
-                      <th>Cost</th>
+                      <th>Blue cost</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -299,9 +323,8 @@ export default async function MissionDossierPage({
                           <td className="stat-number">
                             {summary
                               ? formatPartialCost(
-                                  summary.totalCents,
-                                  summary.ordnanceUnpriced +
-                                    summary.aircraftUnpriced,
+                                  summary.blueTotalCents,
+                                  summary.blueUnpriced,
                                 )
                               : "—"}
                           </td>
