@@ -442,9 +442,9 @@ end
 
 function Tracker:format()
   if self.total == 0 then
-    return "Kills: 0"
+    return "Team kills: 0"
   end
-  local lines = { string.format("Kills: %d", self.total) }
+  local lines = { string.format("Team kills: %d", self.total) }
   local names = {}
   for n, _ in pairs(self.kills) do
     names[#names + 1] = n

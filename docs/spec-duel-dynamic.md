@@ -1,7 +1,7 @@
 # Mission spec: duel-dynamic
 
 Current active mission (`.current-mission = duel-dynamic`). **1–4 player slots vs
-matching 1–4 aircraft AI package waves**. Each wave picks a uniform-random
+progressively larger AI package waves**. Each wave picks a uniform-random
 donor from the ten `Bandit-1`..`Bandit-10` ME groups and spawns one
 multi-aircraft DCS group in close formation 55–85 statute miles from the
 blue-player centroid, with a per-wave random altitude/speed profile. It
@@ -49,7 +49,9 @@ clones the chosen donor aircraft into one true multi-unit DCS group, while
 copy the donor's airframe, payload, skill, and route options; DCS
 auto-suffixes the spawned group name with `#NNN`.
 
-`PLAYER_GROUP_NAMES` defines the available blue roster. `BANDIT_GROUP_NAMES`
+`PLAYER_GROUP_NAMES` defines the available blue roster. Each player identity
+has three lives by default for one mission run; players with no lives remaining
+are excluded when the next package is sized. `BANDIT_GROUP_NAMES`
 (all ten names, ascending) is both the donor list and the telemetry
 allow-list; the actual chosen donor name is passed as the configured name
 when a spawned wave is registered with telemetry.
@@ -87,6 +89,11 @@ done and the poll retries.
 - **Initial spawn.** The init poll catches all occupied slots, then waits a
   three-second assembly window. One red DCS group is spawned with one aircraft
   per live blue aircraft, cloned from a uniform-random `Bandit-N` donor.
+- **Progressive difficulty.** The first three waves match the eligible live
+  blue package. Every three waves already spawned adds one bandit to the next
+  package: waves 4–6 get +1, waves 7–9 get +2, and so on. Package size is
+  capped at eight. The knobs are `WAVE_ESCALATION_EVERY=3` and
+  `MAX_PACKAGE_SIZE=8`.
 - **Placement.** The red lead spawns 55–85 statute miles from the arithmetic
   blue centroid, at a per-wave random 15,000–25,000 ft. Wingmen are about
   1.5 NM laterally and 0.5 NM in trail, all facing back toward blue.
@@ -98,9 +105,20 @@ done and the poll retries.
 - **Player enters during a live wave.** The current DCS group is not mutated or
   reset. The joiner is included in the next wave. DCS cannot add an aircraft to
   an already spawned group.
-- **Player leaves or dies.** The current red package remains available to the
-  other players. If every blue slot becomes empty, a one-second delayed cleanup
-  destroys the package and cancels pending wave work.
+- **Player leaves.** Remaining lives are retained and the current red package
+  remains available to the other players. If every blue slot becomes empty, a
+  one-second delayed cleanup destroys the package and cancels pending wave work.
+- **Player aircraft is lost.** `playerDeathWatcher` deduplicates `Dead` and
+  `Crash` by unit name and removes one life. Identity is the non-empty player
+  UCID when DCS supplies it, otherwise the slot group name with a one-time
+  warning. A missing lives entry discovered on a verified loss is initialized
+  to the configured `LIVES_PER_PLAYER=3` default before decrementing. Rejoining
+  with the same UCID, including in another slot, retains the remaining lives.
+- **Player reaches zero lives.** That identity remains tracked but is excluded
+  from package sizing. If every tracked identity reaches zero, the mission
+  enters terminal state once and announces `All pilots down — mission over.`
+  The current red wave is not despawned. New scheduled and F10 wave requests
+  are refused; there is no forced-respawn loop or scripted DCS mission end.
 - **Bandit is killed.** The individual loss is counted, but no replacement
   spawns while any aircraft from that wave remains alive.
 - **Whole wave is killed.** The 30-second timer begins after the final red loss.
@@ -152,10 +170,20 @@ options.
 
 Coalition-scoped (blue-only). Available from MISSION START.
 
-- **Show kills** — `MESSAGE:New(Tracker:format(), 10):ToCoalition(BLUE)`
-- **Reset kills** — `Tracker:reset()`
+- **Show kills** — displays `Team kills: N`, followed by the existing
+  per-counter lines.
+- **Reset kills** — resets the tracker and announces `Kills reset.`
 - **Respawn bandit wave** — explicitly destroys the current package and
-  immediately spawns one replacement package sized to the live blue aircraft.
+  immediately spawns one replacement package sized to eligible live blue
+  aircraft plus the current escalation. It announces `New bandit wave inbound.`,
+  `No players in the air.`, `Not ready yet — try again in a second.`, or
+  `Mission over — no more waves.` as applicable.
+- **Show lives** — displays `Lives:` followed by each tracked display name and
+  remaining lives, or `No players yet.` before anyone has been tracked.
+
+Wave and loss calls use the same concise briefing voice: `Wave N — N hostile(s)
+inbound`, `Bandit down — team N, N hostile(s) left`, `Aircraft lost — N lives
+left.`, `Aircraft lost — 1 life left.`, and `Aircraft lost — out of lives.`
 
 ---
 
@@ -206,7 +234,9 @@ schedule is created only when `currentWaveAlive` reaches zero.
 
 Only one wave spawn can be pending. A monotonically increasing token makes
 stale scheduler callbacks harmless after an F10 reset or empty-server cleanup.
-Player deaths have no mission-specific watcher and do not reset red aircraft.
+Player deaths do not reset red aircraft. Terminal state blocks both newly
+requested schedules and callbacks from schedules created before the last life
+was lost.
 
 ---
 
@@ -274,8 +304,8 @@ MOOSE's `GROUP:Teleport(coord)` calls `Respawn(nil, false)`. The
 position-update logic — when the group is dead, the guard fails and the
 new group is spawned at the **ME template position**, not at `coord`.
 Symptom: a "ghost" blue group at the original airbase plus the intended new
-group at the target position. The package-wave lifecycle has no player-death
-reset handler and does not call `Teleport`.
+group at the target position. The lives handler does not respawn or teleport
+player aircraft.
 
 The proper way to respawn a player at a new coord is
 `mist.teleportToPoint({ groupName, point, action = "respawn" })`. MIST is
@@ -298,11 +328,19 @@ simulation frame. Inside the callback the group is alive but the
 
 ### 6.5 Multiplayer messages and attribution
 
-The obsolete coalition-wide “You died” and player-respawn messages were
-removed with the player-death reset handler. Bandit kill popups explicitly say
-`Team kills` and show the remaining red-package count. The victim-side event
+All player-facing messages are coalition-wide because this mission uses
+`MESSAGE:ToCoalition(BLUE)`; a loss notice cannot be restricted reliably to the
+affected human with the current mission API surface. Bandit kill popups label
+the team total and show the remaining hostile count. The victim-side event
 still cannot authoritatively identify the killer; individual attribution is
 deferred to telemetry Slice 14.
+
+### 6.6 DCS-native player respawn cannot be blocked per identity
+
+The script cannot prevent DCS from respawning a human whose tracked identity
+has zero lives. A zero-life identity that re-enters any slot is announced with
+`Out of lives — excluded from the package.` and remains excluded from package
+sizing; the slot itself is not blocked or forcibly removed.
 
 ---
 
@@ -348,16 +386,21 @@ The first `SCRIPTING ERROR` line names the file and line.
 
 ## 8. Testing the count-matching (1 / 2 / 3 / 4 players)
 
-- **1 live player:** one `Bandit-N#NNN` group (random donor N) containing one aircraft.
+- **1 live player:** waves 1–3 contain one bandit; wave 4 contains two.
 - **2 live players during assembly:** one group containing two aircraft in
-  close formation.
-- **3 live players during assembly:** one group containing three aircraft.
+  close formation before escalation.
+- **3 live players during assembly:** one group containing three aircraft
+  before escalation.
 - **4 live players during assembly:** one compact group containing four
-  aircraft.
+  aircraft before escalation; later waves grow to the eight-aircraft cap.
 - **Join during combat:** no immediate reset or second group; the next wave
   uses the new live-player count.
 - **First red loss in a multi-ship wave:** no respawn timer yet.
 - **Final red loss:** one 30-second timer, followed by one complete new group.
+- **Player loss:** one life removed per aircraft despite a Dead/Crash pair;
+  zero-life identities do not contribute to the next package size.
+- **All tracked identities at zero:** one terminal announcement, no further
+  package spawn, and no forced despawn of the current red wave.
 - **All players leave:** the current group is destroyed after the one-second
   slot-switch grace period.
 

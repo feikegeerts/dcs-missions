@@ -616,16 +616,38 @@ local function hasExactlyEvents(watcher, first, second)
   return watcher.handled_events[1] == first and watcher.handled_events[2] == second
 end
 
-local function firePlayerEvent(watcher, method, groupName, playerName)
+local function firePlayerEvent(watcher, method, groupName, playerName, playerUCID)
   playerAlive[groupName] = method == "OnEventPlayerEnterAircraft"
   local eventData = {
     IniGroupName = groupName,
     IniDCSGroupName = groupName,
     IniPlayerName = playerName,
+    IniPlayerUCID = playerUCID,
     IniCoalition = BLUE,
   }
   local ok, message = pcall(watcher[method], watcher, eventData)
   check(ok, method .. " raised: " .. tostring(message))
+end
+
+local function dispatchCurrentGameplayEvent(method, eventData)
+  local retained = _G.duel_gameplay_watchers
+  check(type(retained) == "table", "current gameplay watcher retention table is missing")
+  for _, watcher in pairs(retained) do
+    local callback = watcher[method]
+    if callback then
+      local ok, message = pcall(callback, watcher, eventData)
+      check(ok, method .. " raised: " .. tostring(message))
+    end
+  end
+end
+
+local function firePlayerLoss(method, groupName, unitName, side)
+  dispatchCurrentGameplayEvent(method, {
+    IniCoalition = side or BLUE,
+    IniGroup = playerGroups[groupName],
+    IniDCSGroupName = groupName,
+    IniDCSUnitName = unitName,
+  })
 end
 
 local function fireBanditEvent(watcher, method, wrapper, unitName)
@@ -659,6 +681,74 @@ local function logContains(fragment)
   return false
 end
 
+local function messageContains(fragment)
+  for _, message in ipairs(messages) do
+    if message.text:find(fragment, 1, true) then
+      return true
+    end
+  end
+  return false
+end
+
+local function countExactMessages(text, startIndex)
+  local count = 0
+  for i = startIndex or 1, #messages do
+    if messages[i].text == text then
+      count = count + 1
+    end
+  end
+  return count
+end
+
+local function latestPendingSchedule(startAfter, isRepeating, startIndex)
+  for i = #schedules, (startIndex or 0) + 1, -1 do
+    local schedule = schedules[i]
+    if
+      not schedule.executed
+      and schedule.start_after == startAfter
+      and (schedule.repeat_interval ~= nil) == isRepeating
+    then
+      return schedule
+    end
+  end
+  return nil
+end
+
+local function setAlivePlayers(names)
+  for _, playerName in ipairs(PLAYER_GROUP_NAMES) do
+    playerAlive[playerName] = false
+  end
+  for _, playerName in ipairs(names or {}) do
+    playerAlive[playerName] = true
+  end
+end
+
+local function loadInitializedMission(players)
+  setAlivePlayers({})
+  local schedulesBefore = #schedules
+  local spawnsBefore = #spawnRecords
+  local watchersBefore = #watchers
+  dofile("src/missions/duel-dynamic/main.lua")
+  local retained = _G.duel_gameplay_watchers
+  for _, player in ipairs(players) do
+    firePlayerEvent(retained.player, "OnEventPlayerEnterAircraft", player.slot, player.name, player.ucid)
+  end
+  local initSchedule = latestPendingSchedule(1, true, schedulesBefore)
+  check(initSchedule ~= nil, "fresh mission init poll scheduler was not captured")
+  equal(runSchedule(initSchedule), false, "fresh mission init poll did not stop after initialization")
+  local assemblySchedule = latestPendingSchedule(3, false, schedulesBefore)
+  check(assemblySchedule ~= nil, "fresh mission assembly scheduler was not captured")
+  runSchedule(assemblySchedule)
+  equal(#spawnRecords, spawnsBefore + 1, "fresh mission did not spawn its initial package")
+  return {
+    retained = retained,
+    package = latestSpawn().wrapper,
+    schedulesBefore = schedulesBefore,
+    spawnsBefore = spawnsBefore,
+    watchersBefore = watchersBefore,
+  }
+end
+
 local function liveCentroid()
   local sumX, sumY, sumZ, count = 0, 0, 0, 0
   for _, name in ipairs(PLAYER_GROUP_NAMES) do
@@ -674,21 +764,6 @@ local function liveCentroid()
     return nil
   end
   return newCoordinate(sumX / count, sumY / count, sumZ / count)
-end
-
--- After a second main.lua load (missing-donor phase), the newest watcher for
--- an event belongs to the newest chunk.  Earlier tests use findWatcher (the
--- first match, i.e. the first chunk's watcher).
-local function findLatestWatcher(event)
-  local found = nil
-  for _, watcher in ipairs(watchers) do
-    for _, handledEvent in ipairs(watcher.handled_events) do
-      if handledEvent == event then
-        found = watcher
-      end
-    end
-  end
-  return found
 end
 
 local function killPackageFully(deadWatcher, wrapper)
@@ -834,10 +909,10 @@ succeeds("5. the first unit kill scores once and does not schedule a respawn", f
   equal(#schedules, schedulesBefore, "the first bandit kill scheduled a respawn")
   local killMessage = messages[messagesBefore + 1]
   check(killMessage ~= nil, "first bandit kill did not post a message")
-  check(killMessage.text:find("Team kills", 1, true) ~= nil, "kill message is not team-labelled")
-  check(
-    killMessage.text:find("red package remaining: 1", 1, true) ~= nil,
-    "kill message has the wrong package remainder"
+  equal(
+    killMessage.text,
+    string.format("Bandit down — team %d, 1 hostile left", tracker.total),
+    "kill message has the wrong team total or package remainder"
   )
 
   fireBanditEvent(deadWatcher, "OnEventCrash", currentPackage, firstUnit.name)
@@ -916,13 +991,13 @@ succeeds("8. empty-server cleanup destroys the package and a later single join a
 
   equal(#spawnRecords, beforeSpawns + 1, "single-player re-entry did not spawn exactly one new group")
   local spawn = latestSpawn()
-  equal(spawn.grouping, 1, "single-player re-entry did not configure grouping 1")
-  equal(spawn.wrapper.unit_count, 1, "single-player re-entry wrapper has the wrong unit count")
+  equal(spawn.grouping, 2, "wave four did not add the first escalation bandit")
+  equal(spawn.wrapper.unit_count, 2, "escalated single-player wrapper has the wrong unit count")
   equal(#liveWrappers(), 1, "single-player re-entry did not leave exactly one live package")
   currentPackage = spawn.wrapper
 end)
 
-succeeds("9. mid-wave joins are included together in the next four-ship package", function()
+succeeds("9. mid-wave joins are included together in the next escalated package", function()
   local playerWatcher = findWatcher(EVENTS.PlayerEnterAircraft)
   local deadWatcher = findWatcher(EVENTS.Dead)
   local spawnsBefore = #spawnRecords
@@ -932,34 +1007,35 @@ succeeds("9. mid-wave joins are included together in the next four-ship package"
   firePlayerEvent(playerWatcher, "OnEventPlayerEnterAircraft", "Aerial-4", "PilotFour")
   equal(#spawnRecords, spawnsBefore, "mid-wave joins changed the active one-ship package")
 
-  fireBanditEvent(deadWatcher, "OnEventDead", currentPackage, currentPackage.units[1].name)
+  killPackageFully(deadWatcher, currentPackage)
   local respawnSchedule = findPendingSchedule(30, false)
-  check(respawnSchedule ~= nil, "one-ship package defeat did not schedule the next wave")
+  check(respawnSchedule ~= nil, "package defeat did not schedule the next wave")
   runSchedule(respawnSchedule)
 
   equal(#spawnRecords, spawnsBefore + 1, "four-player roster did not produce exactly one package")
   local spawn = latestSpawn()
-  equal(spawn.grouping, 4, "next package did not include all four live players")
-  equal(#spawn.wrapper.units, 4, "four-player package does not contain four units")
+  equal(spawn.grouping, 5, "wave five did not include four live players plus one escalation bandit")
+  equal(#spawn.wrapper.units, 5, "escalated four-player package does not contain five units")
   for i, unit in ipairs(spawn.wrapper.units) do
-    check(spawn.coordinate:Get2DDistance(unit.coordinate) <= FOUR_NM_M, "four-ship unit is too far from the lead")
     for j = i + 1, #spawn.wrapper.units do
       local separation = unit.coordinate:Get2DDistance(spawn.wrapper.units[j].coordinate)
-      check(separation > 0 and separation <= FOUR_NM_M, "four-ship formation spacing is invalid")
+      check(separation > 0, "escalated formation positions are not distinct")
     end
   end
   currentPackage = spawn.wrapper
 end)
 
-succeeds("10. only the two required event watchers are registered", function()
-  equal(#watchers, 2, "unexpected BASE watcher was registered")
+succeeds("10. the three required event watchers are registered", function()
+  equal(#watchers, 3, "unexpected BASE watcher was registered")
   local playerWatcher = findWatcher(EVENTS.PlayerEnterAircraft)
   local banditWatcher = findWatcher(EVENTS.Dead)
+  local playerDeathWatcher = _G.duel_gameplay_watchers.playerDeath
   check(playerWatcher ~= nil, "PlayerEnterAircraft watcher is missing")
   check(banditWatcher ~= nil, "Dead watcher is missing")
   check(findWatcher(EVENTS.PlayerLeaveUnit) == playerWatcher, "PlayerLeaveUnit uses a different watcher")
   check(findWatcher(EVENTS.Crash) == banditWatcher, "Crash uses a different watcher")
   check(playerWatcher ~= banditWatcher, "player and bandit events share a watcher")
+  check(playerDeathWatcher ~= banditWatcher, "player-death and bandit events share a watcher")
   check(
     hasExactlyEvents(playerWatcher, EVENTS.PlayerEnterAircraft, EVENTS.PlayerLeaveUnit),
     "player watcher handles events other than enter/leave"
@@ -968,12 +1044,17 @@ succeeds("10. only the two required event watchers are registered", function()
     hasExactlyEvents(banditWatcher, EVENTS.Dead, EVENTS.Crash),
     "bandit watcher handles events other than dead/crash"
   )
+  check(
+    hasExactlyEvents(playerDeathWatcher, EVENTS.Dead, EVENTS.Crash),
+    "player-death watcher handles events other than dead/crash"
+  )
 end)
 
 succeeds("11. gameplay watchers remain strongly reachable after main returns", function()
   check(type(_G.duel_gameplay_watchers) == "table", "gameplay watcher retention table is missing")
   check(_G.duel_gameplay_watchers.player == findWatcher(EVENTS.PlayerEnterAircraft), "player watcher is not retained")
   check(_G.duel_gameplay_watchers.bandit == findWatcher(EVENTS.Dead), "bandit watcher is not retained")
+  check(_G.duel_gameplay_watchers.playerDeath ~= nil, "player-death watcher is not retained")
 end)
 
 succeeds("12. the valid scenario logs no environment errors", function()
@@ -1104,7 +1185,7 @@ succeeds("15. a missing donor logs once and init completes with the remaining ni
 end)
 
 succeeds("16. spawnWave only ever picks from the surviving donors", function()
-  local deadWatcher = findLatestWatcher(EVENTS.Dead)
+  local deadWatcher = _G.duel_gameplay_watchers.bandit
   check(deadWatcher ~= nil, "second dead/crash watcher is missing")
   local spawnsBefore = #spawnRecords
   local wavesToSimulate = 5
@@ -1124,6 +1205,252 @@ succeeds("16. spawnWave only ever picks from the surviving donors", function()
     check(isBanditDonor(template), "survivor loop used a template outside Bandit-1..Bandit-10")
   end
   _G.duel_missing_donor_package = nil
+end)
+
+local livesScenario = nil
+
+succeeds("17. player lives decrement once and follow a UCID across slots", function()
+  livesScenario = loadInitializedMission({
+    { slot = "Aerial-1", name = "Springfield", ucid = "ucid-springfield" },
+  })
+  local messagesBefore = #messages
+  firePlayerLoss("OnEventDead", "Aerial-1", "springfield-aircraft-1")
+  equal(messages[#messages].text, "Aircraft lost — 2 lives left.", "first player loss message is wrong")
+  firePlayerLoss("OnEventCrash", "Aerial-1", "springfield-aircraft-1")
+  equal(#messages, messagesBefore + 1, "duplicate player crash posted another loss message")
+
+  menuCommands["Show lives"].callback()
+  equal(messages[#messages].text, "Lives:\n  Springfield: 2", "Show lives did not report two remaining lives")
+
+  firePlayerEvent(
+    livesScenario.retained.player,
+    "OnEventPlayerLeaveUnit",
+    "Aerial-1",
+    "Springfield",
+    "ucid-springfield"
+  )
+  firePlayerEvent(
+    livesScenario.retained.player,
+    "OnEventPlayerEnterAircraft",
+    "Aerial-2",
+    "Springfield",
+    "ucid-springfield"
+  )
+  menuCommands["Show lives"].callback()
+  equal(messages[#messages].text, "Lives:\n  Springfield: 2", "rejoin into another slot reset UCID lives")
+
+  firePlayerEvent(livesScenario.retained.player, "OnEventPlayerEnterAircraft", "Aerial-1", "Colt", "ucid-colt")
+  menuCommands["Show lives"].callback()
+  equal(messages[#messages].text, "Lives:\n  Colt: 3\n  Springfield: 2", "new UCID did not receive fresh lives")
+end)
+
+succeeds("18. a zero-life identity is excluded even after DCS-native re-entry", function()
+  firePlayerLoss("OnEventDead", "Aerial-2", "springfield-aircraft-2")
+  equal(messages[#messages].text, "Aircraft lost — 1 life left.", "singular life message is wrong")
+  firePlayerLoss("OnEventDead", "Aerial-2", "springfield-aircraft-3")
+  equal(messages[#messages].text, "Aircraft lost — out of lives.", "out-of-lives message is wrong")
+
+  local spawnsBefore = #spawnRecords
+  menuCommands["Respawn bandit wave"].callback()
+  equal(#spawnRecords, spawnsBefore + 1, "forced spawn did not replace the active package")
+  equal(latestSpawn().grouping, 1, "zero-life player was counted in the replacement package")
+  livesScenario.package = latestSpawn().wrapper
+
+  firePlayerEvent(
+    livesScenario.retained.player,
+    "OnEventPlayerEnterAircraft",
+    "Aerial-3",
+    "Springfield",
+    "ucid-springfield"
+  )
+  equal(messages[#messages].text, "Out of lives — excluded from the package.", "zero-life re-entry message is wrong")
+end)
+
+succeeds("19. terminal state fires once and blocks scheduled and forced replacement", function()
+  local package = livesScenario.package
+  local destroyBefore = package.destroy_count
+  local schedulesBeforeDefeat = #schedules
+  killPackageFully(livesScenario.retained.bandit, package)
+  local pendingReplacement = latestPendingSchedule(30, false, schedulesBeforeDefeat)
+  check(pendingReplacement ~= nil, "pre-terminal wave defeat did not leave a scheduled replacement")
+  equal(package.destroy_count, destroyBefore, "wave defeat explicitly despawned the package")
+
+  local terminalMessageStart = #messages + 1
+  firePlayerLoss("OnEventDead", "Aerial-1", "colt-aircraft-1")
+  firePlayerLoss("OnEventDead", "Aerial-1", "colt-aircraft-2")
+  firePlayerLoss("OnEventDead", "Aerial-1", "colt-aircraft-3")
+  equal(
+    countExactMessages("All pilots down — mission over.", terminalMessageStart),
+    1,
+    "terminal message did not fire exactly once"
+  )
+
+  local spawnsBefore = #spawnRecords
+  runSchedule(pendingReplacement)
+  equal(#spawnRecords, spawnsBefore, "pre-terminal scheduled callback spawned after terminal state")
+  equal(package.destroy_count, destroyBefore, "terminal transition despawned the active wave")
+
+  menuCommands["Respawn bandit wave"].callback()
+  equal(messages[#messages].text, "Mission over — no more waves.", "terminal F10 refusal message is wrong")
+  equal(#spawnRecords, spawnsBefore, "terminal F10 command spawned a wave")
+  equal(package.destroy_count, destroyBefore, "terminal F10 command despawned the finished wave wrapper")
+  firePlayerLoss("OnEventCrash", "Aerial-1", "colt-aircraft-3")
+  equal(
+    countExactMessages("All pilots down — mission over.", terminalMessageStart),
+    1,
+    "duplicate loss repeated the terminal transition"
+  )
+end)
+
+succeeds("20. two-player package escalation follows 2,2,2,3", function()
+  loadInitializedMission({
+    { slot = "Aerial-1", name = "One", ucid = "two-player-1" },
+    { slot = "Aerial-2", name = "Two", ucid = "two-player-2" },
+  })
+  local expected = { 2, 2, 2, 3 }
+  local firstSpawn = #spawnRecords
+  for wave = 1, #expected do
+    if wave > 1 then
+      menuCommands["Respawn bandit wave"].callback()
+    end
+    equal(spawnRecords[firstSpawn + wave - 1].grouping, expected[wave], "two-player escalation cadence is wrong")
+  end
+  check(logContains("escalation +1"), "escalated spawn log does not report its escalation")
+end)
+
+succeeds("21. one-player package escalation follows 1,1,1,2", function()
+  loadInitializedMission({
+    { slot = "Aerial-1", name = "Solo", ucid = "solo-player" },
+  })
+  local expected = { 1, 1, 1, 2 }
+  local firstSpawn = #spawnRecords
+  for wave = 1, #expected do
+    if wave > 1 then
+      menuCommands["Respawn bandit wave"].callback()
+    end
+    equal(spawnRecords[firstSpawn + wave - 1].grouping, expected[wave], "one-player escalation cadence is wrong")
+  end
+end)
+
+succeeds("22. escalation caps at eight with eight distinct formation offsets", function()
+  loadInitializedMission({
+    { slot = "Aerial-1", name = "One", ucid = "cap-player-1" },
+    { slot = "Aerial-2", name = "Two", ucid = "cap-player-2" },
+    { slot = "Aerial-3", name = "Three", ucid = "cap-player-3" },
+    { slot = "Aerial-4", name = "Four", ucid = "cap-player-4" },
+  })
+  local firstSpawn = #spawnRecords
+  local waveCount = 16
+  for wave = 1, waveCount do
+    if wave > 1 then
+      menuCommands["Respawn bandit wave"].callback()
+    end
+    local expected = math.min(4 + math.floor((wave - 1) / 3), 8)
+    equal(spawnRecords[firstSpawn + wave - 1].grouping, expected, "capped escalation sequence is wrong")
+  end
+  local finalSpawn = spawnRecords[firstSpawn + waveCount - 1]
+  equal(finalSpawn.grouping, 8, "late escalation wave did not cap at eight")
+  equal(#finalSpawn.relative_positions, 8, "eight-ship formation did not produce eight offsets")
+  for i, position in ipairs(finalSpawn.relative_positions) do
+    for j = i + 1, #finalSpawn.relative_positions do
+      local other = finalSpawn.relative_positions[j]
+      check(position.x ~= other.x or position.y ~= other.y, "eight-ship formation contains duplicate offsets")
+    end
+  end
+end)
+
+succeeds("23. player-facing messages use the approved concise voice", function()
+  setAlivePlayers({})
+  local schedulesBefore = #schedules
+  dofile("src/missions/duel-dynamic/main.lua")
+  local retained = _G.duel_gameplay_watchers
+
+  menuCommands["Respawn bandit wave"].callback()
+  equal(messages[#messages].text, "Not ready yet — try again in a second.", "pre-init F10 message is wrong")
+  menuCommands["Show kills"].callback()
+  equal(messages[#messages].text, "Team kills: 0", "Show kills zero-state header is wrong")
+  menuCommands["Show lives"].callback()
+  equal(messages[#messages].text, "No players yet.", "Show lives empty-state message is wrong")
+
+  firePlayerEvent(retained.player, "OnEventPlayerEnterAircraft", "Aerial-1", "Viper", "message-player")
+  local initSchedule = latestPendingSchedule(1, true, schedulesBefore)
+  equal(runSchedule(initSchedule), false, "message scenario init did not complete")
+  runSchedule(latestPendingSchedule(3, false, schedulesBefore))
+  equal(messages[#messages].text, "Wave 1 — 1 hostile inbound", "inbound message is wrong")
+
+  menuCommands["Respawn bandit wave"].callback()
+  equal(messages[#messages].text, "New bandit wave inbound.", "forced-wave success message is wrong")
+  local activePackage = latestSpawn().wrapper
+  fireBanditEvent(retained.bandit, "OnEventDead", activePackage, activePackage.units[1].name)
+  equal(messages[#messages].text, "Bandit down — team 1, 0 hostiles left", "bandit kill message is wrong")
+  menuCommands["Show kills"].callback()
+  equal(messages[#messages].text, "Team kills: 1\n  Team: 1", "Show kills scored header is wrong")
+  menuCommands["Reset kills"].callback()
+  equal(messages[#messages].text, "Kills reset.", "reset-kills message is wrong")
+
+  firePlayerEvent(retained.player, "OnEventPlayerLeaveUnit", "Aerial-1", "Viper", "message-player")
+  menuCommands["Respawn bandit wave"].callback()
+  equal(messages[#messages].text, "No players in the air.", "no-player forced-wave message is wrong")
+
+  local oldFragments = {
+    " bandit inbound",
+    "Bandit down!",
+    "Kill counter reset",
+    "Init not done yet",
+    "force-reset",
+    "No live player aircraft",
+    "red package remaining",
+  }
+  for _, fragment in ipairs(oldFragments) do
+    check(not messageContains(fragment), "obsolete player-facing jargon remains: " .. fragment)
+  end
+end)
+
+succeeds("24. player-death watcher is retained, shares Dead/Crash, and ignores red losses", function()
+  local context = loadInitializedMission({
+    { slot = "Aerial-1", name = "Hygiene", ucid = "watcher-player" },
+  })
+  equal(#watchers, context.watchersBefore + 3, "fresh mission did not register exactly three gameplay watchers")
+  check(context.retained.playerDeath ~= nil, "player-death watcher is not strongly retained")
+  check(
+    hasExactlyEvents(context.retained.playerDeath, EVENTS.Dead, EVENTS.Crash),
+    "player-death watcher does not handle exactly Dead and Crash"
+  )
+  menuCommands["Show lives"].callback()
+  local livesBefore = messages[#messages].text
+  firePlayerLoss("OnEventDead", "Aerial-1", "red-loss-must-not-count", RED)
+  menuCommands["Show lives"].callback()
+  equal(messages[#messages].text, livesBefore, "red-coalition death changed player lives")
+end)
+
+succeeds("25. slot fallback initializes missing lives and warns once per mission run", function()
+  setAlivePlayers({})
+  local schedulesBefore = #schedules
+  local warningsBefore = 0
+  for _, entry in ipairs(logs) do
+    if entry.level == "WARNING" and entry.message:find("player UCID unavailable", 1, true) then
+      warningsBefore = warningsBefore + 1
+    end
+  end
+  dofile("src/missions/duel-dynamic/main.lua")
+  local retained = _G.duel_gameplay_watchers
+  firePlayerEvent(retained.player, "OnEventPlayerEnterAircraft", "Aerial-1", nil, nil)
+  firePlayerEvent(retained.player, "OnEventPlayerEnterAircraft", "Aerial-2", nil, nil)
+  equal(runSchedule(latestPendingSchedule(1, true, schedulesBefore)), false, "fallback scenario init did not complete")
+  runSchedule(latestPendingSchedule(3, false, schedulesBefore))
+  menuCommands["Show lives"].callback()
+  equal(
+    messages[#messages].text,
+    "Lives:\n  Player: 3\n  Player: 3",
+    "slot fallback did not initialize both identities"
+  )
+  local warningsAfter = 0
+  for _, entry in ipairs(logs) do
+    if entry.level == "WARNING" and entry.message:find("player UCID unavailable", 1, true) then
+      warningsAfter = warningsAfter + 1
+    end
+  end
+  equal(warningsAfter, warningsBefore + 1, "slot fallback warning was not emitted exactly once")
 end)
 
 restoreGlobals()
