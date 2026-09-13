@@ -511,6 +511,12 @@ how to verify, and `docs/dev-setup.md §8` for the build/QA loop.
       player orientation and the mission-end state. Reworked 2026-09-13 to a
       concise in-fiction voice (final strings reported to the owner for review);
       offline-verified, live validation parked.
+- The parked §6.4 live validation is now owner-ready:
+      `docs/s64-live-verification.md` is a code-grounded runbook (exact
+      in-fiction message strings, F10 `Duel Dynamic` → `Show lives` / `Respawn
+      bandit wave` as the primary live checks, log anchors, an 8-case test
+      matrix, and explicit PASS/FAIL criteria). On a PASS, record the run in
+      `progress.md` and flip queue item `s64-live-verification` to completed.
 - [ ] Validate 2v2, 3v3, and 4v4 package geometry/tasking on the dedicated
       server and inspect the result in Tacview.
 - [x] Install/configure Tacview for
