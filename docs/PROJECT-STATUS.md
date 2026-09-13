@@ -1,5 +1,17 @@
 # Project status
 
+**Live hook repair — 2026-09-12:** The stock GameGUI file API returns no values
+on successful write/flush/close and has no `seek` method. This blocked export
+after `mission.started`, even with a healthy collector. The installed hook now
+uses exact readback with bounded 64 KiB segments on seek-less DCS. Owner joined
+and fired after restart: live participant/aircraft/heartbeat/shot events and the
+AIM-120C expenditures, attributed kill and aircraft loss reached production.
+98 hook checks, 41 bridge tests and
+122 collector tests pass. Changes are uncommitted. See
+[repair evidence and limits](telemetry/hook-io-compatibility-2026-09-12.md).
+The September 7 automation notes below are historical: collector service and
+browser polling were implemented September 8; do not read them as current.
+
 **Near-live planning update — 2026-09-07:** Owner approved incorporating the
 near-live architecture into the slice roadmap; this is documentation approval,
 not an implementation/deployment completion. New work: S16-p7/p8 (duplicate

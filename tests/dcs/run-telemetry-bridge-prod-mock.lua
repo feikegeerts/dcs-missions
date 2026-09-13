@@ -46,7 +46,11 @@ local function run_mapping(mapping)
       fail_size = false,
       fail_write = false,
       short_write = false,
+      write_nil_on_success = false,
+      seek_missing = false,
+      flush_nil_on_success = false,
       close_nil_on_success = false,
+      return_error = nil,
     }
 
     function fs:reset_io_stats()
@@ -104,11 +108,17 @@ local function run_mapping(mapping)
           assert(not self.closed, "seek on closed file")
           assert(whence == "set", "unsupported seek")
           self.position = offset
+          if self.fs.return_error == "seek" then
+            return nil, "injected seek error"
+          end
           return self.position
         end
         function handle:close()
           self.closed = true
           return true
+        end
+        if self.seek_missing then
+          handle.seek = nil
         end
         return handle
       end
@@ -137,16 +147,31 @@ local function run_mapping(mapping)
         end
         self.content = self.content .. bytes
         self.fs.files[self.path] = self.content
+        if self.fs.return_error == "write" then
+          return nil, "injected write error after append"
+        end
+        if self.fs.write_nil_on_success then
+          return
+        end
         return self
       end
       function handle:flush()
         assert(not self.closed, "flush on closed file")
         self.fs.files[self.path] = self.content
+        if self.fs.return_error == "flush" then
+          return nil, "injected flush error"
+        end
+        if self.fs.flush_nil_on_success then
+          return
+        end
         return true
       end
       function handle:close()
         self.fs.files[self.path] = self.content
         self.closed = true
+        if self.fs.return_error == "close" then
+          return nil, "injected close error"
+        end
         if self.fs.close_nil_on_success then
           return nil
         end
@@ -713,6 +738,25 @@ local function run_mapping(mapping)
     check(string.find(spool, "dcs-close-nil", 1, true), "spool missing appended event")
   end)
 
+  succeeds("no-return write flush and close require readback and continue draining", function()
+    local system = new_system()
+    system.fs.write_nil_on_success = true
+    system.fs.seek_missing = true
+    system.fs.flush_nil_on_success = true
+    system.fs.close_nil_on_success = true
+    system:new_generation(true)
+    system:advance(0.25)
+    equal(system.runtime:status().last_acked_sequence, 1)
+    system:add_line(2, { marker = "no-return-io" })
+    system:advance(0.25)
+    equal(system.runtime:status().last_acked_sequence, 2)
+    equal(system.runtime:status().pending_count, 0)
+    check(not system.export.state.stuck)
+    local spool = system.fs.files[normalized(system.export.state.spool_path)]
+    equal(system.export.state.spool_size, #spool)
+    check(string.find(spool, "no-return-io", 1, true), "missing subsequent event")
+  end)
+
   local function verify_disk_fault(name, configure, expected_category, seed_first)
     succeeds(name, function()
       local system = new_system()
@@ -740,6 +784,24 @@ local function run_mapping(mapping)
   verify_disk_fault("short write disk-full analog is explicit", function(fs)
     fs.short_write = true
   end, "spool-write-failed")
+
+  for _, operation in ipairs({ "write", "flush", "close" }) do
+    verify_disk_fault(operation .. " returned error is rejected even with complete bytes", function(fs)
+      fs.return_error = operation
+    end, "spool-write-failed")
+  end
+
+  verify_disk_fault("no-return IO still rejects corrupted bytes", function(fs)
+    fs.write_nil_on_success = true
+    fs.seek_missing = true
+    fs.flush_nil_on_success = true
+    fs.close_nil_on_success = true
+    fs.verify_fault = "tail-byte"
+  end, "spool-verify-failed")
+
+  verify_disk_fault("seek returned error prevents acknowledgement", function(fs)
+    fs.return_error = "seek"
+  end, "spool-read-failed")
 
   verify_disk_fault("partial append mutation is rejected", function(fs)
     fs.verify_fault = "partial-append"
@@ -773,6 +835,50 @@ local function run_mapping(mapping)
     check(system.fs.io_stats.max_single_read < #spool, "normal path read the whole lifetime spool")
     check(system.fs.io_stats.read_bytes < #spool * 2, "read work grew with lifetime spool size")
   end)
+
+  succeeds("seekless DCS rotates bounded segments without losing or duplicating events", function()
+    local system = new_system()
+    system.fs.seek_missing = true
+    system.fs.write_nil_on_success = true
+    system.fs.flush_nil_on_success = true
+    system.fs.close_nil_on_success = true
+    system:new_generation(true)
+    for sequence = 2, 2001 do
+      system:add_line(sequence, { marker = "seekless", ordinal = sequence })
+    end
+    local bound = system.export.budgets.seekless_segment_bytes
+    for _ = 1, 64 do
+      system.fs:reset_io_stats()
+      system:advance(0.25)
+      check(system.fs.io_stats.max_single_read <= bound)
+      check(system.fs.io_stats.read_bytes <= 3 * bound, "unbounded callback read work")
+    end
+    equal(system.runtime:status().pending_count, 0)
+    equal(system.runtime:status().last_acked_sequence, 2001)
+    check(not system.export.state.stuck)
+    check(system.export.state.spool_segment_index > 1, "rollover was not exercised")
+    local count = 0
+    local seen = {}
+    local root = normalized(system.export.state.spool_path)
+    for path, bytes in pairs(system.fs.files) do
+      if string.sub(path, 1, #root) == root then
+        check(#bytes <= bound, "segment exceeds bounded seekless readback size")
+        for line in string.gmatch(bytes, "[^\n]+") do
+          check(not seen[line], "duplicate event across segments")
+          seen[line] = true
+          count = count + 1
+        end
+      end
+    end
+    equal(count, 2001)
+    system.callbacks.onSimulationStop()
+    check(system:contains("failures=0 stuck=false unspooled=0"))
+  end)
+
+  verify_disk_fault("seekless prior-byte corruption is still rejected", function(fs)
+    fs.seek_missing = true
+    fs.verify_fault = "prior-byte"
+  end, "spool-verify-failed", true)
 
   succeeds("burst overflow becomes an explicit hook health failure", function()
     local system = new_system({ queue_max_lines = 4 })

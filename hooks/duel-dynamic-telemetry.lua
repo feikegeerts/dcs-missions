@@ -18,6 +18,8 @@ local MAX_BACKOFF = config.max_backoff_s or 4.0
 local STOP_MAX_CYCLES = config.stop_max_cycles or 32
 local VERIFY_PREFIX_BYTES = config.verify_prefix_bytes or 256
 local MAX_SPOOL_BYTES_PER_CYCLE = 65536
+local SEEKLESS_SEGMENT_BYTES = MAX_SPOOL_BYTES_PER_CYCLE
+local seekless_io = false
 local MAX_MISSION_EVALS_PER_CYCLE = 3
 local TELEMETRY_DIR_NAME = config.telemetry_dir_name or "telemetry"
 local BRIDGE_DIR_NAME = config.bridge_dir_name or "telemetry-bridge"
@@ -365,6 +367,24 @@ local function read_all(path)
   return content
 end
 
+-- DCS file methods can succeed without returning a value. Reject exceptions
+-- and explicit failure returns, but require readback at each caller before
+-- treating a no-return operation as durable. Always attempt flush and close.
+local function write_flush_close(file, bytes)
+  local write_ok, write_result, write_error = pcall(file.write, file, bytes)
+  local flush_ok, flush_result, flush_error = pcall(file.flush, file)
+  local close_ok, close_result, close_error = pcall(file.close, file)
+  return write_ok
+    and write_result ~= false
+    and write_error == nil
+    and flush_ok
+    and flush_result ~= false
+    and flush_error == nil
+    and close_ok
+    and close_result ~= false
+    and close_error == nil
+end
+
 local function write_and_verify(path, mode, bytes, expected)
   if type(io) ~= "table" or type(io.open) ~= "function" then
     return nil
@@ -373,10 +393,7 @@ local function write_and_verify(path, mode, bytes, expected)
   if not open_ok or not file then
     return nil
   end
-  local write_ok = pcall(file.write, file, bytes)
-  local flush_ok = pcall(file.flush, file)
-  local close_ok = pcall(file.close, file)
-  if not write_ok or not flush_ok or not close_ok then
+  if not write_flush_close(file, bytes) then
     return nil
   end
   local mutator = config.test_spool_verify_mutator
@@ -402,13 +419,29 @@ local function read_region(path, offset, count)
   if not open_ok or not file then
     return nil
   end
-  local seek_ok, position = pcall(file.seek, file, "set", offset)
   local read_ok, content = false, nil
-  if seek_ok and position == offset then
+  local positioned = false
+  if type(file.seek) == "function" then
+    local seek_ok, position = pcall(file.seek, file, "set", offset)
+    positioned = seek_ok and position == offset
+  else
+    -- DCS GameGUI has read(count), but no seek. Rotate bounded segments
+    -- rather than skipping an unbounded lifetime spool on every callback.
+    seekless_io = true
+    if offset + count <= SEEKLESS_SEGMENT_BYTES then
+      if offset == 0 then
+        positioned = true
+      else
+        local skip_ok, skipped = pcall(file.read, file, offset)
+        positioned = skip_ok and type(skipped) == "string" and #skipped == offset
+      end
+    end
+  end
+  if positioned then
     read_ok, content = pcall(file.read, file, count)
   end
   pcall(file.close, file)
-  return read_ok and content or nil
+  return read_ok and type(content) == "string" and content or nil
 end
 
 local function append_and_verify(path, bytes, expected_size)
@@ -434,17 +467,9 @@ local function append_and_verify(path, bytes, expected_size)
   if not open_ok or not file then
     return nil, "spool-open-failed"
   end
-  local write_ok, write_result = pcall(file.write, file, bytes)
-  -- Successful flush/close are gated on pcall success only. DCS may return
-  -- nil on a successful close (no return values), so result truthiness is
-  -- not a failure signal here; post-write size plus bounded prefix and
-  -- appended-byte readback below is the authoritative persistence proof.
-  -- A successful Lua 5.1 write returns a truthy value, so a nil write
-  -- result still indicates a write failure (for example disk-full short
-  -- write) even when no exception was raised.
-  local flush_ok = pcall(file.flush, file)
-  local close_ok = pcall(file.close, file)
-  if not write_ok or write_result == nil or not flush_ok or not close_ok then
+  -- Post-write size, bounded prefix, and exact appended-byte readback below
+  -- are the persistence proof, including when DCS returns no write result.
+  if not write_flush_close(file, bytes) then
     return nil, "spool-write-failed"
   end
 
@@ -664,6 +689,8 @@ local function begin_generation()
   state.transport_logged = false
   state.run_key = make_run_key()
   state.spool_path = state.run_key and join_path(telemetry_directory, state.run_key .. ".ndjson") or nil
+  state.spool_segment_path = state.spool_path
+  state.spool_segment_index = 0
   if not state.run_key or not ensure_storage_directories() then
     state.stuck = true
     write_log("hook-error storage generation=%d", state.generation)
@@ -715,7 +742,13 @@ end
 
 local function spool_lines(decoded)
   local appended = table.concat(decoded.lines, "\n") .. "\n"
-  local verified_size, category = append_and_verify(state.spool_path, appended, state.spool_size)
+  if seekless_io and state.spool_size + #appended > SEEKLESS_SEGMENT_BYTES then
+    state.spool_segment_index = state.spool_segment_index + 1
+    state.spool_segment_path = state.spool_path .. string.format(".part-%09d.ndjson", state.spool_segment_index)
+    state.spool_size = 0
+    write_log("spool-segment generation=%d part=%d", state.generation, state.spool_segment_index)
+  end
+  local verified_size, category = append_and_verify(state.spool_segment_path, appended, state.spool_size)
   if not verified_size then
     state.failure_count = state.failure_count + 1
     state.stuck = true
@@ -1014,6 +1047,7 @@ if type(config.test_export) == "function" then
       max_spool_bytes_per_cycle = MAX_SPOOL_BYTES_PER_CYCLE,
       stop_max_cycles = STOP_MAX_CYCLES,
       verify_prefix_bytes = VERIFY_PREFIX_BYTES,
+      seekless_segment_bytes = SEEKLESS_SEGMENT_BYTES,
     },
     reconciled_cursor = reconciled_cursor,
     state = state,

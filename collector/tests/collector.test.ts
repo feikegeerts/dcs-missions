@@ -75,6 +75,40 @@ describe("NDJSON collector", () => {
     expect(context.spool.eventCount()).toBe(2);
   });
 
+  it("collects seekless hook segments as one run across restart and partial append", () => {
+    const context = setup();
+    const started = fixture("01-mission-started.json");
+    const fired = fixture("02-ordnance-fired.json");
+    const name = `${started.run_key}.ndjson`;
+    writeRun(context.workspace.input, name, [started]);
+    expect(collect()).toMatchObject({ spooled: 1, quarantined: 0 });
+    context.spool.close();
+    spool = new DurableSpool(
+      join(context.workspace.state, "collector.sqlite3"),
+    );
+
+    const part = join(context.workspace.input, `${name}.part-000000001.ndjson`);
+    writeFileSync(part, JSON.stringify(fired), "utf8");
+    expect(collect()).toMatchObject({ spooled: 0, partial_files: 1 });
+    appendFileSync(part, "\n", "utf8");
+    expect(collect()).toMatchObject({
+      spooled: 1,
+      partial_files: 0,
+      quarantined: 0,
+    });
+    expect(spool.listRuns()).toHaveLength(1);
+    expect(spool.eventCount()).toBe(2);
+    expect(spool.listSourceTails()).toHaveLength(2);
+    expect(
+      spool.listSourceTails().every((tail) => tail.tailState === "clear"),
+    ).toBe(true);
+    expect(collect()).toMatchObject({
+      spooled: 0,
+      duplicates: 0,
+      quarantined: 0,
+    });
+  });
+
   it("resumes from the durable cursor after process restart", () => {
     const context = setup();
     const started = fixture("01-mission-started.json");
