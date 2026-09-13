@@ -35,6 +35,18 @@ Reversibility: uninstall at any time per "Logs, retention, and uninstall" —
 stop the service, verify lock release, uninstall via WinSW, and keep
 state/input under restricted ACLs. Uninstall never implies deletion or prune.
 
+**Live validation performed 2026-09-13 (overnight loop, owner-approved
+window):** with the spool quiescent (no mission running, zero backlog), the
+loop validated **duplicate-start-rejection** (second instance with identical
+input/state/lock-port exited 3 with an ownership conflict naming the running
+owner; `owner.json` unchanged), **graceful shutdown** (`Stop-Service` →
+clean stop, process gone, lock port released = the exit-0 final-pass path),
+and **restart** (`Start-Service` → fresh owner, lock re-held, zero backlog,
+first post-restart delivery to production succeeded within the first
+cycle). Still owner actions: the **boot** check (requires a host reboot) and
+running the service under the dedicated identity (blocked by the WinSW 1064
+interim above; `dcs-telemetry-coll` is provisioned and ACL-verified).
+
 ## WinSW installation design (owner/admin)
 
 1. Build with Node 22+ and stage `collector/dist`, runtime dependencies, and the
