@@ -432,6 +432,27 @@ export const assistAttributions = pgTable(
   ],
 );
 
+export const collectorHealth = pgTable(
+  "collector_health",
+  {
+    identity: text("identity").primaryKey(),
+    status: text("status").notNull(),
+    summary: jsonb("summary").notNull(),
+    firstSeenAt: timestamp("first_seen_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    check(
+      "collector_health_status_check",
+      sql`${table.status} IN ('ok', 'degraded', 'blocked')`,
+    ),
+  ],
+);
+
 export type TelemetryEventRow = typeof telemetryEvents.$inferSelect;
 export type MissionRunRow = typeof missionRuns.$inferSelect;
 export type ValuationCatalogueRow = typeof valuationCatalogues.$inferSelect;
@@ -443,3 +464,4 @@ export type OrdnanceExpenditureRow = typeof ordnanceExpenditures.$inferSelect;
 export type AssetLossRow = typeof assetLosses.$inferSelect;
 export type KillAttributionRow = typeof killAttributions.$inferSelect;
 export type AssistAttributionRow = typeof assistAttributions.$inferSelect;
+export type CollectorHealthRow = typeof collectorHealth.$inferSelect;

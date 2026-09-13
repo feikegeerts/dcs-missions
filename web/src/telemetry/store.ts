@@ -4,6 +4,7 @@ import { getDb } from "@/db/client";
 import {
   assetLosses,
   assistAttributions,
+  collectorHealth,
   killAttributions,
   missionRuns,
   ordnanceExpenditures,
@@ -26,6 +27,26 @@ export type RunParticipantRow = typeof runParticipants.$inferSelect;
 export type AssetLossRow = typeof assetLosses.$inferSelect;
 export type KillAttributionRow = typeof killAttributions.$inferSelect;
 export type AssistAttributionRow = typeof assistAttributions.$inferSelect;
+export type CollectorHealthStatus = "ok" | "degraded" | "blocked";
+export interface CollectorHealthSummary {
+  generated_at: string;
+  backlog?: { runs: number; events: number; bytes: number };
+  last_successful_delivery?: string | null;
+  next_retry_deadline?: string | null;
+  quarantine_count?: number;
+  blocks?: Array<{ run_key: string; sequence: number; reason: string }>;
+  lifecycle_pending?: number;
+  source_tail_uncertain?: number;
+  disk_free_mb?: number | null;
+  collector_version?: string;
+}
+export interface CollectorHealthRecord {
+  identity: string;
+  status: CollectorHealthStatus;
+  summary: CollectorHealthSummary;
+  firstSeenAt: Date;
+  updatedAt: Date;
+}
 
 export interface RunUpsertInput {
   producerId: string;
@@ -55,6 +76,13 @@ export interface RunParticipantUpsert {
 }
 
 export interface TelemetryStore {
+  // Optional so focused ingest test doubles do not need unrelated health state.
+  upsertCollectorHealth?(
+    identity: string,
+    status: CollectorHealthStatus,
+    summary: CollectorHealthSummary,
+  ): Promise<void>;
+  getCollectorHealth?(): Promise<CollectorHealthRecord[]>;
   insertEvent(
     event: TelemetryEvent,
   ): Promise<"accepted" | "duplicate" | "rejected" | "content-conflict">;
@@ -177,6 +205,33 @@ function isUniqueViolation(error: unknown): boolean {
 }
 
 export class NeonTelemetryStore implements TelemetryStore {
+  async upsertCollectorHealth(
+    identity: string,
+    status: CollectorHealthStatus,
+    summary: CollectorHealthSummary,
+  ): Promise<void> {
+    await getDb()
+      .insert(collectorHealth)
+      .values({ identity, status, summary })
+      .onConflictDoUpdate({
+        target: collectorHealth.identity,
+        set: { status, summary, updatedAt: sql`now()` },
+      });
+  }
+
+  async getCollectorHealth(): Promise<CollectorHealthRecord[]> {
+    const rows = await getDb()
+      .select()
+      .from(collectorHealth)
+      .orderBy(desc(collectorHealth.updatedAt))
+      .limit(1);
+    return rows.map((row) => ({
+      ...row,
+      status: row.status as CollectorHealthStatus,
+      summary: row.summary as CollectorHealthSummary,
+    }));
+  }
+
   async insertEvent(
     event: TelemetryEvent,
   ): Promise<"accepted" | "duplicate" | "rejected" | "content-conflict"> {
@@ -618,5 +673,37 @@ export class NeonTelemetryStore implements TelemetryStore {
         ),
       )
       .orderBy(asc(runParticipants.participantId));
+  }
+}
+
+/** Small deterministic test store mirroring the production identity upsert. */
+export class InMemoryCollectorHealthStore {
+  private readonly rows = new Map<string, CollectorHealthRecord>();
+
+  constructor(private readonly nowProvider: () => Date = () => new Date()) {}
+
+  async upsertCollectorHealth(
+    identity: string,
+    status: CollectorHealthStatus,
+    summary: CollectorHealthSummary,
+  ): Promise<void> {
+    const now = this.nowProvider();
+    const existing = this.rows.get(identity);
+    this.rows.set(identity, {
+      identity,
+      status,
+      summary: structuredClone(summary),
+      firstSeenAt: existing?.firstSeenAt ?? now,
+      updatedAt: now,
+    });
+  }
+
+  async getCollectorHealth(): Promise<CollectorHealthRecord[]> {
+    return [...this.rows.values()]
+      .sort(
+        (left, right) => right.updatedAt.getTime() - left.updatedAt.getTime(),
+      )
+      .slice(0, 1)
+      .map((row) => ({ ...row, summary: structuredClone(row.summary) }));
   }
 }

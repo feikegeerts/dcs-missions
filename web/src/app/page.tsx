@@ -1,6 +1,7 @@
 import Link from "next/link";
 
 import { AutoRefresh } from "@/components/auto-refresh";
+import { CollectorHealth } from "@/components/collector-health";
 import { formatDashboardDate } from "@/telemetry/dates";
 import {
   DASHBOARD_RUN_SCOPE_LIMIT,
@@ -41,6 +42,7 @@ export default async function MissionsPage({
     const store = new NeonTelemetryStore();
     const now = new Date();
     const runs = await store.listRuns(DASHBOARD_RUN_SCOPE_LIMIT, 0, null);
+    const collectorHealth = (await store.getCollectorHealth())[0] ?? null;
     const groups = groupRunsByMission(runs);
     const latest =
       runs.length === 0
@@ -71,6 +73,7 @@ export default async function MissionsPage({
         </p>
 
         <div className="hud-grid" style={{ marginTop: "1rem" }}>
+          <CollectorHealth record={collectorHealth} serverTime={now} />
           {latest && (
             <div className="col-12">
               <Link
