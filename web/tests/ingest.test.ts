@@ -795,7 +795,7 @@ describe("telemetry ingest", () => {
     });
     expect(store.runUpserts[0]).toMatchObject({
       valuationCatalogue: "ordnance",
-      valuationCatalogueVersion: 1,
+      valuationCatalogueVersion: 2,
     });
     expect(store.expenditures.size).toBe(2);
     expect(

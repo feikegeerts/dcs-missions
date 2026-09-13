@@ -23,6 +23,7 @@ import {
 
 export * from "./types";
 export { ordnanceCatalogueV1 } from "./ordnance-v1";
+export { ordnanceCatalogueV2 } from "./ordnance-v2";
 
 export type Valuation = { priced: true; usdValue: number } | { priced: false };
 

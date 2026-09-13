@@ -17,7 +17,9 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:seed:catalogue-v1": "tsx scripts/seed-catalogue-v1.ts",
-    "db:replay": "tsx scripts/dev-replay-run.ts"
+    "db:seed:catalogue-v2": "tsx scripts/seed-catalogue-v2.ts",
+    "db:replay": "tsx scripts/dev-replay-run.ts",
+    "db:reprice-runs-to-v2": "tsx scripts/reprice-runs-to-v2.ts"
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.1.0",

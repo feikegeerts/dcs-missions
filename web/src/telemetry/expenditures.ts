@@ -1,5 +1,9 @@
 import type { OrdinanceCatalogue } from "./catalogue";
-import { ordnanceCatalogueV1, resolveValuation } from "./catalogue";
+import {
+  ordnanceCatalogueV1,
+  ordnanceCatalogueV2,
+  resolveValuation,
+} from "./catalogue";
 import { buildAiCallsigns, type AiCallsignMap } from "./ai-names";
 import type { TelemetryEvent } from "./types";
 
@@ -9,22 +13,25 @@ export type CatalogueAssignment = {
 };
 
 /**
- * The catalogue newly created runs are explicitly assigned. Only v1 exists
- * today; when a newer version is human-approved, this is the single place
- * that decides what new runs pin. Historical runs without an assignment
- * stay unassigned — assignment is never backfilled.
+ * The catalogue newly created runs are explicitly assigned. Version 2 (the
+ * 2026-09-13 live-evidence expansion) is current; when a newer version is
+ * human-approved, this is the single place that decides what new runs pin.
+ * Historical runs without an assignment stay unassigned — assignment is
+ * never backfilled.
  */
 export function currentOrdnanceAssignment(): CatalogueAssignment {
   return {
-    catalogue: ordnanceCatalogueV1.catalogue,
-    version: ordnanceCatalogueV1.version,
+    catalogue: ordnanceCatalogueV2.catalogue,
+    version: ordnanceCatalogueV2.version,
   };
 }
 
 /**
  * Resolve the pinned catalogue object for an assignment. Returns null for
  * unknown versions rather than pricing against the wrong catalogue: an
- * expenditure is never recorded with a mismatched value.
+ * expenditure is never recorded with a mismatched value. Version 1 remains
+ * resolvable so historical v1-pinned runs keep pricing against the immutable
+ * v1 values.
  */
 export function catalogueForAssignment(
   assignment: CatalogueAssignment | null,
@@ -37,6 +44,12 @@ export function catalogueForAssignment(
     assignment.version === ordnanceCatalogueV1.version
   ) {
     return ordnanceCatalogueV1;
+  }
+  if (
+    assignment.catalogue === ordnanceCatalogueV2.catalogue &&
+    assignment.version === ordnanceCatalogueV2.version
+  ) {
+    return ordnanceCatalogueV2;
   }
   return null;
 }
@@ -210,6 +223,16 @@ export function deriveExpenditure(
       ? stringOrNull(weapon, "dcs_type")
       : null;
   const valuation = resolveValuation(catalogue, weaponDcsType);
+  // Mission telemetry passes the raw dcs_type through as
+  // weapon.display_name today (shot.lua), so an event display name that
+  // differs from the raw key is the only case where it carries a real
+  // label. Otherwise fall back to the catalogue's curated display name;
+  // keys unknown to the catalogue keep the raw passthrough.
+  const eventWeaponDisplayName = stringOrNull(weapon, "display_name");
+  const catalogueItem =
+    weaponDcsType !== null
+      ? catalogue.items.find((item) => item.dcs_type === weaponDcsType)
+      : undefined;
 
   return {
     sourceEventId: event.event_id,
@@ -229,7 +252,13 @@ export function deriveExpenditure(
       stringOrNull(asset, "dcs_type") ?? stringOrNull(initiator, "dcs_type"),
     coalition: event.coalition,
     weaponDcsType,
-    weaponDisplayName: stringOrNull(weapon, "display_name"),
+    weaponDisplayName:
+      eventWeaponDisplayName !== null &&
+      eventWeaponDisplayName !== weaponDcsType
+        ? eventWeaponDisplayName
+        : (catalogueItem?.display_name ??
+          eventWeaponDisplayName ??
+          weaponDcsType),
     catalogue: catalogue.catalogue,
     catalogueVersion: catalogue.version,
     unitCostCents: valuation.priced

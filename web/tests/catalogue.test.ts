@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   CATALOGUE_CATEGORIES,
   ordnanceCatalogueV1,
+  ordnanceCatalogueV2,
   resolveValuation,
   validateCatalogue,
   type OrdinanceCatalogue,
@@ -148,6 +149,110 @@ describe("ordnanceCatalogueV1", () => {
       expect(keys.has(deviation.observed_dcs_type)).toBe(true);
       expect(deviation.observed_dcs_type).not.toBe(deviation.expected_dcs_type);
     }
+  });
+});
+
+describe("ordnanceCatalogueV2", () => {
+  it("passes structural validation", () => {
+    expect(validateCatalogue(ordnanceCatalogueV2)).toEqual([]);
+  });
+
+  it("records version 2 with the 2026-09-13 effective date", () => {
+    expect(ordnanceCatalogueV2.catalogue).toBe("ordnance");
+    expect(ordnanceCatalogueV2.version).toBe(2);
+    expect(ordnanceCatalogueV2.effective_date).toBe("2026-09-13");
+    expect(ordnanceCatalogueV2.currency).toBe("USD");
+  });
+
+  it("carries every v1 item forward unchanged", () => {
+    const v2ByKey = new Map(
+      ordnanceCatalogueV2.items.map((item) => [item.dcs_type, item]),
+    );
+    expect(ordnanceCatalogueV2.items).toHaveLength(29);
+    for (const v1Item of ordnanceCatalogueV1.items) {
+      expect(v2ByKey.get(v1Item.dcs_type)).toEqual(v1Item);
+    }
+  });
+
+  it("adds exactly the five 2026-09-13 mission keys", () => {
+    const v1Keys = new Set<string>(
+      ordnanceCatalogueV1.items.map((i) => i.dcs_type),
+    );
+    expect(
+      ordnanceCatalogueV2.items
+        .filter((item) => !v1Keys.has(item.dcs_type))
+        .map((item) => item.dcs_type)
+        .sort(),
+    ).toEqual(["MiG-29S", "P_27PE", "P_27TE", "R-3R", "Su-33"]);
+  });
+
+  it("prices the new keys on the reviewed v2 scale", () => {
+    expect(
+      Object.fromEntries(
+        ordnanceCatalogueV2.items
+          .filter((item) =>
+            ["P_27PE", "P_27TE", "R-3R", "MiG-29S", "Su-33"].includes(
+              item.dcs_type,
+            ),
+          )
+          .map((item) => [item.dcs_type, item.usd_value]),
+      ),
+    ).toEqual({
+      P_27PE: 800000,
+      P_27TE: 500000,
+      "R-3R": 75000,
+      "MiG-29S": 11000000,
+      "Su-33": 25000000,
+    });
+  });
+
+  it("marks the live keys verified and R-3R source-only", () => {
+    const byKey = new Map(
+      ordnanceCatalogueV2.items.map((item) => [item.dcs_type, item]),
+    );
+    expect(byKey.get("P_27PE")?.matrix_status).toBe("verified");
+    expect(byKey.get("P_27TE")?.matrix_status).toBe("verified");
+    expect(byKey.get("MiG-29S")?.matrix_status).toBe("verified");
+    expect(byKey.get("Su-33")?.matrix_status).toBe("verified");
+    expect(byKey.get("R-3R")?.matrix_status).toBe("source-only");
+    expect(byKey.get("P_27PE")?.value_basis).toBe("estimate");
+    expect(byKey.get("R-3R")?.value_basis).toBe("estimate");
+  });
+
+  it("records the two live naming deviations against v2 items", () => {
+    expect(ordnanceCatalogueV2.deviations).toHaveLength(6);
+    const keys = new Set(ordnanceCatalogueV2.items.map((i) => i.dcs_type));
+    for (const deviation of ordnanceCatalogueV2.deviations) {
+      expect(keys.has(deviation.observed_dcs_type)).toBe(true);
+      expect(deviation.observed_dcs_type).not.toBe(deviation.expected_dcs_type);
+    }
+    const observed = ordnanceCatalogueV2.deviations.map(
+      (deviation) => deviation.observed_dcs_type,
+    );
+    expect(observed).toContain("P_27PE");
+    expect(observed).toContain("P_27TE");
+  });
+
+  it("resolves every v2 key and keeps the R-24/R-33 deferral intact", () => {
+    for (const item of ordnanceCatalogueV2.items) {
+      expect(resolveValuation(ordnanceCatalogueV2, item.dcs_type)).toEqual({
+        priced: true,
+        usdValue: item.usd_value,
+      });
+    }
+    const scopeKeys = ordnanceCatalogueV2.out_of_scope.map(
+      (entry) => entry.key,
+    );
+    expect(scopeKeys).toContain("R-24R, R-24T, R-33");
+    expect(scopeKeys).not.toContain("R-27ER, R-27ET, R-24R, R-24T, R-33");
+    // The display names are not runtime keys: the raw identifiers remain the
+    // only priced identity, mirroring the v1 R-73/R-77 rule.
+    expect(resolveValuation(ordnanceCatalogueV2, "R-27ER")).toEqual({
+      priced: false,
+    });
+    expect(resolveValuation(ordnanceCatalogueV2, "R-27ET")).toEqual({
+      priced: false,
+    });
   });
 });
 

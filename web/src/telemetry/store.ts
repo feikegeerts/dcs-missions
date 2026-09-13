@@ -306,8 +306,19 @@ export class NeonTelemetryStore implements TelemetryStore {
         catalogueVersion: expenditure.catalogueVersion,
         unitCostCents: expenditure.unitCostCents,
       })
-      .onConflictDoNothing({
+      .onConflictDoUpdate({
         target: ordnanceExpenditures.sourceEventId,
+        // A replay or re-ingest may only fill a pricing gap: the conflict
+        // update applies only when the retained row has no price and the
+        // fresh projection does. A row already priced under its pinned
+        // catalogue is never rewritten.
+        set: {
+          catalogue: sql`EXCLUDED.catalogue`,
+          catalogueVersion: sql`EXCLUDED.catalogue_version`,
+          weaponDisplayName: sql`EXCLUDED.weapon_display_name`,
+          unitCostCents: sql`EXCLUDED.unit_cost_cents`,
+        },
+        setWhere: sql`${ordnanceExpenditures.unitCostCents} IS NULL AND EXCLUDED.unit_cost_cents IS NOT NULL`,
       })
       .returning({ sourceEventId: ordnanceExpenditures.sourceEventId });
     return rows.length > 0 ? "inserted" : "existing";

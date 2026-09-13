@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { ordnanceCatalogueV1 } from "../src/telemetry/catalogue";
+import {
+  ordnanceCatalogueV1,
+  ordnanceCatalogueV2,
+} from "../src/telemetry/catalogue";
 import { buildAiCallsigns } from "../src/telemetry/ai-names";
 import {
   aggregateByWeapon,
@@ -171,14 +174,15 @@ describe("ordnance expenditure projection", () => {
     expect(deriveExpenditure(event, ASSIGNMENT)).toBeNull();
   });
 
-  it("pins the catalogue name and version on every expenditure", () => {
+  it("pins the current (v2) catalogue name and version on every expenditure", () => {
     const expenditure = projections([
       firedEvent({ sequence: 1, weaponDcsType: "AIM_120C" }),
     ]);
     expect(expenditure[0]).toMatchObject({
-      catalogue: ordnanceCatalogueV1.catalogue,
-      catalogueVersion: ordnanceCatalogueV1.version,
+      catalogue: ordnanceCatalogueV2.catalogue,
+      catalogueVersion: ordnanceCatalogueV2.version,
     });
+    expect(ordnanceCatalogueV2.version).toBe(2);
   });
 
   it("rejects unknown catalogue pins instead of mispricing", () => {
@@ -187,6 +191,58 @@ describe("ordnance expenditure projection", () => {
       deriveExpenditure(event, { catalogue: "ordnance", version: 999 }),
     ).toBeNull();
     expect(catalogueForAssignment(null)).toBeNull();
+  });
+});
+
+describe("catalogue versioning and display names", () => {
+  it("pins new runs to ordnance catalogue v2", () => {
+    expect(currentOrdnanceAssignment()).toEqual({
+      catalogue: "ordnance",
+      version: 2,
+    });
+  });
+
+  it("resolves historical v1 and current v2 pins to their immutable catalogues", () => {
+    expect(catalogueForAssignment({ catalogue: "ordnance", version: 1 })).toBe(
+      ordnanceCatalogueV1,
+    );
+    expect(catalogueForAssignment({ catalogue: "ordnance", version: 2 })).toBe(
+      ordnanceCatalogueV2,
+    );
+  });
+
+  it("prices the live R-27 keys under a v2 pin with curated display names", () => {
+    const projection = deriveExpenditure(
+      firedEvent({ sequence: 1, weaponDcsType: "P_27PE" }),
+      ASSIGNMENT,
+    );
+    expect(projection?.unitCostCents).toBe(80000000);
+    expect(projection?.catalogueVersion).toBe(2);
+    expect(projection?.weaponDisplayName).toBe(
+      "R-27ER (DCS identifier P_27PE)",
+    );
+  });
+
+  it("leaves the live R-27 keys unpriced under a historical v1 pin", () => {
+    const projection = deriveExpenditure(
+      firedEvent({ sequence: 1, weaponDcsType: "P_27PE" }),
+      { catalogue: "ordnance", version: 1 },
+    );
+    expect(projection?.unitCostCents).toBeNull();
+    expect(projection?.catalogueVersion).toBe(1);
+    expect(projection?.weaponDisplayName).toBe("P_27PE");
+  });
+
+  it("keeps a genuine event display name instead of the raw passthrough", () => {
+    const event = firedEvent({ sequence: 1, weaponDcsType: "AIM_120C" });
+    event.weapon = {
+      status: "known",
+      dcs_type: "AIM_120C",
+      display_name: "AIM-120C AMRAAM (event label)",
+      category: "missile",
+    };
+    const projection = deriveExpenditure(event, ASSIGNMENT);
+    expect(projection?.weaponDisplayName).toBe("AIM-120C AMRAAM (event label)");
   });
 });
 
