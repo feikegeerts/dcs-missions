@@ -1,10 +1,13 @@
 # Mission spec: duel-dynamic
 
 Current active mission (`.current-mission = duel-dynamic`). **1–4 player slots vs
-matching 1–4 aircraft AI package waves**. Each wave is one multi-aircraft DCS
-group spawned in close formation 60+ statute miles from the blue-player
-centroid. It receives a shared MOOSE CAP task so multiplayer produces one
-package fight rather than unrelated paired duels.
+matching 1–4 aircraft AI package waves**. Each wave picks a uniform-random
+donor from the ten `Bandit-1`..`Bandit-10` ME groups and spawns one
+multi-aircraft DCS group in close formation 55–85 statute miles from the
+blue-player centroid, with a per-wave random altitude/speed profile. It
+receives a shared MOOSE CAP task so multiplayer produces one package fight
+rather than unrelated paired duels. Group options (ROE, alarm state,
+reaction-on-threat) defer to the per-donor ME settings.
 
 This is the active test bed for the dynamic-spawn pipeline.
 
@@ -37,18 +40,43 @@ environment artifacts, not tracked source files in this repository.
 | Role | Mission Editor groups |
 |---|---|
 | Blue player roster | `Aerial-1`, `Aerial-2`, `Aerial-3`, `Aerial-4` |
-| Active red wave template | `Bandit-1` (one aircraft, Late Activation) |
-| Retained legacy templates | `Bandit-2`, `Bandit-3` (not spawned by the package-wave lifecycle) |
+| Red wave donors (all active) | `Bandit-1` .. `Bandit-10` (one aircraft each, Late Activation) |
 
 The player slots are normal client slots. The red groups are **Late Activation
-✓**. `SPAWN:InitGrouping(1|2|3|4)` clones the `Bandit-1` aircraft into one true
-multi-unit DCS group, while `InitSetUnitRelativePositions` lays out the group in
-a compact wedge.
+✓**. Each wave picks one donor uniformly at random; `SPAWN:InitGrouping(1|2|3|4)`
+clones the chosen donor aircraft into one true multi-unit DCS group, while
+`InitSetUnitRelativePositions` lays out the group in a compact wedge. Spawns
+copy the donor's airframe, payload, skill, and route options; DCS
+auto-suffixes the spawned group name with `#NNN`.
 
 `PLAYER_GROUP_NAMES` defines the available blue roster. `BANDIT_GROUP_NAMES`
-remains the telemetry allow-list; `BANDIT_GROUP_NAMES[1]` is the active wave
-template. Update the mission archive, source arrays, telemetry tests, and this
-spec together if these names change.
+(all ten names, ascending) is both the donor list and the telemetry
+allow-list; the actual chosen donor name is passed as the configured name
+when a spawned wave is registered with telemetry.
+
+### Donor table (2026-09-13 mission file)
+
+All donors: ROE=WEAPON_FREE route option, per-unit skill Excellent,
+late-activated, task CAP. Loadouts/skill/chaff/flare are ME-owned — the code
+never touches them.
+
+| Donor | Airframe | Chaff / flare | Loadout | MISSILE_ATTACK |
+|---|---|---|---|---|
+| Bandit-1 | FA-18C_hornet | 60 / 60 | 4x AIM-120C + 2x AIM-9 | max-range |
+| Bandit-2 | FA-18C_hornet | 60 / 60 | 4x AIM-120C + 2x AIM-9 | threat-estimate |
+| Bandit-3 | MiG-29S | 30 / 30 | 2x R-73 + 2x R-27ER + 2x R-60 | threat-estimate |
+| Bandit-4 | F-16C_50 | 60 / 60 | 4x AAM | threat-estimate |
+| Bandit-5 | F-16C_50 | 60 / 60 | 4x AAM | max-range |
+| Bandit-6 | MiG-29S | 30 / 30 | 2x R-73 + 2x R-27ER + 2x R-60 | max-range |
+| Bandit-7 | F-5E-3 | 30 / 15 | AIM-9 short-range only | threat-estimate |
+| Bandit-8 | Su-33 | 48 / 48 | R-73 + R-27ER + R-60 mix | max-range |
+| Bandit-9 | Su-33 | 48 / 48 | R-73 + R-27ER + R-60 mix | max-range |
+| Bandit-10 | MiG-21Bis | 18 / 40 | 2x R-3S + 2x R-3R + ASO-2 pod | threat-estimate |
+
+Note: the Su-33 module is not installed on the test server, so `SPAWN:New`
+for Bandit-8/Bandit-9 may fail there. Init logs the failure per donor and
+continues with the survivors; if no donor can be created, init is not marked
+done and the poll retries.
 
 ---
 
@@ -58,13 +86,15 @@ spec together if these names change.
 
 - **Initial spawn.** The init poll catches all occupied slots, then waits a
   three-second assembly window. One red DCS group is spawned with one aircraft
-  per live blue aircraft.
-- **Placement.** The red lead spawns 60–72 statute miles from the arithmetic
-  blue centroid. Wingmen are about 1.5 NM laterally and 0.5 NM in trail, all
-  facing back toward blue.
+  per live blue aircraft, cloned from a uniform-random `Bandit-N` donor.
+- **Placement.** The red lead spawns 55–85 statute miles from the arithmetic
+  blue centroid, at a per-wave random 15,000–25,000 ft. Wingmen are about
+  1.5 NM laterally and 0.5 NM in trail, all facing back toward blue.
 - **Tasking.** The package receives one `AUFTRAG:NewCAP` over a 150 km zone
-  centered on the blue package, plus immediate `WEAPON_FREE`, `RED` alarm, and
-  `EVADE_FIRE` options.
+  centered on the blue package, with a per-wave random working altitude of
+  15,000–30,000 ft and cruise speed of 350–550 kt. Group options are not
+  force-set: ROE, alarm state, and reaction-on-threat defer to the donor's
+  ME settings (see §3.3).
 - **Player enters during a live wave.** The current DCS group is not mutated or
   reset. The joiner is included in the next wave. DCS cannot add an aircraft to
   an already spawned group.
@@ -80,36 +110,43 @@ spec together if these names change.
 ### 3.2 Distance rule
 
 ```
-MIN_SEPARATION_M    = 60 * 1609.344   # 60 statute miles ≈ 52 nm
-RANDOM_DIST_MIN_M   = MIN_SEPARATION_M
-RANDOM_DIST_MAX_M   = MIN_SEPARATION_M + 20000  # 60–72 sm
-SPAWN_ALTITUDE_M    = 15000 * 0.3048  # 15 000 ft
+RANDOM_DIST_MIN_M   = 55 * 1609.344  # 55 statute miles ≈ 48 nm
+RANDOM_DIST_MAX_M   = 85 * 1609.344  # 85 statute miles ≈ 74 nm
+SPAWN_ALTITUDE_M    = 15000 * 0.3048 # 15 000 ft floor (TEST_COMBAT default)
+SPAWN_ALT_MIN_FT    = 15000
+SPAWN_ALT_MAX_FT    = 25000          # per-wave spawn altitude
+CAP_ALT_MIN_FT      = 15000
+CAP_ALT_MAX_FT      = 30000          # per-wave CAP working altitude
+CAP_SPEED_MIN_KT    = 350
+CAP_SPEED_MAX_KT    = 550            # per-wave CAP cruise speed
 ```
 
-Statute miles, not nautical. `60 sm ≈ 52 nm`. Logging reports the lead's
-distance from the blue centroid in nautical miles.
+Statute miles, not nautical. `55 sm ≈ 48 nm`, `85 sm ≈ 74 nm`.
+Distances always use 1609.344 m per statute mile, and the spawn log reports
+the lead's distance from the blue centroid in statute miles ("mi"). (An
+older build logged nautical miles; the distances were always statute.)
 
 ### 3.3 Aggression knobs
 
-All at the top of `main.lua` (search for `-- Bandit AI tasking`). Reload after
-editing (mission restart; no repack needed).
+Code owns only the task plus the CAP radius. ROE, alarm state,
+reaction-on-threat, and missile launch mode are per-donor ME settings the
+user varies in the mission editor (all donors ROE=WEAPON_FREE;
+MISSILE_ATTACK max-range on Bandit-1/5/6/8/9 vs threat-estimate on
+Bandit-2/3/4/7/10 — see the donor table in §2).
 
 | Setting | Default | Effect |
 |---|---|---|
 | `BANDIT_TASK` | `"CAP"` | `"CAP"` gives the complete package a shared engagement area. `"INTERCEPT"` focuses the package on the first live player and is retained for testing. |
-| `BANDIT_ROE` | `"WEAPON_FREE"` | `"WEAPON_FREE"` = fire on any detected. `"OPEN_FIRE"` = hostile-only. `"HOLD"` = never. |
-| `BANDIT_ROT` | `"EVADE_FIRE"` | Defensive break when fired on. |
-| `BANDIT_ALARM` | `"RED"` | `"RED"` = engage on detection. `"AUTO"` = smart. `"GREEN"` = manual. |
-| `BANDIT_ALT_FT` | `25000` | Working altitude in feet. |
-| `BANDIT_SPEED_KT` | `450` | Cruise speed in knots. |
 | `BANDIT_CAP_RADIUS_M` | `150000` | CAP zone radius in metres (CAP mode only). Contains the complete red spawn ring. |
 
-The aggression settings are applied *directly* to the live DCS group first
-(`OptionROEOpenFireWeaponFree`, `OptionAlarmStateRed`, `OptionROTEvadeFire`)
-and also written onto the AUFTRAG (`mission.optionROE`,
-`mission.optionAlarm`). Both layers because the live options take effect
-immediately, and the AUFTRAG options ensure the mission task is built
-correctly.
+Defer-to-ME mechanism, in one sentence: the script never calls the
+`OptionROE*`/`OptionAlarmState*`/`OptionROT*` setters on the spawned group,
+and it sets the `optionROE`/`optionROT`/`optionAlarm` fields that
+`AUFTRAG:NewCAP` bakes onto the mission object back to `nil`, which MOOSE's
+`OPSGROUP:_SetMissionOptions` skips (it only applies truthy options) — so
+the donor's ME values carry through untouched. The per-wave CAP altitude and
+speed are still passed to `NewCAP`; they are tasking parameters, not group
+options.
 
 ### 3.4 F10 menu
 
@@ -189,11 +226,14 @@ contains three `FA-18C_hornet` slots and one `F-16C_50` slot.
 
 ### 5.3 Bandit SPAWN templates
 
-Three one-aircraft red AI groups currently exist, named `Bandit-1`, `Bandit-2`,
-and `Bandit-3`, with **Late Activation ✓**. The current wave spawner uses
-`Bandit-1` and MOOSE `InitGrouping` to create a 1–4 aircraft group. `Bandit-2`
-and `Bandit-3` are retained for compatibility with historical telemetry and
-older builds, but the package-wave lifecycle does not spawn them.
+Ten one-aircraft red AI groups named `Bandit-1` .. `Bandit-10`, all with
+**Late Activation ✓** and per-unit skill Excellent. Each wave clones one
+uniform-random donor via MOOSE `InitGrouping` into a 1–4 aircraft group
+(see the donor table in §2 for airframes, loadouts, chaff/flare, and the
+per-donor MISSILE_ATTACK variation). All ten names must stay in
+`BANDIT_GROUP_NAMES` in `main.lua` and in the telemetry allow-list; update
+the mission archive, source arrays, telemetry tests, and this spec together
+if these names change.
 
 ### 5.4 Trigger
 
@@ -285,9 +325,9 @@ start with a player in `Aerial-1`:
 [duel-dynamic] Aerial-1 already occupied at init — adding to first package roster
 [duel-dynamic] package wave scheduled in 3s (initial player package assembled)
 [duel-dynamic] init done — package-wave lifecycle active
-[duel-dynamic] spawning 1-ship package 59.5 nm from blue centroid, heading 080 (...)
-[duel-dynamic] package spawned: Bandit-1#001 at x=-141498 z=165369 alt=4569m
-[duel-dynamic] tasked Bandit-1#001 → CAP on blue package centroid (1 players) (...)
+[duel-dynamic] spawning 1-ship package 62.4 mi from blue centroid, heading 080 (initial player package assembled, donor Bandit-6, alt 18200 ft, speed 431 kt)
+[duel-dynamic] package spawned: Bandit-6#001 (donor Bandit-6) at x=-141498 z=165369 alt=5551m
+[duel-dynamic] tasked Bandit-6#001 → CAP on blue package centroid (1 players) (group options defer to the ME donor settings)
 ```
 
 Then after the kill:
@@ -295,20 +335,20 @@ Then after the kill:
 ```
 [duel-dynamic] wave 1 defeated — next package in 30s
 -- 30 s later:
-[duel-dynamic] spawning 1-ship package 58.3 nm from blue centroid, heading ...
-[duel-dynamic] package spawned: Bandit-1#002 at …
+[duel-dynamic] spawning 1-ship package 62.1 mi from blue centroid, heading ...
+[duel-dynamic] package spawned: Bandit-4#002 (donor Bandit-4) at …
 ```
 
 If a package does not appear within a few seconds after entering a slot, check
 for `init done`, `package wave scheduled`, and `spawning N-ship package` in
-`dcs.log`. Also check that `Bandit-1` exists in the ME with Late Activation ✓.
+`dcs.log`. Also check that all ten `Bandit-N` groups exist in the ME with Late Activation ✓.
 The first `SCRIPTING ERROR` line names the file and line.
 
 ---
 
 ## 8. Testing the count-matching (1 / 2 / 3 / 4 players)
 
-- **1 live player:** one `Bandit-1#NNN` group containing one aircraft.
+- **1 live player:** one `Bandit-N#NNN` group (random donor N) containing one aircraft.
 - **2 live players during assembly:** one group containing two aircraft in
   close formation.
 - **3 live players during assembly:** one group containing three aircraft.
@@ -336,7 +376,7 @@ Caucasus missions generate ~1 MB of `.acmi` per minute.
 - **Dedicated server:** install/enable it for the active
   `Saved Games\DCS.dcs_serverrelease` profile and verify that profile's
   `Config\options.lua`/export settings (see `dev-setup.md §7.5`).
-- **What to look for:** the red lead should be 60+ sm from the blue centroid;
+- **What to look for:** the red lead should be 55–85 sm from the blue centroid;
   red wingmen should be within a few NM in one formation and maneuver as one
   DCS group. No replacement should appear after a partial red loss. The next
   complete group should appear 30 seconds after the final red loss.
