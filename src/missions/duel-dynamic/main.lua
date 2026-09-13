@@ -219,6 +219,9 @@ local CAP_ALT_MIN_FT = 15000
 local CAP_ALT_MAX_FT = 30000
 local CAP_SPEED_MIN_KT = 350
 local CAP_SPEED_MAX_KT = 550
+local LIVES_PER_PLAYER = 3 -- default; per-mission-run
+local WAVE_ESCALATION_EVERY = 3
+local MAX_PACKAGE_SIZE = 8
 local RESPAWN_DELAY = 30
 local WAVE_ASSEMBLY_DELAY = 3
 local EMPTY_SERVER_CLEANUP_DELAY = 1
@@ -334,6 +337,12 @@ local waveSpawnPending = false
 local waveScheduleToken = 0
 local occupiedPlayerSlots = {}
 local countedBanditUnits = {}
+local lives = {}
+local slotIdentity = {}
+local playerIdentityName = {}
+local countedPlayerUnits = {}
+local missionTerminal = false
+local warnedMissingPlayerUCID = false
 local initDone = false
 
 local spawnWave
@@ -381,11 +390,59 @@ local function anyPlayerSlotOccupied()
   return next(occupiedPlayerSlots) ~= nil
 end
 
+local function warnMissingPlayerUCID()
+  if warnedMissingPlayerUCID then
+    return
+  end
+  warnedMissingPlayerUCID = true
+  env.warning("[duel-dynamic] player UCID unavailable — using the slot group name as the per-run identity")
+end
+
+local function fallbackIdentity(idx)
+  warnMissingPlayerUCID()
+  return PLAYER_GROUP_NAMES[idx]
+end
+
+local function identityForSlot(idx)
+  return slotIdentity[idx] or fallbackIdentity(idx)
+end
+
+local function formatLives()
+  if next(lives) == nil then
+    return "No players yet."
+  end
+  local identities = {}
+  for identity in pairs(lives) do
+    identities[#identities + 1] = identity
+  end
+  table.sort(identities)
+  local lines = { "Lives:" }
+  for _, identity in ipairs(identities) do
+    lines[#lines + 1] = string.format("  %s: %d", playerIdentityName[identity] or "Player", lives[identity])
+  end
+  return table.concat(lines, "\n")
+end
+
+local function enterTerminalStateIfAllPilotsDown()
+  if missionTerminal or next(lives) == nil then
+    return
+  end
+  for _, remaining in pairs(lives) do
+    if remaining > 0 then
+      return
+    end
+  end
+  missionTerminal = true
+  MESSAGE:New("All pilots down — mission over.", 8):ToCoalition(coalition.side.BLUE)
+  env.info("[duel-dynamic] all tracked player identities are out of lives — mission terminal")
+end
+
 local function livePlayerPackage()
   local players = {}
   local sumX, sumY, sumZ = 0, 0, 0
   for idx, pname in ipairs(PLAYER_GROUP_NAMES) do
-    if occupiedPlayerSlots[idx] then
+    local identity = occupiedPlayerSlots[idx] and identityForSlot(idx) or nil
+    if identity and lives[identity] ~= 0 then
       local coord = getPlayerCoord(pname)
       if coord then
         players[#players + 1] = { name = pname, group = GROUP:FindByName(pname), coord = coord }
@@ -503,6 +560,10 @@ local function taskBanditPackage(bgrp, players, playerCentroid, capAltFt, capSpe
 end
 
 spawnWave = function(reason)
+  if missionTerminal then
+    env.info(string.format("[duel-dynamic] mission terminal — spawn request ignored (%s)", tostring(reason)))
+    return nil
+  end
   if currentWaveGroup and currentWaveAlive > 0 then
     env.info(string.format("[duel-dynamic] wave %d still active — spawn request ignored", waveNumber))
     return currentWaveGroup
@@ -533,7 +594,8 @@ spawnWave = function(reason)
     randomOffsetCoord(playerCentroid, RANDOM_DIST_MIN_M, RANDOM_DIST_MAX_M, spawnAltFt * 0.3048)
   local heading = (bearing + 180) % 360
   local distMi = playerCentroid:Get2DDistance(spawnCoord) / 1609.344
-  local size = #players
+  local extra = math.floor(waveNumber / WAVE_ESCALATION_EVERY)
+  local size = math.min(#players + extra, MAX_PACKAGE_SIZE)
 
   spawner:InitGrouping(size)
   spawner:InitSetUnitRelativePositions(formationPositions(size, heading))
@@ -541,14 +603,15 @@ spawnWave = function(reason)
 
   env.info(
     string.format(
-      "[duel-dynamic] spawning %d-ship package %.1f mi from blue centroid, heading %03d (%s, donor %s, alt %d ft, speed %d kt)",
+      "[duel-dynamic] spawning %d-ship package %.1f mi from blue centroid, heading %03d (%s, donor %s, alt %d ft, speed %d kt%s)",
       size,
       distMi,
       heading,
       tostring(reason or "requested"),
       donorName,
       spawnAltFt,
-      capSpeedKt
+      capSpeedKt,
+      extra > 0 and string.format(", escalation +%d", extra) or ""
     )
   )
   local grp = spawner:SpawnFromCoordinate(spawnCoord)
@@ -562,12 +625,16 @@ spawnWave = function(reason)
   currentWaveGroupName = grp:GetName()
   currentWaveAlive = size
   taskBanditPackage(grp, players, playerCentroid, capAltFt, capSpeedKt)
-  MESSAGE:New(string.format("Wave %d: %d bandit%s inbound", waveNumber, size, size == 1 and "" or "s"), 8)
+  MESSAGE:New(string.format("Wave %d — %d hostile%s inbound", waveNumber, size, size == 1 and "" or "s"), 8)
     :ToCoalition(coalition.side.BLUE)
   return grp
 end
 
 scheduleWave = function(delay, reason)
+  if missionTerminal then
+    env.info(string.format("[duel-dynamic] mission terminal — wave schedule ignored (%s)", tostring(reason)))
+    return
+  end
   if waveSpawnPending then
     env.info(
       string.format("[duel-dynamic] wave spawn already pending — keeping existing timer (%s)", tostring(reason))
@@ -604,22 +671,30 @@ end)
 
 MENU_COALITION_COMMAND:New(coalition.side.BLUE, "Reset kills", menu, function()
   Tracker:reset()
-  MESSAGE:New("Kill counter reset", 5):ToCoalition(coalition.side.BLUE)
+  MESSAGE:New("Kills reset.", 5):ToCoalition(coalition.side.BLUE)
 end)
 
 MENU_COALITION_COMMAND:New(coalition.side.BLUE, "Respawn bandit wave", menu, function()
+  if missionTerminal then
+    MESSAGE:New("Mission over — no more waves.", 5):ToCoalition(coalition.side.BLUE)
+    return
+  end
   if not initDone then
-    MESSAGE:New("Init not done yet — try again in a second", 5):ToCoalition(coalition.side.BLUE)
+    MESSAGE:New("Not ready yet — try again in a second.", 5):ToCoalition(coalition.side.BLUE)
     return
   end
   cancelScheduledWave()
   despawnCurrentWave()
   local grp = spawnWave("F10 forced reset")
   if grp then
-    MESSAGE:New("Bandit wave force-reset", 5):ToCoalition(coalition.side.BLUE)
+    MESSAGE:New("New bandit wave inbound.", 5):ToCoalition(coalition.side.BLUE)
   else
-    MESSAGE:New("No live player aircraft — wave not spawned", 5):ToCoalition(coalition.side.BLUE)
+    MESSAGE:New("No players in the air.", 5):ToCoalition(coalition.side.BLUE)
   end
+end)
+
+MENU_COALITION_COMMAND:New(coalition.side.BLUE, "Show lives", menu, function()
+  MESSAGE:New(formatLives(), 10):ToCoalition(coalition.side.BLUE)
 end)
 
 -- =====================================================================
@@ -652,6 +727,15 @@ local function playerEventGroupName(EventData)
   return nil
 end
 
+local function exactPlayerSlotIndex(groupName)
+  for idx, playerGroupName in ipairs(PLAYER_GROUP_NAMES) do
+    if groupName == playerGroupName then
+      return idx
+    end
+  end
+  return nil
+end
+
 local function onPlayerEnter(EventData)
   local gname = playerEventGroupName(EventData)
   local idx = gname and findIdxByName(gname, PLAYER_GROUP_NAMES) or nil
@@ -659,6 +743,25 @@ local function onPlayerEnter(EventData)
     return
   end
   occupiedPlayerSlots[idx] = true
+  local ucid = EventData.IniPlayerUCID
+  local identity
+  if type(ucid) == "string" and ucid ~= "" then
+    identity = ucid
+    slotIdentity[idx] = identity
+  else
+    slotIdentity[idx] = nil
+    identity = fallbackIdentity(idx)
+  end
+  local displayName = EventData.IniPlayerName
+  if type(displayName) ~= "string" or displayName == "" then
+    displayName = "Player"
+  end
+  playerIdentityName[identity] = displayName
+  if lives[identity] == nil then
+    lives[identity] = LIVES_PER_PLAYER
+  elseif lives[identity] == 0 then
+    MESSAGE:New("Out of lives — excluded from the package.", 8):ToCoalition(coalition.side.BLUE)
+  end
   env.info(
     string.format("[duel-dynamic] player '%s' entered %s", EventData.IniPlayerName or "Player", PLAYER_GROUP_NAMES[idx])
   )
@@ -726,6 +829,58 @@ local function eventUnitName(EventData)
   return nil
 end
 
+-- Player aircraft losses consume per-identity lives. This watcher is separate
+-- from the bandit watcher because both subscribe to Dead and Crash.
+local playerDeathWatcher = BASE:New()
+playerDeathWatcher:HandleEvent(EVENTS.Dead)
+playerDeathWatcher:HandleEvent(EVENTS.Crash)
+
+local function handlePlayerLoss(EventData)
+  if not EventData or EventData.IniCoalition ~= coalition.side.BLUE then
+    return
+  end
+  local gname = playerEventGroupName(EventData)
+  local idx = gname and exactPlayerSlotIndex(gname) or nil
+  if not idx then
+    return
+  end
+  local unitName = eventUnitName(EventData)
+  if not unitName then
+    env.warning("[duel-dynamic] player loss had no unit name — ignoring ambiguous duplicate-prone event")
+    return
+  end
+  if countedPlayerUnits[unitName] then
+    return
+  end
+  countedPlayerUnits[unitName] = true
+
+  local identity = identityForSlot(idx)
+  if lives[identity] == nil then
+    lives[identity] = LIVES_PER_PLAYER
+    playerIdentityName[identity] = playerIdentityName[identity] or "Player"
+    env.info(string.format("[duel-dynamic] initialized missing lives for %s on verified loss", PLAYER_GROUP_NAMES[idx]))
+  end
+  lives[identity] = math.max(0, lives[identity] - 1)
+  local remaining = lives[identity]
+  local text
+  if remaining == 0 then
+    text = "Aircraft lost — out of lives."
+  elseif remaining == 1 then
+    text = "Aircraft lost — 1 life left."
+  else
+    text = string.format("Aircraft lost — %d lives left.", remaining)
+  end
+  MESSAGE:New(text, 8):ToCoalition(coalition.side.BLUE)
+  enterTerminalStateIfAllPilotsDown()
+end
+
+function playerDeathWatcher:OnEventDead(EventData)
+  handlePlayerLoss(EventData)
+end
+function playerDeathWatcher:OnEventCrash(EventData)
+  handlePlayerLoss(EventData)
+end
+
 local function handleBanditKill(EventData)
   if not EventData or not EventData.IniGroup or EventData.IniCoalition ~= coalition.side.RED then
     return
@@ -746,9 +901,15 @@ local function handleBanditKill(EventData)
 
   currentWaveAlive = math.max(0, currentWaveAlive - 1)
   Tracker:record("Team")
-  MESSAGE
-    :New(string.format("Bandit down! Team kills: %d — red package remaining: %d", Tracker.total, currentWaveAlive), 8)
-    :ToCoalition(coalition.side.BLUE)
+  MESSAGE:New(
+    string.format(
+      "Bandit down — team %d, %d hostile%s left",
+      Tracker.total,
+      currentWaveAlive,
+      currentWaveAlive == 1 and "" or "s"
+    ),
+    8
+  ):ToCoalition(coalition.side.BLUE)
 
   if currentWaveAlive > 0 then
     env.info(
@@ -777,7 +938,7 @@ end
 
 -- MOOSE stores event subscribers as weak keys. Top-level locals can otherwise
 -- be collected after this chunk returns, silently removing gameplay callbacks.
-_G.duel_gameplay_watchers = { player = playerWatcher, bandit = banditWatcher }
+_G.duel_gameplay_watchers = { player = playerWatcher, bandit = banditWatcher, playerDeath = playerDeathWatcher }
 
 -- =====================================================================
 -- Deferred init: build the bandit SPAWN objects, randomize player
@@ -855,6 +1016,11 @@ local function doInit()
   for i, pname in ipairs(PLAYER_GROUP_NAMES) do
     if getPlayerCoord(pname) then
       occupiedPlayerSlots[i] = true
+      local identity = identityForSlot(i)
+      if lives[identity] == nil then
+        lives[identity] = LIVES_PER_PLAYER
+        playerIdentityName[identity] = "Player"
+      end
       registerPlayerAssets(GROUP:FindByName(pname))
       env.info(string.format("[duel-dynamic] %s already occupied at init — adding to first package roster", pname))
     end
