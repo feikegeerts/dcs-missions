@@ -12,7 +12,12 @@ collector-health dashboard are merged to `main` (`bb299d7`, `47277e2`);
 migration `web/drizzle/0005_wakeful_redwing.sql` is committed but **not
 applied** (owner-gated). The collector service is the steady-state default
 (installed + left running, reversible — see
-`docs/telemetry/slice-18-5c-windows-runbook.md`). Evidence:
+`docs/telemetry/slice-18-5c-windows-runbook.md`), and its live lifecycle
+validation ran in the same window against the running service:
+duplicate-start-rejection (exit 3, no state change), graceful shutdown
+(lock port released), and restart (fresh owner delivered to production in
+its first post-restart cycle). The boot check and the dedicated-identity
+live run (WinSW 1064 interim) remain owner actions. Evidence:
 `docs/telemetry/slice-18-5-e-evidence.md`.
 
 **Live hook repair — 2026-09-12:** The stock GameGUI file API returns no values
