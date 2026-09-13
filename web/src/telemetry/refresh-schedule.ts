@@ -1,6 +1,6 @@
 import type { DisplayRunStatus } from "./run-status";
 
-export const AGGRESSIVE_REFRESH_INTERVAL_MS = 2_000;
+export const AGGRESSIVE_REFRESH_INTERVAL_MS = 5_000;
 export const SLOW_REFRESH_INTERVAL_MS = 30_000;
 export const MAX_REFRESH_BACKOFF_MS = 60_000;
 

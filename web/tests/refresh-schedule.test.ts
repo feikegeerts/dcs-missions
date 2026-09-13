@@ -25,6 +25,22 @@ function started(state: RefreshScheduleState): RefreshScheduleState {
 }
 
 describe("refresh schedule", () => {
+  it("waits five seconds before an active run's next scheduled refresh", () => {
+    const clock = fakeClock();
+    const initial = createRefreshSchedule("active", "visible", clock);
+    expect(initial.nextDelayMs).toBe(5_000);
+    clock.value += 4_999;
+    const early = advanceRefreshSchedule(
+      initial.state,
+      { type: "timer" },
+      clock,
+    );
+    expect(early.refreshNow).toBe(false);
+    clock.value += 1;
+    const due = advanceRefreshSchedule(early.state, { type: "timer" }, clock);
+    expect(due.refreshNow).toBe(true);
+  });
+
   it.each([
     ["active", AGGRESSIVE_REFRESH_INTERVAL_MS, "aggressive"],
     ["stale", SLOW_REFRESH_INTERVAL_MS, "slow"],
@@ -127,7 +143,7 @@ describe("refresh schedule", () => {
       state = outcome.state;
     }
 
-    expect(delays).toEqual([4_000, 8_000, 16_000, 32_000, 60_000, 60_000]);
+    expect(delays).toEqual([10_000, 20_000, 40_000, 60_000, 60_000, 60_000]);
     expect(delays.at(-1)).toBe(MAX_REFRESH_BACKOFF_MS);
 
     const recovered = advanceRefreshSchedule(
