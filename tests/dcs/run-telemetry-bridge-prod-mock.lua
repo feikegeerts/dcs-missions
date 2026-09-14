@@ -1,6 +1,6 @@
 local host_io = io
 local host_os = os
-local module_frame = dofile("src/missions/duel-dynamic/telemetry/bridge_frame.lua")
+local module_frame = dofile("src/lib/telemetry/bridge_frame.lua")
 
 local total_tests = 0
 local total_failures = {}
@@ -199,17 +199,17 @@ local function run_mapping(mapping)
   end
 
   local module_paths = {
-    event_id = "src/missions/duel-dynamic/telemetry/event_id.lua",
-    envelope = "src/missions/duel-dynamic/telemetry/envelope.lua",
-    json = "src/missions/duel-dynamic/telemetry/json.lua",
-    lifecycle = "src/missions/duel-dynamic/telemetry/lifecycle.lua",
-    asset = "src/missions/duel-dynamic/telemetry/asset.lua",
-    shot = "src/missions/duel-dynamic/telemetry/shot.lua",
-    combat = "src/missions/duel-dynamic/telemetry/combat.lua",
-    participant = "src/missions/duel-dynamic/telemetry/participant.lua",
-    bridge_queue = "src/missions/duel-dynamic/telemetry/bridge_queue.lua",
-    bridge_frame = "src/missions/duel-dynamic/telemetry/bridge_frame.lua",
-    bridge = "src/missions/duel-dynamic/telemetry/bridge.lua",
+    event_id = "src/lib/telemetry/event_id.lua",
+    envelope = "src/lib/telemetry/envelope.lua",
+    json = "src/lib/telemetry/json.lua",
+    lifecycle = "src/lib/telemetry/lifecycle.lua",
+    asset = "src/lib/telemetry/asset.lua",
+    shot = "src/lib/telemetry/shot.lua",
+    combat = "src/lib/telemetry/combat.lua",
+    participant = "src/lib/telemetry/participant.lua",
+    bridge_queue = "src/lib/telemetry/bridge_queue.lua",
+    bridge_frame = "src/lib/telemetry/bridge_frame.lua",
+    bridge = "src/lib/telemetry/bridge.lua",
   }
 
   local function new_mission_environment()

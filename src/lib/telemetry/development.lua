@@ -21,7 +21,7 @@ end
 local function log(env_api, level, message)
   local writer = env_api and env_api[level]
   if type(writer) == "function" then
-    pcall(writer, "[duel-dynamic][telemetry] " .. message)
+    pcall(writer, "[telemetry] " .. message)
   end
 end
 
@@ -135,16 +135,7 @@ function M.start(config)
   local combat = config.combat
   if type(combat) ~= "table" or type(combat.new) ~= "function" then
     combat = nil
-    local scripts_root = rawget(_G, "MY_SCRIPTS_ROOT")
-    if type(scripts_root) == "string" and type(dofile) == "function" then
-      local loaded, result = pcall(dofile, scripts_root .. "missions/duel-dynamic/telemetry/combat.lua")
-      if loaded and type(result) == "table" and type(result.new) == "function" then
-        combat = result
-      end
-    end
-    if not combat then
-      log(config.env, "warning", "combat adapter missing; Hit/Kill telemetry disabled")
-    end
+    log(config.env, "warning", "combat adapter missing; Hit/Kill telemetry disabled")
   end
   local participant
   participant, dependency_error = require_dependency(config, "participant", "new")
@@ -262,17 +253,23 @@ function M.start(config)
     map_name = config.env.mission.theatre
   end
 
+  local started_payload = {
+    mission_name = config.mission_name,
+    mission_version = config.mission_version,
+    map_name = map_name,
+    run_classification = config.run_classification,
+  }
+  -- Optional reporting capabilities; omitted for legacy producers.
+  if config.capabilities ~= nil then
+    started_payload.capabilities = config.capabilities
+  end
+
   local controller, lifecycle_error = lifecycle.new({
     producer = producer,
     sink = sink,
     sim_time = sim_time,
     wall_time = wall_time,
-    started_payload = {
-      mission_name = config.mission_name,
-      mission_version = config.mission_version,
-      map_name = map_name,
-      run_classification = config.run_classification,
-    },
+    started_payload = started_payload,
   })
   if not controller then
     return nil, lifecycle_error

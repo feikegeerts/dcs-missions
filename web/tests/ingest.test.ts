@@ -299,6 +299,19 @@ class MemoryStore implements TelemetryStore {
     return [];
   }
 
+  async listMissionRuns(
+    missionName: string | null,
+    limit = 100,
+    offset = 0,
+  ): Promise<RunRow[]> {
+    const matching = [...this.runs.values()].filter((run) =>
+      missionName === null
+        ? run.missionName === null || run.missionName === ""
+        : run.missionName === missionName,
+    );
+    return matching.slice(offset, offset + limit) as unknown as RunRow[];
+  }
+
   async getRunByRunKey(runKey: string): Promise<RunRow | null> {
     for (const run of this.runs.values()) {
       if (run.runKey === runKey) {

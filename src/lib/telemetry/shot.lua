@@ -1,3 +1,4 @@
+-- Shared DCS ordnance capture.
 local M = {}
 
 local function is_finite_number(value)
@@ -97,7 +98,8 @@ local function matches_spawned_bandit(group_name, configured_name)
 end
 
 local function build_roster(config, names, role, allow_spawn_suffix)
-  if type(names) ~= "table" or #names == 0 then
+  -- Non-combat scenarios can deliberately track no opposing aircraft.
+  if type(names) ~= "table" or (role ~= "bandit" and #names == 0) then
     return nil, role .. " group names are required"
   end
 

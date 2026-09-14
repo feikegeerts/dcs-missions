@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, or, sql } from "drizzle-orm";
 
 import { getDb } from "@/db/client";
 import {
@@ -96,6 +96,19 @@ export interface TelemetryStore {
   upsertAssistAttribution(attribution: AssistAttributionFact): Promise<void>;
   upsertRunParticipant(participant: RunParticipantUpsert): Promise<void>;
   listRuns(
+    limit?: number,
+    offset?: number,
+    classification?: "test" | "historical" | null,
+  ): Promise<RunRow[]>;
+  /**
+   * Mission-scoped run history. The mission filter applies in the database
+   * BEFORE the row limit, so a busy mission can never push another mission's
+   * valid history out of the window. A null mission selects the "unknown"
+   * bucket (runs recorded without a mission name). Records stay
+   * mission-scoped; there is no cross-mission query here.
+   */
+  listMissionRuns(
+    missionName: string | null,
     limit?: number,
     offset?: number,
     classification?: "test" | "historical" | null,
@@ -540,6 +553,32 @@ export class NeonTelemetryStore implements TelemetryStore {
         classification === null
           ? undefined
           : eq(missionRuns.runClassification, classification),
+      )
+      .orderBy(desc(missionRuns.updatedAt))
+      .limit(limit)
+      .offset(offset);
+  }
+
+  async listMissionRuns(
+    missionName: string | null,
+    limit = 100,
+    offset = 0,
+    classification: "test" | "historical" | null = null,
+  ): Promise<RunRow[]> {
+    const missionCondition =
+      missionName === null
+        ? or(
+            isNull(missionRuns.missionName),
+            eq(missionRuns.missionName, ""),
+          )
+        : eq(missionRuns.missionName, missionName);
+    return getDb()
+      .select()
+      .from(missionRuns)
+      .where(
+        classification === null
+          ? missionCondition
+          : and(missionCondition, eq(missionRuns.runClassification, classification)),
       )
       .orderBy(desc(missionRuns.updatedAt))
       .limit(limit)

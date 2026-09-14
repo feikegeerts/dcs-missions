@@ -1,5 +1,12 @@
 # Shipping `duel-dynamic` — packaging checklist
 
+**Multi-mission worktree update:** use explicit `-MissionName` for BVR, ACM,
+and Survival builds. The packager now embeds the selected entry/config and
+shared gameplay/telemetry, with template validation before assembly. Commands
+and compatibility limits: `docs/multi-mission-development.md`. The legacy
+no-argument build still selects `duel-dynamic`; named builds are not yet live
+accepted or deployed.
+
 The dev `.miz` is a **dumb loader** that does `loadfile` on
 `C:\Projects\dcs-missions\src\bootstrap.lua`. This **requires** both:
 1. A de-sanitized `MissionScripting.lua` (`os`/`io`/`lfs` un-nilled).

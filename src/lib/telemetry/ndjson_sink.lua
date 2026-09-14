@@ -1,3 +1,4 @@
+-- Shared development-only file transport.
 local M = {}
 
 local function describe_error(prefix, detail)

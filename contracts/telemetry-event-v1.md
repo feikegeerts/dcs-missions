@@ -168,9 +168,12 @@ human, when applicable; it is never a placeholder for AI.
 
 | Event type | Required applicable roles | Required payload fields |
 |---|---|---|
-| `mission.started` | No entity roles; sequence `1` | `mission_name`, `mission_version`, `map_name`, `run_classification` |
+| `mission.started` | No entity roles; sequence `1` | `mission_name`, `mission_version`, `map_name`, `run_classification`; optional `capabilities` |
 | `mission.ended` | No entity roles | `reason: "mission-end-observed"` |
 | `mission.heartbeat` | No entity roles | None |
+| `wave.spawned` | No entity roles | `wave_number`, `wave_size`; optional `donor`, `tier`, `reason` |
+| `wave.cleared` | No entity roles | `wave_number`; optional `wave_size`, `reason` |
+| `gameplay.ended` | No entity roles | `reason`; optional `detail` |
 | `participant.entered` | Participant, asset, coalition, location | None |
 | `participant.left` | Participant, asset, coalition, location | None |
 | `asset.spawned` | Asset, coalition, location | None |
@@ -192,6 +195,36 @@ the victim's dead/crash event.
 `run_classification` is `test` or `historical`; it is independent of Mission Run
 Status. Catalogue assignment is backend projection state, not a mission-emitted
 source observation.
+
+## Optional reporting capabilities and scenario milestones
+
+A `mission.started` payload MAY carry an optional `capabilities` object
+declaring which explicit scenario facts the producer reports:
+
+```json
+{ "capabilities": { "wave_milestones": 1, "gameplay_outcome": 1 } }
+```
+
+Each capability value is a version integer, currently `1`. Unknown capability
+names are invalid producer output; producers MUST NOT emit names outside this
+document. A missing `capabilities` object means a legacy producer that predates
+explicit milestones. Consumers MUST fall back to derivation for such runs
+rather than reading a silent zero, and MUST NOT rewrite historical runs when
+explicit milestones appear.
+
+- `wave_milestones` version `1`: the run emits `wave.spawned` when a package
+  launches (`wave_number`, `wave_size`, optional `donor`, `tier`, `reason`)
+  and `wave.cleared` when a complete package is defeated (`wave_number`,
+  optional `wave_size`, `reason`). Intentional despawns (operator reset,
+  empty-server cleanup) MUST NOT emit `wave.cleared`.
+- `gameplay_outcome` version `1`: the run emits `gameplay.ended` when the
+  scenario terminates (`reason`, e.g. `"all-pilots-down"`). This is the
+  gameplay outcome, distinct from DCS session termination (`mission.ended`).
+
+Milestone events carry no entity roles (all `null`), exactly like mission
+lifecycle events, and consume ordinary sequence numbers. They are idempotent
+source observations: collector spooling, delivery, and ingest deduplicate them
+by `event_id` like every other event, and mission switches never merge runs.
 
 ## Batch contract
 

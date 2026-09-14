@@ -1,10 +1,10 @@
-local event_id = dofile("src/missions/duel-dynamic/telemetry/event_id.lua")
-local envelope = dofile("src/missions/duel-dynamic/telemetry/envelope.lua")
-local json = dofile("src/missions/duel-dynamic/telemetry/json.lua")
-local ndjson_sink = dofile("src/missions/duel-dynamic/telemetry/ndjson_sink.lua")
-local lifecycle = dofile("src/missions/duel-dynamic/telemetry/lifecycle.lua")
-local development = dofile("src/missions/duel-dynamic/telemetry/development.lua")
-local shot = dofile("src/missions/duel-dynamic/telemetry/shot.lua")
+local event_id = dofile("src/lib/telemetry/event_id.lua")
+local envelope = dofile("src/lib/telemetry/envelope.lua")
+local json = dofile("src/lib/telemetry/json.lua")
+local ndjson_sink = dofile("src/lib/telemetry/ndjson_sink.lua")
+local lifecycle = dofile("src/lib/telemetry/lifecycle.lua")
+local development = dofile("src/lib/telemetry/development.lua")
+local shot = dofile("src/lib/telemetry/shot.lua")
 
 local tests_run = 0
 local failures = {}

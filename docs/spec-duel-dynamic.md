@@ -23,14 +23,24 @@ sanitized dedicated server. See `docs/shipping-duel-dynamic.md`.
 
 ## 1. What's in the repo
 
+Worktree multi-mission refactor: the legacy behavior described below is now in
+`src/gameplay/package-waves.lua`. Each mission has an independent entry and
+configuration; telemetry lives separately under `src/lib/telemetry/`. See
+`docs/multi-mission-development.md`. This does not change the active selector or
+claim live validation of the new builds.
+
 ```
 src/
   bootstrap.lua                       # dispatcher (shared, never mission-specific)
   lib/Moose_.lua                      # pinned MOOSE build
+  lib/telemetry/                      # shared telemetry, no gameplay imports
+  gameplay/package-waves.lua          # shared wave behavior and existing defaults
+  gameplay/package-wave-config.lua   # configuration and template checks
+  gameplay/score.lua                  # pure-logic kill counter
   missions/
     duel-dynamic/
-      main.lua                        # entry: events, F10 menu, AI tasking, init poll
-      score.lua                       # pure-logic kill counter (_G.duel_tracker)
+      main.lua                        # entry: loads config and shared gameplay
+      config.lua                      # identity, roster, optional overrides
   .current-mission                   # contains the string "duel-dynamic"
 ```
 

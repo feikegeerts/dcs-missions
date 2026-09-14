@@ -5,6 +5,7 @@
 -- event_sequence N; this queue deliberately knows nothing about runs,
 -- producers, or envelope contents.
 
+-- Shared shipping queue.
 local M = {}
 
 local function is_positive_integer(value)

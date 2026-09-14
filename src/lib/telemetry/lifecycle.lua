@@ -1,3 +1,4 @@
+-- Shared telemetry run lifecycle, independent of gameplay outcomes.
 local M = {}
 
 local LIFECYCLE_EVENT_TYPES = {

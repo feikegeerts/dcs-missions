@@ -169,11 +169,60 @@ describe("telemetry-event-v1 JSON Schema", () => {
       crash,
       withIdentity(crash, "pilot.dead", 14),
       withIdentity(crash, "pilot.ejected", 15),
+      lifecycle("wave.spawned", 16, {
+        wave_number: 2,
+        wave_size: 3,
+        donor: "Bandit-4",
+        tier: 2,
+        reason: "previous package defeated",
+      }),
+      lifecycle("wave.cleared", 17, { wave_number: 2, wave_size: 3 }),
+      lifecycle("gameplay.ended", 18, { reason: "all-pilots-down" }),
     ];
 
     for (const event of examples) {
       expect(validateEvent(event), `${event.event_type}: ${JSON.stringify(validateEvent.errors)}`).toBe(true);
     }
+  });
+
+  it("keeps capabilities optional and additive on mission.started", () => {
+    const started = validFixtures[0].event;
+    expect(validateEvent(started)).toBe(true);
+
+    const capable = clone(started);
+    capable.payload.capabilities = { wave_milestones: 1, gameplay_outcome: 1 };
+    expect(validateEvent(capable), JSON.stringify(validateEvent.errors)).toBe(true);
+
+    const partial = clone(started);
+    partial.payload.capabilities = { wave_milestones: 1 };
+    expect(validateEvent(partial)).toBe(true);
+
+    const badVersion = clone(started);
+    badVersion.payload.capabilities = { wave_milestones: 2 };
+    expect(validateEvent(badVersion)).toBe(false);
+
+    const unknownCapability = clone(started);
+    unknownCapability.payload.capabilities = { score_cheats: 1 };
+    expect(validateEvent(unknownCapability)).toBe(false);
+
+    const nonObject = clone(started);
+    nonObject.payload.capabilities = "wave_milestones";
+    expect(validateEvent(nonObject)).toBe(false);
+  });
+
+  it("rejects malformed wave milestones and gameplay outcomes", () => {
+    const started = validFixtures[0].event;
+    const milestone = (type, sequence, payload) =>
+      withIdentity(started, type, sequence, { payload });
+
+    expect(validateEvent(milestone("wave.spawned", 6, { wave_size: 2 }))).toBe(false);
+    expect(validateEvent(milestone("wave.spawned", 6, { wave_number: 1, wave_size: 0 }))).toBe(false);
+    expect(validateEvent(milestone("wave.cleared", 6, {}))).toBe(false);
+    expect(validateEvent(milestone("gameplay.ended", 6, {}))).toBe(false);
+
+    const withAsset = milestone("wave.spawned", 6, { wave_number: 1, wave_size: 1 });
+    withAsset.asset = clone(validFixtures[3].event.asset);
+    expect(validateEvent(withAsset)).toBe(false);
   });
 });
 

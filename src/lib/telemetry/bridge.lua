@@ -1,4 +1,4 @@
--- Mission-side production telemetry bridge.
+-- Shared mission-side production telemetry bridge.
 --
 -- The GameGUI hook calls the _G.duel_telemetry_bridge runtime through
 -- a_do_script using this protocol:
@@ -17,7 +17,7 @@ local M = {}
 local function log(env_api, level, message)
   local writer = env_api and env_api[level]
   if type(writer) == "function" then
-    pcall(writer, "[duel-dynamic][telemetry] " .. message)
+    pcall(writer, "[telemetry] " .. message)
   end
 end
 
@@ -288,6 +288,16 @@ function M.start(config)
     if config.env and config.env.mission and type(config.env.mission.theatre) == "string" then
       map_name = config.env.mission.theatre
     end
+    local started_payload = {
+      mission_name = config.mission_name,
+      mission_version = config.mission_version,
+      map_name = map_name,
+      run_classification = run_classification,
+    }
+    -- Optional reporting capabilities; omitted for legacy producers.
+    if config.capabilities ~= nil then
+      started_payload.capabilities = config.capabilities
+    end
     local controller, lifecycle_error = config.lifecycle.new({
       producer = producer,
       sink = sink,
@@ -297,12 +307,7 @@ function M.start(config)
       wall_time = function()
         return config.envelope.JSON_NULL
       end,
-      started_payload = {
-        mission_name = config.mission_name,
-        mission_version = config.mission_version,
-        map_name = map_name,
-        run_classification = run_classification,
-      },
+      started_payload = started_payload,
     })
     if not controller then
       return fail_start(lifecycle_error)

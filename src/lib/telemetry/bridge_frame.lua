@@ -9,6 +9,7 @@
 -- NUL-free and at most 65536 bytes. This codec validates producer_id and
 -- run_key itself using the event_id token grammar.
 
+-- Shared shipping bridge wire format; retain compatibility with installed hooks.
 local M = {}
 
 local MAGIC = "DDBRIDGE1"
