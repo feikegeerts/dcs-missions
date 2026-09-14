@@ -1,13 +1,18 @@
 # Mission spec: duel-dynamic
 
-Current active mission (`.current-mission = duel-dynamic`). **1–4 player slots vs
+Current active mission (`.current-mission = duel-dynamic`). **1–5 player slots vs
 progressively larger AI package waves**. Each wave picks a uniform-random
-donor from the ten `Bandit-1`..`Bandit-10` ME groups and spawns one
-multi-aircraft DCS group in close formation 55–85 statute miles from the
+donor from its difficulty tier (waves 1–3: `Bandit-10`/`Bandit-3`/`Bandit-6`;
+waves 4–6: `Bandit-3`/`Bandit-6`/`Bandit-4`/`Bandit-5`; waves 7+:
+`Bandit-1`/`Bandit-2`/`Bandit-4`/`Bandit-5`/`Bandit-8`/`Bandit-9`) and spawns
+one multi-aircraft DCS group in close formation 55–85 statute miles from the
 blue-player centroid, with a per-wave random altitude/speed profile. It
 receives a shared MOOSE CAP task so multiplayer produces one package fight
 rather than unrelated paired duels. Group options (ROE, alarm state,
-reaction-on-threat) defer to the per-donor ME settings.
+reaction-on-threat) defer to the per-donor ME settings. `Bandit-7` (F-5E-3)
+is excluded from waves; its ME template is left untouched. The in-game
+blue F10 root menu is titled **Air Superiority Survival** (the technical
+mission identifier and source directory stay `duel-dynamic`).
 
 This is the active test bed for the dynamic-spawn pipeline.
 
@@ -39,12 +44,14 @@ environment artifacts, not tracked source files in this repository.
 
 | Role | Mission Editor groups |
 |---|---|
-| Blue player roster | `Aerial-1`, `Aerial-2`, `Aerial-3`, `Aerial-4` |
-| Red wave donors (all active) | `Bandit-1` .. `Bandit-10` (one aircraft each, Late Activation) |
+| Blue player roster | `Aerial-1`, `Aerial-2`, `Aerial-3`, `Aerial-4`, `Aerial-5` |
+| Red wave donors (active) | `Bandit-1` .. `Bandit-6`, `Bandit-8` .. `Bandit-10` (one aircraft each, Late Activation; `Bandit-7` excluded) |
 
 The player slots are normal client slots. The red groups are **Late Activation
-✓**. Each wave picks one donor uniformly at random; `SPAWN:InitGrouping(1|2|3|4)`
-clones the chosen donor aircraft into one true multi-unit DCS group, while
+✓**. Each wave picks one donor uniformly at random from its difficulty tier;
+`SPAWN:InitGrouping(...)` clones the chosen donor aircraft into one true
+multi-unit DCS group sized to the live blue package plus escalation (capped
+at eight), while
 `InitSetUnitRelativePositions` lays out the group in a compact wedge. Spawns
 copy the donor's airframe, payload, skill, and route options; DCS
 auto-suffixes the spawned group name with `#NNN`.
@@ -52,9 +59,9 @@ auto-suffixes the spawned group name with `#NNN`.
 `PLAYER_GROUP_NAMES` defines the available blue roster. Each player identity
 has three lives by default for one mission run; players with no lives remaining
 are excluded when the next package is sized. `BANDIT_GROUP_NAMES`
-(all ten names, ascending) is both the donor list and the telemetry
-allow-list; the actual chosen donor name is passed as the configured name
-when a spawned wave is registered with telemetry.
+(the nine active names, ascending, `Bandit-7` excluded) is both the donor
+list and the telemetry allow-list; the actual chosen donor name is passed
+as the configured name when a spawned wave is registered with telemetry.
 
 ### Donor table (2026-09-13 mission file)
 
@@ -70,7 +77,7 @@ never touches them.
 | Bandit-4 | F-16C_50 | 60 / 60 | 4x AAM | threat-estimate |
 | Bandit-5 | F-16C_50 | 60 / 60 | 4x AAM | max-range |
 | Bandit-6 | MiG-29S | 30 / 30 | 2x R-73 + 2x R-27ER + 2x R-60 | max-range |
-| Bandit-7 | F-5E-3 | 30 / 15 | AIM-9 short-range only | threat-estimate |
+| Bandit-7 | F-5E-3 | 30 / 15 | AIM-9 short-range only | threat-estimate (excluded from waves; ME template retained) |
 | Bandit-8 | Su-33 | 48 / 48 | R-73 + R-27ER + R-60 mix | max-range |
 | Bandit-9 | Su-33 | 48 / 48 | R-73 + R-27ER + R-60 mix | max-range |
 | Bandit-10 | MiG-21Bis | 18 / 40 | 2x R-3S + 2x R-3R + ASO-2 pod | threat-estimate |
@@ -88,7 +95,18 @@ done and the poll retries.
 
 - **Initial spawn.** The init poll catches all occupied slots, then waits a
   three-second assembly window. One red DCS group is spawned with one aircraft
-  per live blue aircraft, cloned from a uniform-random `Bandit-N` donor.
+  per live blue aircraft, cloned from a uniform-random tier-1 donor
+  (`Bandit-10`/`Bandit-3`/`Bandit-6`).
+- **Tiered donor progression.** The donor pool is tiered by the next wave
+  number (`waveNumber + 1`) in steps of `WAVE_TIER_EVERY=3`: waves 1–3 draw
+  from `Bandit-10`, `Bandit-3`, `Bandit-6` (MiG-21/MiG-29 radar-capable,
+  manageable); waves 4–6 from `Bandit-3`, `Bandit-6`, `Bandit-4`, `Bandit-5`
+  (MiG-29/F-16); waves 7+ from `Bandit-1`, `Bandit-2`, `Bandit-4`,
+  `Bandit-5`, `Bandit-8`, `Bandit-9` (modern BVR). Only initialized
+  spawners are eligible; if a tier has no initialized donor on this server
+  (e.g. the Su-33 module is absent), the wave falls back to any initialized
+  active donor — never to the excluded `Bandit-7`. The spawn log names the
+  chosen donor and tier (`donor <X> tier <N>`).
 - **Progressive difficulty.** The first three waves match the eligible live
   blue package. Every three waves already spawned adds one bandit to the next
   package: waves 4–6 get +1, waves 7–9 get +2, and so on. Package size is
@@ -150,7 +168,8 @@ Code owns only the task plus the CAP radius. ROE, alarm state,
 reaction-on-threat, and missile launch mode are per-donor ME settings the
 user varies in the mission editor (all donors ROE=WEAPON_FREE;
 MISSILE_ATTACK max-range on Bandit-1/5/6/8/9 vs threat-estimate on
-Bandit-2/3/4/7/10 — see the donor table in §2).
+Bandit-2/3/4/10 — see the donor table in §2; Bandit-7 is likewise
+threat-estimate but excluded from waves).
 
 | Setting | Default | Effect |
 |---|---|---|
@@ -168,7 +187,8 @@ options.
 
 ### 3.4 F10 menu
 
-Coalition-scoped (blue-only). Available from MISSION START.
+Coalition-scoped (blue-only) under the **Air Superiority Survival** root
+menu. Available from MISSION START.
 
 - **Show kills** — displays `Team kills: N`, followed by the existing
   per-counter lines.
@@ -249,19 +269,21 @@ Both Blue and Red coalitions active.
 
 ### 5.2 Player slots
 
-Four blue player/client groups, country = any blue country,
+Five blue player/client groups, country = any blue country,
 **not** late-activated. Place airborne at 15 000 ft. Names **must be
-exactly** `Aerial-1`, `Aerial-2`, `Aerial-3`, `Aerial-4`. The current archive
-contains three `FA-18C_hornet` slots and one `F-16C_50` slot.
+exactly** `Aerial-1`, `Aerial-2`, `Aerial-3`, `Aerial-4`, `Aerial-5`. The current archive
+contains `Aerial-1` through `Aerial-5`.
 
 ### 5.3 Bandit SPAWN templates
 
 Ten one-aircraft red AI groups named `Bandit-1` .. `Bandit-10`, all with
 **Late Activation ✓** and per-unit skill Excellent. Each wave clones one
-uniform-random donor via MOOSE `InitGrouping` into a 1–4 aircraft group
-(see the donor table in §2 for airframes, loadouts, chaff/flare, and the
-per-donor MISSILE_ATTACK variation). All ten names must stay in
-`BANDIT_GROUP_NAMES` in `main.lua` and in the telemetry allow-list; update
+uniform-random donor from its difficulty tier via MOOSE `InitGrouping` into
+a 1–8 aircraft group (see the donor table in §2 for airframes, loadouts,
+chaff/flare, and the per-donor MISSILE_ATTACK variation). All ten groups
+stay in the mission archive; only the nine active names belong in
+`BANDIT_GROUP_NAMES` in `main.lua` and in the telemetry allow-list
+(`Bandit-7` is excluded from waves but its ME template is retained). Update
 the mission archive, source arrays, telemetry tests, and this spec together
 if these names change.
 
@@ -363,7 +385,7 @@ start with a player in `Aerial-1`:
 [duel-dynamic] Aerial-1 already occupied at init — adding to first package roster
 [duel-dynamic] package wave scheduled in 3s (initial player package assembled)
 [duel-dynamic] init done — package-wave lifecycle active
-[duel-dynamic] spawning 1-ship package 62.4 mi from blue centroid, heading 080 (initial player package assembled, donor Bandit-6, alt 18200 ft, speed 431 kt)
+[duel-dynamic] spawning 1-ship package 62.4 mi from blue centroid, heading 080 (initial player package assembled, donor Bandit-6 tier 1, alt 18200 ft, speed 431 kt)
 [duel-dynamic] package spawned: Bandit-6#001 (donor Bandit-6) at x=-141498 z=165369 alt=5551m
 [duel-dynamic] tasked Bandit-6#001 → CAP on blue package centroid (1 players) (group options defer to the ME donor settings)
 ```
@@ -379,20 +401,29 @@ Then after the kill:
 
 If a package does not appear within a few seconds after entering a slot, check
 for `init done`, `package wave scheduled`, and `spawning N-ship package` in
-`dcs.log`. Also check that all ten `Bandit-N` groups exist in the ME with Late Activation ✓.
+`dcs.log`. Also check that all ten `Bandit-N` groups exist in the ME with Late Activation ✓
+(all ten stay in the archive even though `Bandit-7` never spawns).
 The first `SCRIPTING ERROR` line names the file and line.
 
 ---
 
-## 8. Testing the count-matching (1 / 2 / 3 / 4 players)
+## 8. Testing the count-matching (1 / 2 / 3 / 4 / 5 players)
 
 - **1 live player:** waves 1–3 contain one bandit; wave 4 contains two.
+- **Donor tiers:** waves 1–3 draw only from `Bandit-10`/`Bandit-3`/`Bandit-6`;
+  waves 4–6 only from `Bandit-3`/`Bandit-6`/`Bandit-4`/`Bandit-5`; waves 7+
+  only from `Bandit-1`/`Bandit-2`/`Bandit-4`/`Bandit-5`/`Bandit-8`/`Bandit-9`
+  (fewer if a Su-33 spawner failed to initialize). `Bandit-7` never spawns;
+  the spawn log proves the tier (`donor <X> tier <N>`).
 - **2 live players during assembly:** one group containing two aircraft in
   close formation before escalation.
 - **3 live players during assembly:** one group containing three aircraft
   before escalation.
 - **4 live players during assembly:** one compact group containing four
   aircraft before escalation; later waves grow to the eight-aircraft cap.
+- **5 live players during assembly:** one compact group containing five
+  aircraft before escalation; later waves grow to the eight-aircraft cap
+  (cap hit at wave 10).
 - **Join during combat:** no immediate reset or second group; the next wave
   uses the new live-player count.
 - **First red loss in a multi-ship wave:** no respawn timer yet.

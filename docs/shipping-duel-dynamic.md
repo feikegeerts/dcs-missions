@@ -156,7 +156,7 @@ runtime.
 enough to validate the stock shipping load, bridge handshake, lifecycle events,
 hook spool, and collector capture, but it does **not** exercise the mission's
 AI package behavior. The mission intentionally waits for an occupied
-`Aerial-1`–`Aerial-4` client slot before `init done` and bandit-wave spawning.
+`Aerial-1`–`Aerial-5` client slot before `init done` and bandit-wave spawning.
 For the full S17-p4 mission gate, a DCS client must connect to the local server
 and occupy at least one `Aerial-*` slot. Do not enable `TEST_COMBAT` or alter
 the shipping artifact to bypass this gate; that would test the development path
@@ -187,7 +187,7 @@ instead of the shipped mission.
      `transport-unavailable`, `frame-stuck`, `spool-verify-failed`, or callback
      `hook-error`.
    - One package-sized bandit group should spawn and the F10 menu should work.
-6. Spawn 2–4 player slots. Confirm one close, equally sized red group appears, a
+6. Spawn 2–5 player slots. Confirm one close, equally sized red group appears, a
    partial red loss does not respawn, and one complete replacement appears 30
    seconds after the final red loss.
 7. Tacview-check: red aircraft remain a package and engage the blue package;

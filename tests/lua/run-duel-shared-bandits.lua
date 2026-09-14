@@ -4,11 +4,12 @@
 -- src/missions/duel-dynamic/main.lua.  The mocks below deliberately expose
 -- only the DCS/MOOSE surface used by that file.
 --
--- The mission picks a uniform-random donor from Bandit-1..Bandit-10 per wave
--- with a per-wave random altitude/speed/distance profile, and it defers
--- group options to the ME.  The assertions below cover that design plus the
--- package lifecycle, including graceful degradation when a donor's
--- SPAWN:New returns nil (e.g. uninstalled module).
+-- The mission picks a uniform-random donor from the next wave's difficulty
+-- tier per wave with a per-wave random altitude/speed/distance profile, and
+-- it defers group options to the ME.  Bandit-7 is excluded from waves.  The
+-- assertions below cover that design plus the package lifecycle, including
+-- graceful degradation when a donor's SPAWN:New returns nil (e.g.
+-- uninstalled module).
 --
 -- Run from the repository root:
 --   lua5.1 tests/lua/run-duel-shared-bandits.lua
@@ -49,7 +50,9 @@ local MIN_CAP_SPEED_KT = 350
 local MAX_CAP_SPEED_KT = 550
 local FOUR_NM_M = 4 * 1852
 
-local PLAYER_GROUP_NAMES = { "Aerial-1", "Aerial-2", "Aerial-3", "Aerial-4" }
+local PLAYER_GROUP_NAMES = { "Aerial-1", "Aerial-2", "Aerial-3", "Aerial-4", "Aerial-5" }
+-- Active donor/telemetry allow-list. Bandit-7 is excluded from waves, so it
+-- must never appear here or in any spawned package.
 local BANDIT_GROUP_NAMES = {
   "Bandit-1",
   "Bandit-2",
@@ -57,11 +60,39 @@ local BANDIT_GROUP_NAMES = {
   "Bandit-4",
   "Bandit-5",
   "Bandit-6",
-  "Bandit-7",
   "Bandit-8",
   "Bandit-9",
   "Bandit-10",
 }
+
+-- Mirror of WAVE_DONOR_TIERS in src/missions/duel-dynamic/main.lua, keyed
+-- by the next wave number (waveNumber + 1) in steps of WAVE_TIER_EVERY = 3.
+local WAVE_TIER_EVERY = 3
+local WAVE_DONOR_TIERS = {
+  { "Bandit-10", "Bandit-3", "Bandit-6" },
+  { "Bandit-3", "Bandit-6", "Bandit-4", "Bandit-5" },
+  { "Bandit-1", "Bandit-2", "Bandit-4", "Bandit-5", "Bandit-8", "Bandit-9" },
+}
+
+local function tierForWave(nextWaveNumber)
+  local tier = math.floor((nextWaveNumber - 1) / WAVE_TIER_EVERY) + 1
+  if tier < 1 then
+    tier = 1
+  end
+  if tier > #WAVE_DONOR_TIERS then
+    tier = #WAVE_DONOR_TIERS
+  end
+  return tier
+end
+
+local function inTier(template, tier)
+  for _, donor in ipairs(WAVE_DONOR_TIERS[tier]) do
+    if template == donor then
+      return true
+    end
+  end
+  return false
+end
 
 local function isBanditDonor(name)
   for _, donor in ipairs(BANDIT_GROUP_NAMES) do
@@ -120,6 +151,7 @@ local playerAlive = {
   ["Aerial-2"] = false,
   ["Aerial-3"] = true,
   ["Aerial-4"] = false,
+  ["Aerial-5"] = false,
 }
 
 local playerCoords = {
@@ -127,6 +159,7 @@ local playerCoords = {
   ["Aerial-2"] = newCoordinate(250000, 0, 150000),
   ["Aerial-3"] = newCoordinate(150000, 0, 50000),
   ["Aerial-4"] = newCoordinate(175000, 0, 125000),
+  ["Aerial-5"] = newCoordinate(225000, 0, 75000),
 }
 
 local playerGroups = {}
@@ -787,17 +820,18 @@ succeeds("1. deferred init builds one spawner per donor and the assembly spawns 
   check(initSchedule ~= nil, "init poll scheduler was not captured")
   equal(runSchedule(initSchedule), false, "init poll did not stop after initialization")
 
-  equal(#SPAWN.newCalls, 10, "deferred init did not attempt SPAWN:New for all 10 donors")
+  equal(#SPAWN.newCalls, 9, "deferred init did not attempt SPAWN:New for all 9 active donors")
   local attempted = {}
   for _, name in ipairs(SPAWN.newCalls) do
     attempted[name] = true
   end
+  check(not attempted["Bandit-7"], "SPAWN:New was attempted for excluded Bandit-7")
   for _, donor in ipairs(BANDIT_GROUP_NAMES) do
     check(attempted[donor], "SPAWN:New was not attempted for " .. donor)
     check(spawnersByTemplate[donor] ~= nil, donor .. " spawner was not constructed")
     check(spawnersByTemplate[donor].on_spawn_group ~= nil, donor .. " OnSpawnGroup callback missing")
   end
-  equal(#constructedSpawners, 10, "deferred init constructed an unexpected number of SPAWN objects")
+  equal(#constructedSpawners, 9, "deferred init constructed an unexpected number of SPAWN objects")
   equal(#spawnRecords, 0, "deferred init spawned before the assembly delay")
 
   local assemblySchedule = findPendingSchedule(3, false)
@@ -806,7 +840,7 @@ succeeds("1. deferred init builds one spawner per donor and the assembly spawns 
 
   equal(#spawnRecords, 1, "initial assembly did not spawn exactly one group")
   local spawn = latestSpawn()
-  check(isBanditDonor(spawn.template), "initial package used a template outside Bandit-1..Bandit-10")
+  check(isBanditDonor(spawn.template), "initial package used a template outside the active donor list")
   check(
     spawn.wrapper:GetName():find("^Bandit%-%d+#%d%d%d$") ~= nil,
     "package wrapper name is not Bandit-N#NNN, got " .. spawn.wrapper:GetName()
@@ -943,7 +977,7 @@ succeeds("6. the completed package schedules one delayed replacement", function(
 
   equal(#spawnRecords, spawnsBefore + 1, "delayed package scheduler did not spawn exactly one group")
   local spawn = latestSpawn()
-  check(isBanditDonor(spawn.template), "delayed package used a template outside Bandit-1..Bandit-10")
+  check(isBanditDonor(spawn.template), "delayed package used a template outside the active donor list")
   equal(spawn.grouping, 2, "delayed package did not retain grouping 2")
   equal(#liveWrappers(), 1, "delayed package did not replace the defeated package")
   currentPackage = spawn.wrapper
@@ -1091,7 +1125,7 @@ succeeds("13. waves vary the donor and stay inside the random profile bounds", f
   local donorsSeen = {}
   for i = spawnsBefore + 1, #spawnRecords do
     local spawn = spawnRecords[i]
-    check(isBanditDonor(spawn.template), "wave used a template outside Bandit-1..Bandit-10")
+    check(isBanditDonor(spawn.template), "wave used a template outside the active donor list")
     donorsSeen[spawn.template] = true
     check(
       spawn.coordinate.y >= MIN_SPAWN_ALT_M - 0.001 and spawn.coordinate.y <= MAX_SPAWN_ALT_M + 0.001,
@@ -1143,7 +1177,7 @@ succeeds("14. group options defer to the ME: baked AUFTRAG options are nilled, n
   end
 end)
 
-succeeds("15. a missing donor logs once and init completes with the remaining nine", function()
+succeeds("15. a missing donor logs once and init completes with the remaining eight", function()
   SPAWN.failTemplates = { ["Bandit-8"] = true }
   local spawnersBefore = #constructedSpawners
   local callsBefore = #SPAWN.newCalls
@@ -1156,7 +1190,7 @@ succeeds("15. a missing donor logs once and init completes with the remaining ni
   check(initSchedule ~= nil, "second init poll scheduler was not captured")
   equal(runSchedule(initSchedule), false, "second init poll did not stop after initialization")
 
-  equal(#SPAWN.newCalls, callsBefore + 10, "second init did not attempt SPAWN:New for all 10 donors")
+  equal(#SPAWN.newCalls, callsBefore + 9, "second init did not attempt SPAWN:New for all 9 active donors")
   local attempted = {}
   for i = callsBefore + 1, #SPAWN.newCalls do
     attempted[SPAWN.newCalls[i]] = true
@@ -1164,7 +1198,7 @@ succeeds("15. a missing donor logs once and init completes with the remaining ni
   for _, donor in ipairs(BANDIT_GROUP_NAMES) do
     check(attempted[donor], "second init did not attempt SPAWN:New for " .. donor)
   end
-  equal(#constructedSpawners, spawnersBefore + 9, "second init did not keep exactly the nine surviving donors")
+  equal(#constructedSpawners, spawnersBefore + 8, "second init did not keep exactly the eight surviving donors")
   check(logContains("SPAWN:New('Bandit-8')"), "missing-donor error log is missing")
 
   local assemblySchedule = findPendingSchedule(3, false)
@@ -1174,7 +1208,7 @@ succeeds("15. a missing donor logs once and init completes with the remaining ni
   equal(#spawnRecords, spawnsBefore + 1, "second assembly did not spawn exactly one group")
   local spawn = latestSpawn()
   check(spawn.template ~= "Bandit-8", "second assembly spawned from the missing donor")
-  check(isBanditDonor(spawn.template), "second assembly used a template outside Bandit-1..Bandit-10")
+  check(isBanditDonor(spawn.template), "second assembly used a template outside the active donor list")
   equal(
     assetRegistrations[#assetRegistrations].configured_name,
     spawn.template,
@@ -1202,7 +1236,7 @@ succeeds("16. spawnWave only ever picks from the surviving donors", function()
   for i = spawnsBefore + 1, #spawnRecords do
     local template = spawnRecords[i].template
     check(template ~= "Bandit-8", "survivor loop spawned from the missing donor")
-    check(isBanditDonor(template), "survivor loop used a template outside Bandit-1..Bandit-10")
+    check(isBanditDonor(template), "survivor loop used a template outside the active donor list")
   end
   _G.duel_missing_donor_package = nil
 end)
@@ -1451,6 +1485,147 @@ succeeds("25. slot fallback initializes missing lives and warns once per mission
     end
   end
   equal(warningsAfter, warningsBefore + 1, "slot fallback warning was not emitted exactly once")
+end)
+
+succeeds("26. the blue F10 root menu uses the Air Superiority Survival title", function()
+  check(#menus > 0, "no coalition menu was registered")
+  local found = false
+  for _, menu in ipairs(menus) do
+    if menu.side == BLUE and menu.title == "Air Superiority Survival" then
+      found = true
+    end
+    check(menu.title ~= "Duel Dynamic", "stale Duel Dynamic menu title is still registered")
+  end
+  check(found, "Air Superiority Survival coalition menu was not registered")
+end)
+
+succeeds("27. Bandit-7 is excluded from the allow-list, init, and every spawned wave", function()
+  equal(#BANDIT_GROUP_NAMES, 9, "active donor allow-list does not contain exactly nine donors")
+  check(not isBanditDonor("Bandit-7"), "Bandit-7 is still in the active donor allow-list")
+  for _, name in ipairs(SPAWN.newCalls) do
+    check(name ~= "Bandit-7", "SPAWN:New was attempted for excluded Bandit-7")
+  end
+  for i, record in ipairs(spawnRecords) do
+    check(record.template ~= "Bandit-7", "spawn record " .. i .. " used excluded Bandit-7")
+  end
+  for _, registration in ipairs(assetRegistrations) do
+    check(registration.configured_name ~= "Bandit-7", "telemetry registered excluded Bandit-7")
+  end
+end)
+
+succeeds("28. tiered donor selection follows waves 1-3, 4-6, and 7+ with unchanged size escalation", function()
+  SPAWN.failTemplates = {}
+  local context = loadInitializedMission({
+    { slot = "Aerial-1", name = "TierSolo", ucid = "tier-solo" },
+  })
+  local firstSpawn = context.spawnsBefore + 1
+  local wavesToSimulate = 9
+  for wave = 2, wavesToSimulate do
+    killPackageFully(context.retained.bandit, latestSpawn().wrapper)
+    -- Scoped to this scenario: earlier scenarios may have left their own
+    -- unexecuted 30-second schedules behind.
+    local respawnSchedule = latestPendingSchedule(30, false, context.schedulesBefore)
+    check(respawnSchedule ~= nil, "tier-loop wave defeat did not schedule the next wave")
+    runSchedule(respawnSchedule)
+  end
+  equal(#spawnRecords, context.spawnsBefore + wavesToSimulate, "tier loop did not spawn exactly one group per wave")
+  for wave = 1, wavesToSimulate do
+    local spawn = spawnRecords[firstSpawn + wave - 1]
+    local expectedTier = tierForWave(wave)
+    check(
+      inTier(spawn.template, expectedTier),
+      string.format("wave %d used %s, outside tier %d", wave, spawn.template, expectedTier)
+    )
+    check(spawn.template ~= "Bandit-7", "tier loop spawned excluded Bandit-7 at wave " .. wave)
+    local expectedSize = math.min(1 + math.floor((wave - 1) / 3), 8)
+    equal(spawn.grouping, expectedSize, "tier loop changed the size escalation at wave " .. wave)
+  end
+  check(logContains("donor Bandit-") and logContains("tier 1"), "spawn log does not name the tier-1 donor selection")
+  check(logContains("tier 2"), "spawn log does not name the tier-2 donor selection")
+  check(logContains("tier 3"), "spawn log does not name the tier-3 donor selection")
+end)
+
+succeeds("29. an unavailable tier degrades to surviving donors without reintroducing Bandit-7", function()
+  SPAWN.failTemplates = { ["Bandit-10"] = true, ["Bandit-3"] = true, ["Bandit-6"] = true }
+  local context = loadInitializedMission({
+    { slot = "Aerial-1", name = "FallbackSolo", ucid = "fallback-solo" },
+  })
+  local spawn = spawnRecords[context.spawnsBefore + 1]
+  check(spawn.template ~= "Bandit-10", "fallback spawned from unavailable Bandit-10")
+  check(spawn.template ~= "Bandit-3", "fallback spawned from unavailable Bandit-3")
+  check(spawn.template ~= "Bandit-6", "fallback spawned from unavailable Bandit-6")
+  check(spawn.template ~= "Bandit-7", "fallback reintroduced excluded Bandit-7")
+  check(isBanditDonor(spawn.template), "fallback used a template outside the active donor list")
+
+  SPAWN.failTemplates = { ["Bandit-8"] = true, ["Bandit-9"] = true }
+  local suContext = loadInitializedMission({
+    { slot = "Aerial-1", name = "NoSu", ucid = "no-su" },
+  })
+  for wave = 2, 8 do
+    killPackageFully(suContext.retained.bandit, latestSpawn().wrapper)
+    -- Scoped to this scenario: earlier scenarios may have left their own
+    -- unexecuted 30-second schedules behind.
+    local respawnSchedule = latestPendingSchedule(30, false, suContext.schedulesBefore)
+    check(respawnSchedule ~= nil, "no-Su-33 loop wave defeat did not schedule the next wave")
+    runSchedule(respawnSchedule)
+    local waveSpawn = latestSpawn()
+    check(waveSpawn.template ~= "Bandit-8", "no-Su-33 loop spawned unavailable Bandit-8 at wave " .. wave)
+    check(waveSpawn.template ~= "Bandit-9", "no-Su-33 loop spawned unavailable Bandit-9 at wave " .. wave)
+    check(waveSpawn.template ~= "Bandit-7", "no-Su-33 loop reintroduced excluded Bandit-7 at wave " .. wave)
+    check(isBanditDonor(waveSpawn.template), "no-Su-33 loop used a template outside the active donor list")
+  end
+  SPAWN.failTemplates = {}
+end)
+
+succeeds("30. Aerial-5 is accepted as a live player and contributes to a package", function()
+  SPAWN.failTemplates = {}
+  local context = loadInitializedMission({
+    { slot = "Aerial-5", name = "Five", ucid = "fifth-slot-solo" },
+  })
+  local spawn = spawnRecords[context.spawnsBefore + 1]
+  equal(spawn.grouping, 1, "solo Aerial-5 occupant did not produce a one-ship package")
+  equal(#spawn.wrapper.units, 1, "solo Aerial-5 package does not contain one unit")
+  check(isBanditDonor(spawn.template), "solo Aerial-5 package used a template outside the active donor list")
+
+  local second = loadInitializedMission({
+    { slot = "Aerial-1", name = "One", ucid = "fifth-slot-1" },
+    { slot = "Aerial-2", name = "Two", ucid = "fifth-slot-2" },
+    { slot = "Aerial-3", name = "Three", ucid = "fifth-slot-3" },
+    { slot = "Aerial-4", name = "Four", ucid = "fifth-slot-4" },
+    { slot = "Aerial-5", name = "Five", ucid = "fifth-slot-5" },
+  })
+  local fullSpawn = spawnRecords[second.spawnsBefore + 1]
+  equal(fullSpawn.grouping, 5, "five-player roster did not size its first package to five")
+  equal(#fullSpawn.wrapper.units, 5, "five-player package does not contain five units")
+end)
+
+succeeds("31. five-player escalation follows 5,5,5,6 and caps at eight", function()
+  loadInitializedMission({
+    { slot = "Aerial-1", name = "One", ucid = "five-cap-1" },
+    { slot = "Aerial-2", name = "Two", ucid = "five-cap-2" },
+    { slot = "Aerial-3", name = "Three", ucid = "five-cap-3" },
+    { slot = "Aerial-4", name = "Four", ucid = "five-cap-4" },
+    { slot = "Aerial-5", name = "Five", ucid = "five-cap-5" },
+  })
+  local firstSpawn = #spawnRecords
+  local waveCount = 10
+  for wave = 1, waveCount do
+    if wave > 1 then
+      menuCommands["Respawn bandit wave"].callback()
+    end
+    local expected = math.min(5 + math.floor((wave - 1) / 3), 8)
+    equal(spawnRecords[firstSpawn + wave - 1].grouping, expected, "five-player escalation sequence is wrong")
+    check(spawnRecords[firstSpawn + wave - 1].grouping <= 8, "five-player package exceeded the eight-aircraft cap")
+  end
+  local finalSpawn = spawnRecords[firstSpawn + waveCount - 1]
+  equal(finalSpawn.grouping, 8, "five-player escalation did not cap at eight by wave 10")
+  equal(#finalSpawn.relative_positions, 8, "capped five-player formation did not produce eight offsets")
+  for i, position in ipairs(finalSpawn.relative_positions) do
+    for j = i + 1, #finalSpawn.relative_positions do
+      local other = finalSpawn.relative_positions[j]
+      check(position.x ~= other.x or position.y ~= other.y, "capped five-player formation contains duplicate offsets")
+    end
+  end
 end)
 
 restoreGlobals()

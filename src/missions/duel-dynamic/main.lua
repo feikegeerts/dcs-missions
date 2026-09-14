@@ -1,7 +1,9 @@
--- src/missions/duel-dynamic/main.lua — 1–4 vs 1–4 dynamic spawn.
--- Player slots: Aerial-1, Aerial-2, Aerial-3, Aerial-4.
--- Red donors: Bandit-1 .. Bandit-10 (late-activated ME aircraft, one per
--- donor group). Each wave picks one donor uniformly at random and clones it
+-- src/missions/duel-dynamic/main.lua — 1–5 vs 1–5 dynamic spawn.
+-- Player slots: Aerial-1, Aerial-2, Aerial-3, Aerial-4, Aerial-5.
+-- Red donors: Bandit-1 .. Bandit-6 plus Bandit-8 .. Bandit-10
+-- (late-activated ME aircraft, one per donor group). Bandit-7 (F-5E-3)
+-- remains in the ME template but is excluded from waves. Each wave picks
+-- one donor uniformly at random from its difficulty tier and clones it
 -- to wave size, so airframe, payload, skill, chaff/flare, and ME group
 -- options vary per wave.
 -- Event-driven package waves: one red aircraft per live blue player, cloned
@@ -38,9 +40,10 @@ env.info("[duel-dynamic] MOOSE loaded")
 -- Player roster and red template allow-list
 -- =====================================================================
 -- ME player-slot names are normal player slots. Red names remain the telemetry
--- allow-list; all 10 Bandit-N groups are active wave donors and must be late
--- activated in the ME.
-local PLAYER_GROUP_NAMES = { "Aerial-1", "Aerial-2", "Aerial-3", "Aerial-4" }
+-- allow-list; the 9 Bandit-N groups below are the active wave donors and
+-- must be late activated in the ME. Bandit-7 (F-5E-3) is intentionally
+-- excluded from waves but its ME template is left untouched.
+local PLAYER_GROUP_NAMES = { "Aerial-1", "Aerial-2", "Aerial-3", "Aerial-4", "Aerial-5" }
 local BANDIT_GROUP_NAMES = {
   "Bandit-1",
   "Bandit-2",
@@ -48,10 +51,21 @@ local BANDIT_GROUP_NAMES = {
   "Bandit-4",
   "Bandit-5",
   "Bandit-6",
-  "Bandit-7",
   "Bandit-8",
   "Bandit-9",
   "Bandit-10",
+}
+
+-- Intentional difficulty tiers, keyed by the next wave number
+-- (waveNumber + 1). WAVE_TIER_EVERY = 3 steps the tier every three waves:
+-- waves 1-3 (MiG-21/MiG-29 radar-capable, manageable), waves 4-6
+-- (MiG-29/F-16), waves 7+ (modern BVR; Su-33 only when its SPAWN
+-- initializes — the module may be absent on the test server).
+local WAVE_TIER_EVERY = 3
+local WAVE_DONOR_TIERS = {
+  { "Bandit-10", "Bandit-3", "Bandit-6" },
+  { "Bandit-3", "Bandit-6", "Bandit-4", "Bandit-5" },
+  { "Bandit-1", "Bandit-2", "Bandit-4", "Bandit-5", "Bandit-8", "Bandit-9" },
 }
 
 -- Load siblings. Bootstrap set _G.MY_SCRIPTS_ROOT to the project src/ path.
@@ -205,7 +219,8 @@ end
 -- Spawn / distance config
 -- =====================================================================
 -- Distances are STATUTE miles (1609.344 m per mile). Each wave picks a
--- uniform-random donor plus a uniform-random profile:
+-- uniform-random donor from its difficulty tier (see WAVE_DONOR_TIERS)
+-- plus a uniform-random profile:
 --   spawn distance  55–85 statute mi from the blue centroid
 --   spawn altitude  15,000–25,000 ft (15,000 ft floor)
 --   CAP altitude    15,000–30,000 ft (AUFTRAG:NewCAP altitude, feet)
@@ -248,7 +263,8 @@ local INIT_TIMEOUT = 0
 -- reaction-on-threat, and missile launch mode are per-donor ME settings the
 -- user varies in the mission editor (all donors ROE=WEAPON_FREE;
 -- MISSILE_ATTACK max-range on Bandit-1/5/6/8/9 vs threat-estimate on
--- Bandit-2/3/4/7/10). The script never force-sets group options, and it
+-- Bandit-2/3/4/10; Bandit-7 is likewise threat-estimate but excluded from
+-- waves). The script never force-sets group options, and it
 -- nils out the options AUFTRAG:NewCAP bakes onto the mission object, so the
 -- spawned group keeps its donor ME values.
 local BANDIT_TASK = "CAP"
@@ -559,6 +575,42 @@ local function taskBanditPackage(bgrp, players, playerCentroid, capAltFt, capSpe
   )
 end
 
+local function donorTierForWave(nextWaveNumber)
+  local tier = math.floor((nextWaveNumber - 1) / WAVE_TIER_EVERY) + 1
+  if tier < 1 then
+    tier = 1
+  end
+  if tier > #WAVE_DONOR_TIERS then
+    tier = #WAVE_DONOR_TIERS
+  end
+  return tier
+end
+
+local function selectWaveDonor(nextWaveNumber)
+  local tier = donorTierForWave(nextWaveNumber)
+  local candidates = {}
+  for _, donorName in ipairs(WAVE_DONOR_TIERS[tier]) do
+    if waveSpawners[donorName] then
+      candidates[#candidates + 1] = donorName
+    end
+  end
+  if #candidates == 0 then
+    -- Graceful degrade: the tier has no initialized donor here (e.g. the
+    -- Su-33 module is absent). Fall back to any initialized active donor.
+    -- BANDIT_GROUP_NAMES excludes Bandit-7, so the fallback can never
+    -- reintroduce it.
+    for _, donorName in ipairs(BANDIT_GROUP_NAMES) do
+      if waveSpawners[donorName] then
+        candidates[#candidates + 1] = donorName
+      end
+    end
+  end
+  if #candidates == 0 then
+    return nil, tier
+  end
+  return candidates[randInt(1, #candidates)], tier
+end
+
 spawnWave = function(reason)
   if missionTerminal then
     env.info(string.format("[duel-dynamic] mission terminal — spawn request ignored (%s)", tostring(reason)))
@@ -568,17 +620,12 @@ spawnWave = function(reason)
     env.info(string.format("[duel-dynamic] wave %d still active — spawn request ignored", waveNumber))
     return currentWaveGroup
   end
-  local candidates = {}
-  for _, donorName in ipairs(BANDIT_GROUP_NAMES) do
-    if waveSpawners[donorName] then
-      candidates[#candidates + 1] = donorName
-    end
-  end
-  if #candidates == 0 then
+  local nextWaveNumber = waveNumber + 1
+  local donorName, tier = selectWaveDonor(nextWaveNumber)
+  if not donorName then
     env.error("[duel-dynamic] cannot spawn wave: no bandit SPAWN donor is initialized")
     return nil
   end
-  local donorName = candidates[randInt(1, #candidates)]
   local spawner = waveSpawners[donorName]
 
   local players, playerCentroid = livePlayerPackage()
@@ -603,12 +650,13 @@ spawnWave = function(reason)
 
   env.info(
     string.format(
-      "[duel-dynamic] spawning %d-ship package %.1f mi from blue centroid, heading %03d (%s, donor %s, alt %d ft, speed %d kt%s)",
+      "[duel-dynamic] spawning %d-ship package %.1f mi from blue centroid, heading %03d (%s, donor %s tier %d, alt %d ft, speed %d kt%s)",
       size,
       distMi,
       heading,
       tostring(reason or "requested"),
       donorName,
+      tier,
       spawnAltFt,
       capSpeedKt,
       extra > 0 and string.format(", escalation +%d", extra) or ""
@@ -663,7 +711,7 @@ end
 -- =====================================================================
 -- F10 menu (commands can fire before init — they handle nil state).
 -- =====================================================================
-local menu = MENU_COALITION:New(coalition.side.BLUE, "Duel Dynamic")
+local menu = MENU_COALITION:New(coalition.side.BLUE, "Air Superiority Survival")
 
 MENU_COALITION_COMMAND:New(coalition.side.BLUE, "Show kills", menu, function()
   MESSAGE:New(Tracker:format(), 10):ToCoalition(coalition.side.BLUE)
@@ -955,7 +1003,8 @@ _G.duel_gameplay_watchers = { player = playerWatcher, bandit = banditWatcher, pl
 -- =====================================================================
 local function doInit()
   -- Each Bandit-N donor is a one-aircraft ME template. InitGrouping clones
-  -- the chosen donor into a true 1/2/3/4-aircraft DCS group for each wave.
+  -- the chosen donor into a true multi-aircraft DCS group sized to the live
+  -- blue package plus escalation (capped at eight) for each wave.
   waveSpawners = {}
   for _, donorName in ipairs(BANDIT_GROUP_NAMES) do
     local name = donorName
@@ -1033,7 +1082,7 @@ end
 
 -- A player group becomes alive the moment a client occupies its slot. On a
 -- headless dedicated server that can be minutes after mission start, and the
--- first joiner may pick any of the four slots — so poll until ANY player
+-- first joiner may pick any of the five slots — so poll until ANY player
 -- group is alive rather than only Aerial-1.
 local function anyPlayerGroupAlive()
   for _, pname in ipairs(PLAYER_GROUP_NAMES) do
@@ -1101,11 +1150,6 @@ if _G.TEST_COMBAT_ENABLED then
       ["AIM-120B"] = { index = 15, pylon = { CLSID = "{40EF17B7-F508-45de-8566-6FFECC0C1AB8}" } },
       ["AIM-7M"] = { index = 11, pylon = { CLSID = "{AIM-7H}" } },
     },
-    ["F-5E-3"] = {
-      ["AIM-9B"] = { index = 7, pylon = { CLSID = "{AIM-9B}" } },
-      ["AIM-9P"] = { index = 7, pylon = { CLSID = "{9BFD8C90-F7AE-4e90-833B-BFD0CED0E536}" } },
-      ["AIM-9P5"] = { index = 7, pylon = { CLSID = "{AIM-9P5}" } },
-    },
     ["A-10C_2"] = {
       ["AIM-9M"] = { index = 11, pylon = { CLSID = "{DB434044-F5D0-4F1F-9BA9-B73027E18DD3}" } },
     },
@@ -1125,7 +1169,6 @@ if _G.TEST_COMBAT_ENABLED then
   local TEST_COMBAT_LIVERIES = {
     ["FA-18C_hornet"] = "Australia 75 Sqn RAAF",
     ["F-16C_50"] = "default",
-    ["F-5E-3"] = "USA standard",
     ["A-10C_2"] = "104th FS Maryland ANG, Baltimore (MD)",
     ["MiG-29 Fulcrum"] = "Air Force Standard",
     ["Su-34"] = "Russian Air Force",
@@ -1194,7 +1237,7 @@ if _G.TEST_COMBAT_ENABLED then
     end
 
     -- 1. Blue AI reference position: the Aerial-1 player-slot location (a
-    --    sensible blue-side coordinate). Aerial-1..4 are player/client slots,
+    --    sensible blue-side coordinate). Aerial-1..5 are player/client slots,
     --    which DCS refuses to materialize via coalition.addGroup, so the blue
     --    ME template cannot be spawned directly. We only need its position +
     --    blue country id here (both are registered in the _DATABASE).

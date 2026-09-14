@@ -9,8 +9,8 @@ stop, 6.5 s final delivery). Test runs were cleaned from production in one
 owner-approved transaction; the 2-run baseline was re-verified. Section 6.4
 gameplay (lives, wave escalation, in-fiction messages) and the S18.5-c
 collector-health dashboard are merged to `main` (`bb299d7`, `47277e2`);
-migration `web/drizzle/0005_wakeful_redwing.sql` is committed but **not
-applied** (owner-gated). The collector service is the steady-state default
+migration `web/drizzle/0005_wakeful_redwing.sql` is committed and applied on
+2026-09-14. The collector service is the steady-state default
 (installed + left running, reversible — see
 `docs/telemetry/slice-18-5c-windows-runbook.md`), and its live lifecycle
 validation ran in the same window against the running service:
@@ -247,12 +247,16 @@ Verified end-to-end on the dedicated server (logs from 2026-07-26 session):
   units to an already spawned group.
 - 🧪 F10 menu now uses **Respawn bandit wave** as an explicit forced package
   reset. Kill messages label the total as `Team kills`.
-- 🧪 Mixed-donor random waves + per-wave random profile + defer-to-ME
+- 🧪 Tiered-donor waves + per-wave random profile + defer-to-ME
   (implemented, pending live validation): each wave clones a uniform-random
-  donor from Bandit-1..Bandit-10 with a random spawn altitude (15,000–25,000 ft),
+  donor from its difficulty tier (waves 1–3: Bandit-10/3/6; waves 4–6:
+  Bandit-3/6/4/5; waves 7+: Bandit-1/2/4/5/8/9; Bandit-7 excluded) with a
+  random spawn altitude (15,000–25,000 ft),
   CAP altitude (15,000–30,000 ft), CAP speed (350–550 kt), and spawn distance
   (55–85 sm); ROE/alarm/reaction-on-threat are no longer force-set so the
-  per-donor ME settings carry through. Offline Lua + stylua green; Tacview
+  per-donor ME settings carry through. The F10 root menu is now titled
+  Air Superiority Survival (technical mission identity stays duel-dynamic).
+  Offline Lua + stylua green; Tacview
   geometry/tasking check and the uninstalled-module Su-33 donor behavior still
   need a live run.
 - ✅ Score counter increments, displays via F10 message, resets.
@@ -401,7 +405,7 @@ These are DCS-imposed limitations, not bugs in the Lua. Documented in
 - ⚠️ **Package-wave behavior is not yet real-DCS validated.** The plain-Lua
   regression test verifies the lifecycle and MOOSE calls, but Tacview must
   confirm that `SPAWN:InitGrouping` produces the intended 2/3/4-ship formation
-  and that the shared CAP task yields the desired 2v2/3v3/4v4 behavior.
+  and that the shared CAP task yields the desired 2v2/3v3/4v4/5v5 behavior.
 
 ## 6. What's still to do (post-PTO)
 
@@ -518,11 +522,12 @@ how to verify, and `docs/dev-setup.md §8` for the build/QA loop.
       offline-verified, live validation parked.
 - The parked §6.4 live validation is now owner-ready:
       `docs/s64-live-verification.md` is a code-grounded runbook (exact
-      in-fiction message strings, F10 `Duel Dynamic` → `Show lives` / `Respawn
-      bandit wave` as the primary live checks, log anchors, an 8-case test
-      matrix, and explicit PASS/FAIL criteria). On a PASS, record the run in
+      in-fiction message strings, F10 `Air Superiority Survival` → `Show lives` / `Respawn
+      bandit wave` as the primary live checks, log anchors including the
+      `donor <X> tier <N>` token, an 8-case test
+      matrix plus the T6b tier-progression check, and explicit PASS/FAIL criteria). On a PASS, record the run in
       `progress.md` and flip queue item `s64-live-verification` to completed.
-- [ ] Validate 2v2, 3v3, and 4v4 package geometry/tasking on the dedicated
+- [ ] Validate 2v2, 3v3, 4v4, and 5v5 package geometry/tasking on the dedicated
       server and inspect the result in Tacview.
 - [x] Install/configure Tacview for
       `Saved Games\DCS.dcs_serverrelease` before that validation run.
@@ -643,8 +648,9 @@ Telemetry now has priority over the optional MIST respawn work. Slices
 12–18.5 (projection/dashboard increments, ordnance catalogue v2, the
 near-live collector service, and integrated acceptance) are recorded in the
 dated addenda at the top and in the `docs/telemetry/` evidence docs; the
-collector-health migration `web/drizzle/0005_wakeful_redwing.sql` is
-committed and **not applied** (owner-gated).
+collector-health migration `web/drizzle/0005_wakeful_redwing.sql` is committed
+and applied on 2026-09-14. Reconcile the Drizzle journal/snapshot before
+generating another migration.
 
 ---
 

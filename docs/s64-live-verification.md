@@ -22,9 +22,13 @@ own wave logic (it bypasses `spawnWave` and uses no player slots), so it does
      `MissionScripting.lua`, dynamic `src/` load) lets you tweak the knobs
      without repacking. To validate exact shipping behaviour, load the
      self-contained shipping `.miz` on a **stock** (sanitized) server instead.
-2. **Knobs** — `src/missions/duel-dynamic/main.lua` lines 222–224:
+2. **Knobs** — `src/missions/duel-dynamic/main.lua`:
    `LIVES_PER_PLAYER = 3`, `WAVE_ESCALATION_EVERY = 3`,
-   `MAX_PACKAGE_SIZE = 8`.
+   `MAX_PACKAGE_SIZE = 8`, `WAVE_TIER_EVERY = 3` with `WAVE_DONOR_TIERS`
+   (waves 1–3: `Bandit-10`/`Bandit-3`/`Bandit-6`; waves 4–6:
+   `Bandit-3`/`Bandit-6`/`Bandit-4`/`Bandit-5`; waves 7+:
+   `Bandit-1`/`Bandit-2`/`Bandit-4`/`Bandit-5`/`Bandit-8`/`Bandit-9`;
+   `Bandit-7` excluded).
 3. **Tacview** (optional, recommended for multi-player geometry) —
    `spec-duel-dynamic.md §9`.
 4. **Tail the log** — `Saved Games\DCS.dcs_serverrelease\Logs\dcs.log`
@@ -43,7 +47,7 @@ own wave logic (it bypasses `spawnWave` and uses no player slots), so it does
 | F10 forced reset, new wave | `New bandit wave inbound.` (else `No players in the air.`) |
 | F10 forced reset after terminal | `Mission over — no more waves.` |
 
-**Primary live check — F10 `Duel Dynamic` → `Show lives`:** posts the current
+**Primary live check — F10 `Air Superiority Survival` → `Show lives`:** posts the current
 per-identity life table to the BLUE coalition:
 
 ```
@@ -62,7 +66,7 @@ escalation cadence (T6) without waiting 30 s between waves.
 - init: `[duel-dynamic] main start` … `[duel-dynamic] init done — package-wave lifecycle active`
 - player join: `[duel-dynamic] player '<name>' entered <slot>`
 - UCID fallback (once only, if `IniPlayerUCID` is absent): `[duel-dynamic] player UCID unavailable — using the slot group name as the per-run identity`
-- spawn: `[duel-dynamic] spawning K-ship package … (<reason>, donor <X>, alt … ft, speed … kt, escalation +E)` — the `escalation +E` suffix appears from wave 4 onward
+- spawn: `[duel-dynamic] spawning K-ship package … (<reason>, donor <X> tier <N>, alt … ft, speed … kt, escalation +E)` — the `escalation +E` suffix appears from wave 4 onward; the `tier <N>` names the difficulty tier (1 for waves 1–3, 2 for waves 4–6, 3 for waves 7+)
 - wave defeated: `[duel-dynamic] wave N defeated — next package in 30s`
 - terminal: `[duel-dynamic] all tracked player identities are out of lives — mission terminal`
 - post-terminal spawn suppression: `[duel-dynamic] mission terminal — spawn request ignored (<reason>)` / `mission terminal — wave schedule ignored (<reason>)`
@@ -70,7 +74,7 @@ escalation cadence (T6) without waiting 30 s between waves.
 ## Identity model
 
 - **Identity** = the player's UCID (`EventData.IniPlayerUCID`) when present;
-  otherwise the slot group name (`Aerial-1`…`Aerial-4`) with the one-time
+  otherwise the slot group name (`Aerial-1`…`Aerial-5`) with the one-time
   warning above.
 - **`lives` is per mission run**: a restart (`LeftShift+R` / WebGUI restart /
   `net.load_mission`) resets every identity to 3 lives and `waveNumber` to 0.
@@ -116,9 +120,19 @@ already spawned (the 1st wave has `waveNumber = 0`, so `extra = 0`):
 | 1 | 1,1,1,2,2,2,3,3,3,4,4,4,5,… (cap 8) |
 | 2 | 2,2,2,3,3,3,4,4,4,5,… |
 | 4 | 4,4,4,5,5,5,6,6,6,7,7,7,8 (cap hit at wave 13) |
+| 5 | 5,5,5,6,6,6,7,7,7,8 (cap hit at wave 10) |
 
 The `escalation +E` log suffix appears starting at wave 4 (E=1) and steps up
 every 3 waves.
+
+**T6b — tiered donor progression.** With any fixed N live players, force waves
+with F10 `Respawn bandit wave` and check the `donor <X> tier <N>` log token
+per wave: waves 1–3 donors are only `Bandit-10`/`Bandit-3`/`Bandit-6`
+(tier 1); waves 4–6 only `Bandit-3`/`Bandit-6`/`Bandit-4`/`Bandit-5`
+(tier 2); waves 7+ only `Bandit-1`/`Bandit-2`/`Bandit-4`/`Bandit-5`/
+`Bandit-8`/`Bandit-9` (tier 3, fewer if a Su-33 spawner failed to
+initialize). `Bandit-7` must never appear as a donor. Package sizes still
+follow the T6 formula — tiers change only the donor pool, not the size.
 
 **T7 — terminal state.** Drive **all** tracked identities to 0 lives. Expected:
 one `All pilots down — mission over.` message, log `… out of lives — mission
@@ -127,7 +141,7 @@ terminal`, and **no further package spawns** (any spawn request logs
 force-despawned. F10 `Respawn bandit wave` then reports
 `Mission over — no more waves.`
 
-**T8 (optional) — multi-player geometry.** 2–4 players; inspect in Tacview: one
+**T8 (optional) — multi-player geometry.** 2–5 players; inspect in Tacview: one
 red group per wave, aircraft in formation, red lead 55–85 sm from the blue
 centroid (`spec-duel-dynamic.md §9`).
 
@@ -151,9 +165,10 @@ centroid (`spec-duel-dynamic.md §9`).
 
 ## PASS / FAIL
 
-- **PASS:** T1–T7 all match the expected behaviour; F10 `Show lives` counts
-  never drift from the observed deaths; exactly one decrement per death;
-  terminal suppresses all further spawns.
+- **PASS:** T1–T7 all match the expected behaviour (including the T6b tier
+  progression: correct tier token per wave, `Bandit-7` never a donor);
+  F10 `Show lives` counts never drift from the observed deaths; exactly one
+  decrement per death; terminal suppresses all further spawns.
 - **FAIL:** any of — a single death removes more/less than one life; a reconnect
   resets a non-zero identity to 3; a 0-life identity contributes to package
   size; a spawn occurs after terminal; a same-human reconnect (same UCID) gets
