@@ -356,7 +356,7 @@ local countedBanditUnits = {}
 local lives = {}
 local slotIdentity = {}
 local playerIdentityName = {}
-local countedPlayerUnits = {}
+local countedPlayerAircraft = {}
 local missionTerminal = false
 local warnedMissingPlayerUCID = false
 local initDone = false
@@ -877,6 +877,20 @@ local function eventUnitName(EventData)
   return nil
 end
 
+local function eventUnitObjectId(EventData)
+  local dcsUnit = EventData and EventData.IniDCSUnit or nil
+  if not dcsUnit or type(dcsUnit.getID) ~= "function" then
+    return nil
+  end
+  local ok, objectId = pcall(function()
+    return dcsUnit:getID()
+  end)
+  if not ok or objectId == nil then
+    return nil
+  end
+  return tostring(objectId)
+end
+
 -- Player aircraft losses consume per-identity lives. This watcher is separate
 -- from the bandit watcher because both subscribe to Dead and Crash.
 local playerDeathWatcher = BASE:New()
@@ -897,10 +911,16 @@ local function handlePlayerLoss(EventData)
     env.warning("[duel-dynamic] player loss had no unit name — ignoring ambiguous duplicate-prone event")
     return
   end
-  if countedPlayerUnits[unitName] then
+  local objectId = eventUnitObjectId(EventData)
+  if not objectId then
+    env.warning("[duel-dynamic] player loss had no DCS object ID — ignoring ambiguous duplicate-prone event")
     return
   end
-  countedPlayerUnits[unitName] = true
+  local aircraftKey = unitName .. ":" .. objectId
+  if countedPlayerAircraft[aircraftKey] then
+    return
+  end
+  countedPlayerAircraft[aircraftKey] = true
 
   local identity = identityForSlot(idx)
   if lives[identity] == nil then

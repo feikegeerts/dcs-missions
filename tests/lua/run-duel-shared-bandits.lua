@@ -674,12 +674,17 @@ local function dispatchCurrentGameplayEvent(method, eventData)
   end
 end
 
-local function firePlayerLoss(method, groupName, unitName, side)
+local function firePlayerLoss(method, groupName, unitName, side, objectId)
+  local dcsUnit = {}
+  function dcsUnit:getID()
+    return objectId or unitName
+  end
   dispatchCurrentGameplayEvent(method, {
     IniCoalition = side or BLUE,
     IniGroup = playerGroups[groupName],
     IniDCSGroupName = groupName,
     IniDCSUnitName = unitName,
+    IniDCSUnit = dcsUnit,
   })
 end
 
@@ -1248,9 +1253,9 @@ succeeds("17. player lives decrement once and follow a UCID across slots", funct
     { slot = "Aerial-1", name = "Springfield", ucid = "ucid-springfield" },
   })
   local messagesBefore = #messages
-  firePlayerLoss("OnEventDead", "Aerial-1", "springfield-aircraft-1")
+  firePlayerLoss("OnEventDead", "Aerial-1", "Aerial-1-1", nil, 101)
   equal(messages[#messages].text, "Aircraft lost — 2 lives left.", "first player loss message is wrong")
-  firePlayerLoss("OnEventCrash", "Aerial-1", "springfield-aircraft-1")
+  firePlayerLoss("OnEventCrash", "Aerial-1", "Aerial-1-1", nil, 101)
   equal(#messages, messagesBefore + 1, "duplicate player crash posted another loss message")
 
   menuCommands["Show lives"].callback()
@@ -1276,6 +1281,20 @@ succeeds("17. player lives decrement once and follow a UCID across slots", funct
   firePlayerEvent(livesScenario.retained.player, "OnEventPlayerEnterAircraft", "Aerial-1", "Colt", "ucid-colt")
   menuCommands["Show lives"].callback()
   equal(messages[#messages].text, "Lives:\n  Colt: 3\n  Springfield: 2", "new UCID did not receive fresh lives")
+end)
+
+succeeds("17b. a reused unit name with a new DCS object consumes another life", function()
+  firePlayerEvent(livesScenario.retained.player, "OnEventPlayerLeaveUnit", "Aerial-1", "Colt", "ucid-colt")
+  firePlayerEvent(livesScenario.retained.player, "OnEventPlayerEnterAircraft", "Aerial-1", "Colt", "ucid-colt")
+  firePlayerLoss("OnEventDead", "Aerial-1", "Aerial-1-1", nil, 102)
+  equal(messages[#messages].text, "Aircraft lost — 2 lives left.", "reused-name aircraft loss was not counted")
+  firePlayerLoss("OnEventCrash", "Aerial-1", "Aerial-1-1", nil, 102)
+  menuCommands["Show lives"].callback()
+  equal(
+    messages[#messages].text,
+    "Lives:\n  Colt: 2\n  Springfield: 2",
+    "reused-name Dead/Crash lifecycle did not decrement exactly once"
+  )
 end)
 
 succeeds("18. a zero-life identity is excluded even after DCS-native re-entry", function()

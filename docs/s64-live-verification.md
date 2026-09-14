@@ -92,7 +92,9 @@ F10 `Show lives` shows the identity at `3`.
 killed once (shot down / crash — do **not** just eject). Expected: exactly one
 life removed → F10 `2`; in-game `Aircraft lost — 2 lives left.`; no
 `initialized missing lives` log line. A single death must produce exactly **one**
-decrement despite the Dead/Crash event pair.
+decrement despite the Dead/Crash event pair. Re-enter the same native slot and
+lose the replacement aircraft: DCS may reuse `Aerial-*-1`, but its distinct DCS
+object ID must consume another life.
 
 **T3 — UCID identity.** Check the log for the one-time UCID warning. Present →
 identity is the slot name (fallback); absent → UCID identity is in use. Record
@@ -152,11 +154,13 @@ centroid (`spec-duel-dynamic.md §9`).
 - WebGUI force-slot / kick-to-slot controls (or the in-mission slot selector)
   add/remove players mid-mission.
 
-## Known residual risks to watch (from offline review)
+## Known residual risks to watch
 
-- **(a)** `countedPlayerUnits` is never cleared within a run: if DCS reuses a
-  unit name for a native respawn, that later loss is **under-counted** (a life
-  not consumed), never double-counted.
+- **(a)** Loss deduplication now keys the MOOSE event's native DCS object ID as
+  well as its unit name. The 2026-09-14 live log confirmed that native re-entry
+  reused `Aerial-1-1` while assigning a new object ID to each aircraft. If a
+  future DCS/MOOSE build omits that documented object ID, the loss is logged and
+  ignored rather than risking a duplicate decrement.
 - **(b)** Live availability of `EventData.IniPlayerUCID` on this dedicated-server
   build is unproven; the slot-name fallback covers absence (one-time warning).
 - **(c)** DCS-native respawn cannot be blocked per identity: a 0-life identity
