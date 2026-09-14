@@ -1,6 +1,6 @@
-local json = dofile("src/missions/duel-dynamic/telemetry/json.lua")
-local ndjson_sink = dofile("src/missions/duel-dynamic/telemetry/ndjson_sink.lua")
-local envelope = dofile("src/missions/duel-dynamic/telemetry/envelope.lua")
+local json = dofile("src/lib/telemetry/json.lua")
+local ndjson_sink = dofile("src/lib/telemetry/ndjson_sink.lua")
+local envelope = dofile("src/lib/telemetry/envelope.lua")
 
 local real_io = io
 local null = envelope.JSON_NULL

@@ -86,6 +86,11 @@ class FakeStore implements TelemetryStore {
     return [];
   }
 
+  async listMissionRuns(): Promise<never[]> {
+    this.callCount += 1;
+    return [];
+  }
+
   async getRunByRunKey(): Promise<null> {
     this.callCount += 1;
     return null;

@@ -1,3 +1,4 @@
+-- Shared DCS aircraft tracking; mission rosters are injected by the caller.
 local M = {}
 
 local AIRPLANE_CATEGORY = 0
@@ -83,7 +84,9 @@ local function token_part(value)
 end
 
 local function build_roster(names, role)
-  if type(names) ~= "table" or #names == 0 then
+  -- An explicitly empty opposing roster is valid for patrol/free-flight.
+  -- Missing configuration and an empty player roster remain errors.
+  if type(names) ~= "table" or (role ~= "bandit" and #names == 0) then
     return nil, role .. " group names are required"
   end
 

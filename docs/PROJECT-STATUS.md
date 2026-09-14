@@ -1,5 +1,22 @@
 # Project status
 
+**Multi-mission telemetry started — 2026-09-14 (worktree only):**
+`feature/telemetry-decoupling` extracts the shared telemetry library into
+`src/lib/telemetry/`, preserves the legacy shipping/hook interfaces, and adds
+non-wave baseline and mission-identity isolation regressions. Increment 2 adds
+the shared failure-safe integration API, removes normal gameplay's raw adapter
+access, and tests generated shipping startup/handshake without filesystem APIs.
+Increment 3 adds independent entry scripts/configurations for BVR, ACM, and
+Survival, explicit `-MissionName` builds, and template/selection validation.
+Increment 4 generalizes the dashboard catalogue and wave-report gate to all
+four package-wave identities without contract/schema changes. The three
+original source archives still load the main-checkout bootstrap; they have
+not been rebound or replaced. Explicit wave milestones, mission-scoped DB
+pagination, any migration, and live acceptance remain parked/pending;
+nothing is deployed. See
+`docs/telemetry/multi-mission-implementation.md` for the inventory, verification,
+compatibility boundaries, and remaining sequence.
+
 **Slice 18.5 complete + section 6.4 merged — 2026-09-13:** Integrated
 acceptance (S18.5-e) passed on both legs with the persistent
 `DcsTelemetryCollector` service as the sole delivery path (dev leg 18/18

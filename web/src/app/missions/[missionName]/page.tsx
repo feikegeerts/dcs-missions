@@ -7,10 +7,11 @@ import {
   DASHBOARD_RUN_SCOPE_LIMIT,
   DOSSIER_RUNS_PER_PAGE,
   formatPartialCost,
+  isWaveMission,
   missionCatalogEntry,
+  resolveRunWaves,
   selectHighScore,
   summarizeRunCombat,
-  summarizeRunWaves,
 } from "@/telemetry/dashboard";
 import { parsePageNumber } from "@/telemetry/run-filters";
 import {
@@ -39,7 +40,7 @@ export default async function MissionDossierPage({
     const { missionName: encodedMission } = await params;
     const query = await searchParams;
     const missionKey = decodeURIComponent(encodedMission);
-    const isDuelDynamic = missionKey === "duel-dynamic";
+    const isWaveMissionPage = isWaveMission(missionKey);
     const entry = missionCatalogEntry(
       missionKey === "unknown" ? null : missionKey,
     );
@@ -54,12 +55,15 @@ export default async function MissionDossierPage({
 
     const store = new NeonTelemetryStore();
     const now = new Date();
-    const scoped = (
-      await store.listRuns(DASHBOARD_RUN_SCOPE_LIMIT, 0, null)
-    ).filter((run) =>
-      missionKey === "unknown"
-        ? run.missionName === null || run.missionName === ""
-        : run.missionName === missionKey,
+    // Mission-scoped history: the mission filter applies in the database
+    // before the scope limit, so a busy mission can never push another
+    // mission's valid history out of the window. Aggregates below still
+    // cover this mission's full scope, never just the displayed page.
+    const scoped = await store.listMissionRuns(
+      missionKey === "unknown" ? null : missionKey,
+      DASHBOARD_RUN_SCOPE_LIMIT,
+      0,
+      null,
     );
     const withDisplay = scoped.map((run) => ({
       run,
@@ -79,7 +83,7 @@ export default async function MissionDossierPage({
     // run should not hide the best completed historical run. Facts for the
     // displayed rows are loaded as before; ended non-test runs are added for
     // high-score evaluation when a status filter hides them.
-    const highScoreCandidates = isDuelDynamic
+    const highScoreCandidates = isWaveMissionPage
       ? scoped.filter(
           (run) => run.status === "ended" && run.runClassification !== "test",
         )
@@ -99,7 +103,7 @@ export default async function MissionDossierPage({
             store.listAssetLosses(run.producerId, run.runKey),
             store.listKillAttributions(run.producerId, run.runKey),
             store.listRunParticipants(run.producerId, run.runKey),
-            isDuelDynamic &&
+            isWaveMissionPage &&
             run.status === "ended" &&
             run.runClassification !== "test"
               ? store.listRunEvents(run.producerId, run.runKey)
@@ -136,12 +140,14 @@ export default async function MissionDossierPage({
           }),
           humans: participants.length,
           participants,
-          waveSummary: summarizeRunWaves(events),
+          // Explicit milestones win when the run declares them; legacy runs
+          // keep the derived summary unchanged and history is never rewritten.
+          waveSummary: resolveRunWaves(events, run.missionName).summary,
         };
       }),
     );
     const factsByRun = new Map(facts.map((item) => [item.runKey, item]));
-    const highScore = isDuelDynamic
+    const highScore = isWaveMissionPage
       ? selectHighScore(
           facts.map((item) => ({
             ...item.run,
@@ -193,7 +199,7 @@ export default async function MissionDossierPage({
         <p className="hud-subtitle">{entry.description}</p>
 
         <div className="hud-grid" style={{ marginTop: "1rem" }}>
-          {isDuelDynamic && (
+          {isWaveMissionPage && (
             <MissionRecord
               record={highScore}
               participants={

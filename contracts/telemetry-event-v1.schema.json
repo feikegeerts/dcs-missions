@@ -327,7 +327,10 @@
             "asset.dead",
             "asset.crashed",
             "pilot.dead",
-            "pilot.ejected"
+            "pilot.ejected",
+            "wave.spawned",
+            "wave.cleared",
+            "gameplay.ended"
           ]
         },
         "sim_time": { "type": "number", "minimum": 0 },
@@ -350,7 +353,7 @@
           "then": { "properties": { "event_type": { "const": "mission.started" } } }
         },
         {
-          "if": { "properties": { "event_type": { "enum": ["mission.started", "mission.ended", "mission.heartbeat"] } } },
+          "if": { "properties": { "event_type": { "enum": ["mission.started", "mission.ended", "mission.heartbeat", "wave.spawned", "wave.cleared", "gameplay.ended"] } } },
           "then": {
             "properties": {
               "initiator": { "type": "null" },
@@ -375,7 +378,15 @@
                   "mission_name": { "type": "string", "minLength": 1 },
                   "mission_version": { "type": "string", "minLength": 1 },
                   "map_name": { "type": ["string", "null"], "minLength": 1 },
-                  "run_classification": { "enum": ["test", "historical"] }
+                  "run_classification": { "enum": ["test", "historical"] },
+                  "capabilities": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "wave_milestones": { "const": 1 },
+                      "gameplay_outcome": { "const": 1 }
+                    }
+                  }
                 }
               }
             }
@@ -389,6 +400,55 @@
                 "type": "object",
                 "required": ["reason"],
                 "properties": { "reason": { "const": "mission-end-observed" } }
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "event_type": { "const": "wave.spawned" } } },
+          "then": {
+            "properties": {
+              "payload": {
+                "type": "object",
+                "required": ["wave_number", "wave_size"],
+                "properties": {
+                  "wave_number": { "type": "integer", "minimum": 1 },
+                  "wave_size": { "type": "integer", "minimum": 1 },
+                  "tier": { "type": "integer", "minimum": 1 },
+                  "donor": { "type": "string", "minLength": 1, "maxLength": 128 },
+                  "reason": { "type": "string", "minLength": 1 }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "event_type": { "const": "wave.cleared" } } },
+          "then": {
+            "properties": {
+              "payload": {
+                "type": "object",
+                "required": ["wave_number"],
+                "properties": {
+                  "wave_number": { "type": "integer", "minimum": 1 },
+                  "wave_size": { "type": "integer", "minimum": 1 },
+                  "reason": { "type": "string", "minLength": 1 }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "event_type": { "const": "gameplay.ended" } } },
+          "then": {
+            "properties": {
+              "payload": {
+                "type": "object",
+                "required": ["reason"],
+                "properties": {
+                  "reason": { "type": "string", "minLength": 1, "maxLength": 256 },
+                  "detail": { "type": "string", "minLength": 1 }
+                }
               }
             }
           }

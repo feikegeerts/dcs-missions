@@ -4,14 +4,19 @@ import {
   aggregatePlayerCareer,
   buildRunScoreboard,
   extractAssetSnapshots,
+  extractGameplayOutcome,
+  extractRunCapabilities,
   formatCostCents,
   formatPartialCost,
   formatWholeUsd,
   groupRunsByMission,
+  isWaveMission,
   missionCatalogEntry,
   normalizeCoalition,
   publicPlayerIdFor,
+  resolveRunWaves,
   selectHighScore,
+  summarizeExplicitWaves,
   summarizeRunCombat,
   summarizeRunWaves,
   type BuildScoreboardInput,
@@ -98,8 +103,27 @@ describe("normalizeCoalition", () => {
 describe("mission catalog", () => {
   it("describes duel-dynamic and falls back for unknown missions", () => {
     expect(missionCatalogEntry("duel-dynamic").title).toBe("Duel Dynamic");
+    expect(missionCatalogEntry("duel-dynamic-bvr").title).toBe(
+      "Duel Dynamic BVR",
+    );
+    expect(missionCatalogEntry("duel-dynamic-acm").title).toBe(
+      "Duel Dynamic ACM",
+    );
+    expect(missionCatalogEntry("air-superiority-survival").title).toBe(
+      "Air Superiority Survival",
+    );
     expect(missionCatalogEntry("night-ops").title).toBe("Night Ops");
     expect(missionCatalogEntry(null).key).toBe("unknown");
+  });
+
+  it("marks only the shared package-wave missions for wave reporting", () => {
+    expect(isWaveMission("duel-dynamic")).toBe(true);
+    expect(isWaveMission("duel-dynamic-bvr")).toBe(true);
+    expect(isWaveMission("duel-dynamic-acm")).toBe(true);
+    expect(isWaveMission("air-superiority-survival")).toBe(true);
+    expect(isWaveMission("night-ops")).toBe(false);
+    expect(isWaveMission(null)).toBe(false);
+    expect(isWaveMission(undefined)).toBe(false);
   });
 
   it("groups runs by exact mission name, newest activity first", () => {
@@ -669,6 +693,138 @@ describe("mission high score", () => {
         },
       ]),
     ).toBeNull();
+  });
+});
+
+describe("explicit wave milestones and capabilities", () => {
+  function capableStarted(sequence = 1): TelemetryEvent {
+    return scoreboardEvent(sequence, "mission.started", {
+      payload: {
+        mission_name: "duel-dynamic-bvr",
+        mission_version: "1",
+        map_name: "Caucasus",
+        run_classification: "historical",
+        capabilities: { wave_milestones: 1, gameplay_outcome: 1 },
+      },
+    });
+  }
+
+  function legacyStarted(): TelemetryEvent {
+    return scoreboardEvent(1, "mission.started", {
+      payload: {
+        mission_name: "duel-dynamic",
+        mission_version: "1",
+        map_name: "Caucasus",
+        run_classification: "historical",
+      },
+    });
+  }
+
+  function waveSpawned(sequence: number, waveNumber: number): TelemetryEvent {
+    return scoreboardEvent(sequence, "wave.spawned", {
+      sim_time: sequence,
+      payload: { wave_number: waveNumber, wave_size: 2 },
+    });
+  }
+
+  function waveCleared(sequence: number, waveNumber: number): TelemetryEvent {
+    return scoreboardEvent(sequence, "wave.cleared", {
+      sim_time: sequence,
+      payload: { wave_number: waveNumber },
+    });
+  }
+
+  it("reads capabilities from mission.started and defaults legacy runs", () => {
+    expect(extractRunCapabilities([capableStarted()])).toEqual({
+      waveMilestones: true,
+      gameplayOutcome: true,
+    });
+    expect(extractRunCapabilities([legacyStarted()])).toEqual({
+      waveMilestones: false,
+      gameplayOutcome: false,
+    });
+    expect(extractRunCapabilities([])).toBeNull();
+  });
+
+  it("counts only spawned-then-cleared explicit waves", () => {
+    const events = [
+      capableStarted(),
+      waveSpawned(2, 1),
+      waveSpawned(3, 2),
+      waveCleared(4, 1),
+      waveCleared(5, 9),
+    ];
+    expect(summarizeExplicitWaves(events)).toEqual({
+      observed: true,
+      spawnedWaves: 2,
+      clearedWaves: 1,
+    });
+    expect(summarizeExplicitWaves([capableStarted()])).toEqual({
+      observed: false,
+      spawnedWaves: 0,
+      clearedWaves: 0,
+    });
+  });
+
+  it("resolves explicit, derived, missing, and not-applicable modes", () => {
+    const explicit = resolveRunWaves(
+      [capableStarted(), waveSpawned(2, 1), waveCleared(3, 1)],
+      "duel-dynamic-bvr",
+    );
+    expect(explicit.mode).toBe("explicit");
+    expect(explicit.summary).toEqual({
+      observed: true,
+      spawnedWaves: 1,
+      clearedWaves: 1,
+    });
+
+    const missing = resolveRunWaves([capableStarted()], "duel-dynamic-bvr");
+    expect(missing.mode).toBe("missing");
+    expect(missing.summary).toEqual({
+      observed: false,
+      spawnedWaves: 0,
+      clearedWaves: 0,
+    });
+
+    const legacy = resolveRunWaves(
+      [
+        legacyStarted(),
+        scoreboardEvent(2, "asset.spawned", {
+          sim_time: 100,
+          asset: { status: "known", kind: "aircraft", asset_key: "bandit-1.u1.g1", coalition: "red" },
+          coalition: "red",
+        }),
+      ],
+      "duel-dynamic",
+    );
+    expect(legacy.mode).toBe("derived");
+    expect(legacy.summary.observed).toBe(true);
+
+    const baseline = resolveRunWaves(
+      [capableStarted(), waveSpawned(2, 1)],
+      "night-ops",
+    );
+    expect(baseline.mode).toBe("not-applicable");
+    expect(baseline.summary).toEqual({
+      observed: false,
+      spawnedWaves: 0,
+      clearedWaves: 0,
+    });
+  });
+
+  it("keeps gameplay outcome distinct from session status", () => {
+    expect(extractGameplayOutcome([capableStarted()])).toEqual({
+      ended: false,
+      reason: null,
+    });
+    expect(
+      extractGameplayOutcome([
+        capableStarted(),
+        scoreboardEvent(2, "gameplay.ended", {
+          payload: { reason: "all-pilots-down" },
+        }),
+      ]),
+    ).toEqual({ ended: true, reason: "all-pilots-down" });
   });
 });
 

@@ -1,14 +1,14 @@
-local event_id = dofile("src/missions/duel-dynamic/telemetry/event_id.lua")
-local envelope = dofile("src/missions/duel-dynamic/telemetry/envelope.lua")
-local json = dofile("src/missions/duel-dynamic/telemetry/json.lua")
-local lifecycle = dofile("src/missions/duel-dynamic/telemetry/lifecycle.lua")
-local asset = dofile("src/missions/duel-dynamic/telemetry/asset.lua")
-local shot = dofile("src/missions/duel-dynamic/telemetry/shot.lua")
-local combat = dofile("src/missions/duel-dynamic/telemetry/combat.lua")
-local participant = dofile("src/missions/duel-dynamic/telemetry/participant.lua")
-local bridge_queue = dofile("src/missions/duel-dynamic/telemetry/bridge_queue.lua")
-local bridge_frame = dofile("src/missions/duel-dynamic/telemetry/bridge_frame.lua")
-local bridge = dofile("src/missions/duel-dynamic/telemetry/bridge.lua")
+local event_id = dofile("src/lib/telemetry/event_id.lua")
+local envelope = dofile("src/lib/telemetry/envelope.lua")
+local json = dofile("src/lib/telemetry/json.lua")
+local lifecycle = dofile("src/lib/telemetry/lifecycle.lua")
+local asset = dofile("src/lib/telemetry/asset.lua")
+local shot = dofile("src/lib/telemetry/shot.lua")
+local combat = dofile("src/lib/telemetry/combat.lua")
+local participant = dofile("src/lib/telemetry/participant.lua")
+local bridge_queue = dofile("src/lib/telemetry/bridge_queue.lua")
+local bridge_frame = dofile("src/lib/telemetry/bridge_frame.lua")
+local bridge = dofile("src/lib/telemetry/bridge.lua")
 
 local tests_run = 0
 local failures = {}
@@ -145,13 +145,13 @@ local function new_runtime(options)
       Kill = 20,
     },
     state = {},
-    player_group_names = { "Aerial-1", "Aerial-2", "Aerial-3", "Aerial-4" },
-    bandit_group_names = { "Bandit-1", "Bandit-2", "Bandit-3" },
+    player_group_names = options.player_group_names or { "Aerial-1", "Aerial-2", "Aerial-3", "Aerial-4" },
+    bandit_group_names = options.bandit_group_names or { "Bandit-1", "Bandit-2", "Bandit-3" },
     player_coalition = 2,
     bandit_coalition = 1,
     heartbeat_interval = 30,
-    mission_name = "duel-dynamic",
-    mission_version = "1",
+    mission_name = options.mission_name or "duel-dynamic",
+    mission_version = options.mission_version or "1",
     source_version = "duel-dynamic-telemetry-v1",
     run_classification = options.run_classification,
     queue_max_lines = options.queue_max_lines,
@@ -454,6 +454,43 @@ succeeds("bridge valid handshake emits mission.started and exposes mission surfa
   equal(runtime.path, "run-1")
 end)
 
+succeeds("shared bridge keeps mission identity and queued events isolated across runtimes", function()
+  local names = { "duel-dynamic-bvr", "duel-dynamic-acm", "air-superiority-survival", "duel-dynamic-bvr" }
+  local runtimes = {}
+  for index, name in ipairs(names) do
+    local runtime = new_runtime({ mission_name = name, mission_version = "revision-2" })
+    check(runtime:begin("shared-host", "rotation-" .. index))
+    runtimes[index] = runtime
+  end
+  -- Retain old pending queues while newer runtimes are created. This is a
+  -- transport-unit check, not a claim that DCS preserves Lua across a reload.
+  for index, runtime in ipairs(runtimes) do
+    local frame = assert(bridge_frame.decode(runtime:peek(1, 10)))
+    equal(frame.producer_id, "shared-host")
+    equal(frame.run_key, "rotation-" .. index)
+    equal(frame.first_sequence, 1)
+    equal(frame.count, 1)
+    check(string.find(frame.lines[1], '"mission_name":"' .. names[index] .. '"', 1, true))
+    check(string.find(frame.lines[1], '"mission_version":"revision-2"', 1, true))
+    check(runtime:ack(1))
+    equal(runtime:peek(2, 10), "")
+  end
+end)
+
+succeeds("non-wave scenario captures baseline lifecycle without bandit or wave configuration", function()
+  local runtime, _, schedules = new_runtime({
+    mission_name = "patrol-fixture",
+    player_group_names = { "Patrol-Lead" },
+    bandit_group_names = {},
+  })
+  check(runtime:begin("shared-host", "patrol-run"))
+  check(schedules[1].callback())
+  local frame = assert(bridge_frame.decode(runtime:peek(1, 10)))
+  equal(frame.count, 2)
+  check(string.find(frame.lines[1], '"mission_name":"patrol-fixture"', 1, true))
+  check(string.find(frame.lines[2], '"event_type":"mission.heartbeat"', 1, true))
+end)
+
 succeeds("bridge rejects a second begin", function()
   local runtime = new_runtime()
   check(runtime:begin("producer-2", "run-2"))
@@ -626,9 +663,9 @@ end)
 
 succeeds("production bridge modules contain no sandbox escape references", function()
   local paths = {
-    "src/missions/duel-dynamic/telemetry/bridge_queue.lua",
-    "src/missions/duel-dynamic/telemetry/bridge_frame.lua",
-    "src/missions/duel-dynamic/telemetry/bridge.lua",
+    "src/lib/telemetry/bridge_queue.lua",
+    "src/lib/telemetry/bridge_frame.lua",
+    "src/lib/telemetry/bridge.lua",
   }
   local forbidden = { "io%.", "os%.", "lfs%.", "dofile", "loadfile", "require%s*%(" }
   for _, path in ipairs(paths) do

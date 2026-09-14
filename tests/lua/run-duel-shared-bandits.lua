@@ -533,6 +533,9 @@ local GLOBAL_NAMES = {
   "coalition",
   "MY_SCRIPTS_ROOT",
   "TELEMETRY_DEVELOPMENT_ENABLED",
+  "TELEMETRY_SHIPPING_ENABLED",
+  "duel_telemetry_bridge",
+  "dofile",
   "duel_tracker",
   "duel_telemetry_runtime",
   "duel_gameplay_watchers",
@@ -560,7 +563,21 @@ _G.ENUMS = ENUMS
 _G.coalition = coalition
 _G.MY_SCRIPTS_ROOT = "src/"
 _G.TELEMETRY_DEVELOPMENT_ENABLED = false
+_G.TELEMETRY_SHIPPING_ENABLED = true
 _G.duel_telemetry_runtime = { asset = mockAssetAdapter }
+-- Exercise the real integration facade, but keep gameplay tests independent
+-- of transport schedules and event subscriptions by replacing only the driver.
+local originalDofile = dofile
+_G.dofile = function(path)
+  if path == "src/lib/telemetry/bridge.lua" then
+    return {
+      start = function(config)
+        return { asset = mockAssetAdapter, config = config }
+      end,
+    }
+  end
+  return originalDofile(path)
+end
 
 local function restoreGlobals()
   for _, name in ipairs(GLOBAL_NAMES) do
@@ -761,12 +778,12 @@ local function setAlivePlayers(names)
   end
 end
 
-local function loadInitializedMission(players)
+local function loadInitializedMission(players, missionName)
   setAlivePlayers({})
   local schedulesBefore = #schedules
   local spawnsBefore = #spawnRecords
   local watchersBefore = #watchers
-  dofile("src/missions/duel-dynamic/main.lua")
+  dofile("src/missions/" .. (missionName or "duel-dynamic") .. "/main.lua")
   local retained = _G.duel_gameplay_watchers
   for _, player in ipairs(players) do
     firePlayerEvent(retained.player, "OnEventPlayerEnterAircraft", player.slot, player.name, player.ucid)
@@ -1646,6 +1663,89 @@ succeeds("31. five-player escalation follows 5,5,5,6 and caps at eight", functio
     end
   end
 end)
+
+for _, name in ipairs({ "duel-dynamic-bvr", "duel-dynamic-acm", "air-superiority-survival" }) do
+  succeeds("independent mission entry: " .. name, function()
+    local context = loadInitializedMission({ { slot = "Aerial-1", name = "Entry test", ucid = "entry-fixture" } }, name)
+    local config = _G.duel_telemetry_runtime.config
+    equal(config.mission_name, name, "entry selected wrong telemetry identity")
+    equal(#config.player_group_names, name == "duel-dynamic-bvr" and 4 or 5, "entry selected wrong roster")
+    equal(#context.package.units, 1, "entry changed default package behavior")
+  end)
+end
+
+succeeds("per-mission gameplay settings apply without leaking to the next entry", function()
+  local savedDofile = _G.dofile
+  _G.dofile = function(path)
+    local result = savedDofile(path)
+    if path == "src/missions/duel-dynamic-bvr/config.lua" then
+      result.gameplay.max_package_size = 1
+    end
+    return result
+  end
+  local players = {
+    { slot = "Aerial-1", name = "One", ucid = "config-one" },
+    { slot = "Aerial-2", name = "Two", ucid = "config-two" },
+  }
+  local ok, message = pcall(function()
+    local bvr = loadInitializedMission(players, "duel-dynamic-bvr")
+    equal(#bvr.package.units, 1, "mission-specific package cap was ignored")
+  end)
+  _G.dofile = savedDofile
+  check(ok, message)
+  local acm = loadInitializedMission(players, "duel-dynamic-acm")
+  equal(#acm.package.units, 2, "BVR configuration leaked into ACM")
+end)
+
+for _, fault in ipairs({ "disabled", "missing-module", "driver-error", "adapter-error" }) do
+  succeeds("gameplay spawns and resets a wave with telemetry " .. fault, function()
+    local savedDofile = _G.dofile
+    local savedShipping = _G.TELEMETRY_SHIPPING_ENABLED
+    _G.TELEMETRY_SHIPPING_ENABLED = fault ~= "disabled"
+    local telemetryLoads = 0
+    _G.dofile = function(path)
+      if path:find("src/lib/telemetry/", 1, true) then
+        telemetryLoads = telemetryLoads + 1
+        if fault == "disabled" or fault == "missing-module" then
+          error("injected missing telemetry module")
+        end
+        if path == "src/lib/telemetry/bridge.lua" then
+          return {
+            start = function()
+              if fault == "driver-error" then
+                error("private transport diagnostic")
+              end
+              local function broken()
+                error("private adapter diagnostic")
+              end
+              return {
+                asset = { register_player_group = broken, register_bandit_group = broken, despawn_group = broken },
+              }
+            end,
+          }
+        end
+      end
+      return savedDofile(path)
+    end
+    local ok, message = pcall(function()
+      local context = loadInitializedMission({
+        { slot = "Aerial-1", name = "Failure test", ucid = "failure-fixture" },
+      })
+      local before = #spawnRecords
+      menuCommands["Respawn bandit wave"].callback()
+      equal(#spawnRecords, before + 1, "telemetry failure stopped replacement spawn")
+      check(not context.package:IsAlive(), "telemetry failure prevented gameplay cleanup")
+      if fault == "disabled" then
+        equal(telemetryLoads, 0, "disabled telemetry still loaded modules")
+      end
+      check(not logContains("private adapter diagnostic"), "raw adapter error leaked")
+      check(not logContains("private transport diagnostic"), "raw driver error leaked")
+    end)
+    _G.dofile = savedDofile
+    _G.TELEMETRY_SHIPPING_ENABLED = savedShipping
+    check(ok, message)
+  end)
+end
 
 restoreGlobals()
 

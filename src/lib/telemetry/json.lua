@@ -1,3 +1,4 @@
+-- Shared Lua 5.1 JSON encoder.
 local M = {}
 
 local CONTROL_ESCAPES = {

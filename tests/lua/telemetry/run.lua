@@ -1,5 +1,5 @@
-local event_id = dofile("src/missions/duel-dynamic/telemetry/event_id.lua")
-local envelope = dofile("src/missions/duel-dynamic/telemetry/envelope.lua")
+local event_id = dofile("src/lib/telemetry/event_id.lua")
+local envelope = dofile("src/lib/telemetry/envelope.lua")
 
 local tests_run = 0
 local failures = {}
@@ -775,6 +775,120 @@ succeeds("invalid producer configuration and input never consume a sequence", fu
   local heartbeat, heartbeat_error = producer:build({ event_type = "mission.heartbeat", sim_time = 1 })
   check(heartbeat ~= nil, heartbeat_error)
   equal(heartbeat.event_sequence, 2)
+end)
+
+succeeds("mission.started capabilities are optional and additive", function()
+  local legacy = new_producer("producer-legacy", "run-legacy")
+  local legacy_started, legacy_error = legacy:build(started_input())
+  check(legacy_started ~= nil, legacy_error)
+  check(legacy_started.payload.capabilities == nil, "legacy started event gained capabilities")
+
+  local producer = new_producer("producer-capable", "run-capable")
+  local input = started_input()
+  local declared = { wave_milestones = 1, gameplay_outcome = 1 }
+  input.payload.capabilities = declared
+  local started, started_error = producer:build(input)
+  check(started ~= nil, started_error)
+  equal(started.event_sequence, 1)
+  equal(started.payload.capabilities.wave_milestones, 1)
+  equal(started.payload.capabilities.gameplay_outcome, 1)
+  check(started.payload.capabilities ~= declared, "capabilities table was aliased")
+  declared.wave_milestones = 2
+  equal(started.payload.capabilities.wave_milestones, 1)
+
+  local partial_input = started_input()
+  partial_input.payload.capabilities = { wave_milestones = 1 }
+  local partial, partial_error = new_producer("producer-partial", "run-partial"):build(partial_input)
+  check(partial ~= nil, partial_error)
+  equal(partial.payload.capabilities.wave_milestones, 1)
+end)
+
+succeeds("mission.started rejects malformed capabilities", function()
+  local bad_table = started_input()
+  bad_table.payload.capabilities = "wave_milestones"
+  fails(function()
+    return new_producer("producer-badcap-1", "run-badcap-1"):build(bad_table)
+  end, "capabilities must be a table")
+
+  local unknown_key = started_input()
+  unknown_key.payload.capabilities = { wave_milestones = 1, score_cheats = 1 }
+  fails(function()
+    return new_producer("producer-badcap-2", "run-badcap-2"):build(unknown_key)
+  end, "unknown capability")
+
+  local bad_version = started_input()
+  bad_version.payload.capabilities = { wave_milestones = 2 }
+  fails(function()
+    return new_producer("producer-badcap-3", "run-badcap-3"):build(bad_version)
+  end, "must be 1")
+
+  local zero_version = started_input()
+  zero_version.payload.capabilities = { gameplay_outcome = 0 }
+  fails(function()
+    return new_producer("producer-badcap-4", "run-badcap-4"):build(zero_version)
+  end, "must be 1")
+end)
+
+succeeds("wave milestones and gameplay outcome build as sequenced milestone events", function()
+  local producer = new_producer("producer-milestones", "run-milestones")
+  local started, started_error = producer:build(started_input())
+  check(started ~= nil, started_error)
+
+  local spawned, spawned_error = producer:build({
+    event_type = "wave.spawned",
+    sim_time = 10,
+    payload = { wave_number = 1, wave_size = 2, donor = "Bandit-1", tier = 1, reason = "player package assembled" },
+  })
+  check(spawned ~= nil, spawned_error)
+  equal(spawned.event_sequence, 2)
+  equal(spawned.payload.wave_number, 1)
+  equal(spawned.payload.wave_size, 2)
+  check(spawned.initiator == envelope.JSON_NULL, "wave.spawned allows initiator")
+  check(spawned.asset == envelope.JSON_NULL, "wave.spawned allows asset")
+
+  fails(function()
+    return producer:build({ event_type = "wave.spawned", sim_time = 11, payload = { wave_size = 2 } })
+  end, "wave_number")
+  fails(function()
+    return producer:build({ event_type = "wave.spawned", sim_time = 11, payload = { wave_number = 2, wave_size = 0 } })
+  end, "wave_size")
+
+  local cleared, cleared_error = producer:build({
+    event_type = "wave.cleared",
+    sim_time = 20,
+    payload = { wave_number = 1, wave_size = 2, reason = "previous package defeated" },
+  })
+  check(cleared ~= nil, cleared_error)
+  equal(cleared.event_sequence, 3)
+
+  fails(function()
+    return producer:build({ event_type = "wave.cleared", sim_time = 21, payload = {} })
+  end, "wave_number")
+
+  local over, over_error = producer:build({
+    event_type = "gameplay.ended",
+    sim_time = 30,
+    payload = { reason = "all-pilots-down" },
+  })
+  check(over ~= nil, over_error)
+  equal(over.event_sequence, 4)
+  equal(over.payload.reason, "all-pilots-down")
+
+  fails(function()
+    return producer:build({ event_type = "gameplay.ended", sim_time = 31, payload = {} })
+  end, "requires reason")
+  fails(function()
+    return producer:build({
+      event_type = "wave.spawned",
+      sim_time = 32,
+      asset = { status = "known", kind = "aircraft", asset_key = "bandit-1.u1.g1" },
+      payload = { wave_number = 2, wave_size = 1 },
+    })
+  end, "does not allow asset")
+
+  local heartbeat, heartbeat_error = producer:build({ event_type = "mission.heartbeat", sim_time = 33 })
+  check(heartbeat ~= nil, heartbeat_error)
+  equal(heartbeat.event_sequence, 5)
 end)
 
 if #failures > 0 then

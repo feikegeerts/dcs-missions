@@ -85,7 +85,35 @@ const KNOWN_MISSIONS: Record<string, { title: string; description: string }> = {
     description:
       "1–4 player aircraft versus a matching AI package wave, respawned as one package 30 seconds after each wipe.",
   },
+  "duel-dynamic-bvr": {
+    title: "Duel Dynamic BVR",
+    description:
+      "Beyond-visual-range package waves against a matching AI package, sharing the package-wave lifecycle.",
+  },
+  "duel-dynamic-acm": {
+    title: "Duel Dynamic ACM",
+    description:
+      "Air-combat-maneuvering package waves against a matching AI package, sharing the package-wave lifecycle.",
+  },
+  "air-superiority-survival": {
+    title: "Air Superiority Survival",
+    description:
+      "Survival package waves with per-player lives and escalating AI packages, sharing the package-wave lifecycle.",
+  },
 };
+
+const WAVE_MISSION_KEYS = new Set([
+  "duel-dynamic",
+  "duel-dynamic-bvr",
+  "duel-dynamic-acm",
+  "air-superiority-survival",
+]);
+
+export function isWaveMission(missionName: string | null | undefined): boolean {
+  return (
+    typeof missionName === "string" && WAVE_MISSION_KEYS.has(missionName)
+  );
+}
 
 function titleizeMissionKey(key: string): string {
   return key
@@ -1093,6 +1121,167 @@ export function summarizeRunWaves(
     observed: waves.size > 0,
     spawnedWaves: waves.size,
     clearedWaves,
+  };
+}
+
+export type RunCapabilities = {
+  /** True when the run declares wave_milestones reporting. */
+  waveMilestones: boolean;
+  /** True when the run declares a gameplay outcome distinct from session end. */
+  gameplayOutcome: boolean;
+};
+
+function payloadRecord(event: TelemetryEvent): Record<string, unknown> | null {
+  const payload = event.payload as unknown;
+  return typeof payload === "object" && payload !== null && !Array.isArray(payload)
+    ? (payload as Record<string, unknown>)
+    : null;
+}
+
+function positivePayloadInteger(
+  payload: Record<string, unknown> | null,
+  field: string,
+): number | null {
+  const value = payload?.[field];
+  return typeof value === "number" &&
+    Number.isSafeInteger(value) &&
+    value >= 1
+    ? value
+    : null;
+}
+
+/**
+ * Read optional reporting capabilities declared at `mission.started`.
+ * Returns null when no started event is present (no evidence at all);
+ * otherwise each flag is false for legacy producers that predate explicit
+ * milestones. Missing never reads as a silent zero downstream.
+ */
+export function extractRunCapabilities(
+  events: readonly TelemetryEvent[],
+): RunCapabilities | null {
+  const started = events.find(
+    (event) => event.event_type === "mission.started",
+  );
+  if (!started) {
+    return null;
+  }
+  const capabilities = payloadRecord(started)?.capabilities;
+  if (
+    typeof capabilities !== "object" ||
+    capabilities === null ||
+    Array.isArray(capabilities)
+  ) {
+    return { waveMilestones: false, gameplayOutcome: false };
+  }
+  const record = capabilities as Record<string, unknown>;
+  return {
+    waveMilestones: record.wave_milestones === 1,
+    gameplayOutcome: record.gameplay_outcome === 1,
+  };
+}
+
+/**
+ * Count explicit wave milestones. Only a cleared wave number that was also
+ * spawned counts; intentional despawns never emit `wave.cleared`, and an
+ * orphan clear without a matching spawn is ignored rather than scored.
+ */
+export function summarizeExplicitWaves(
+  events: readonly TelemetryEvent[],
+): RunWaveSummary {
+  const spawned = new Set<number>();
+  const cleared = new Set<number>();
+  for (const event of events) {
+    const payload = payloadRecord(event);
+    if (event.event_type === "wave.spawned") {
+      const waveNumber = positivePayloadInteger(payload, "wave_number");
+      if (waveNumber !== null) {
+        spawned.add(waveNumber);
+      }
+    } else if (event.event_type === "wave.cleared") {
+      const waveNumber = positivePayloadInteger(payload, "wave_number");
+      if (waveNumber !== null) {
+        cleared.add(waveNumber);
+      }
+    }
+  }
+  let clearedWaves = 0;
+  for (const waveNumber of cleared) {
+    if (spawned.has(waveNumber)) {
+      clearedWaves += 1;
+    }
+  }
+  return {
+    observed: spawned.size > 0,
+    spawnedWaves: spawned.size,
+    clearedWaves,
+  };
+}
+
+export type WaveResolutionMode =
+  | "explicit"
+  | "derived"
+  | "not-applicable"
+  | "missing";
+
+export type ResolvedRunWaves = {
+  mode: WaveResolutionMode;
+  summary: RunWaveSummary;
+};
+
+const EMPTY_WAVE_SUMMARY: RunWaveSummary = {
+  observed: false,
+  spawnedWaves: 0,
+  clearedWaves: 0,
+};
+
+/**
+ * Resolve which wave facts a run page may show. Non-wave missions are
+ * "not-applicable" (baseline, never zeros); capable runs without facts are
+ * "missing" (telemetry gap, never a zero score); legacy wave-mission runs
+ * keep the derived summary unchanged.
+ */
+export function resolveRunWaves(
+  events: readonly TelemetryEvent[],
+  missionName: string | null | undefined,
+): ResolvedRunWaves {
+  if (!isWaveMission(missionName)) {
+    return { mode: "not-applicable", summary: { ...EMPTY_WAVE_SUMMARY } };
+  }
+  const capabilities = extractRunCapabilities(events);
+  if (capabilities?.waveMilestones === true) {
+    const summary = summarizeExplicitWaves(events);
+    return {
+      mode: summary.observed ? "explicit" : "missing",
+      summary,
+    };
+  }
+  return { mode: "derived", summary: summarizeRunWaves(events) };
+}
+
+export type GameplayOutcome = {
+  /** True when an explicit gameplay.ended milestone is present. */
+  ended: boolean;
+  reason: string | null;
+};
+
+/**
+ * Read the explicit gameplay outcome. Gameplay-over (scenario termination)
+ * stays distinct from session-ended (DCS mission termination): a run with no
+ * milestone reports no outcome rather than inheriting the session status.
+ */
+export function extractGameplayOutcome(
+  events: readonly TelemetryEvent[],
+): GameplayOutcome {
+  const ended = events.find(
+    (event) => event.event_type === "gameplay.ended",
+  );
+  if (!ended) {
+    return { ended: false, reason: null };
+  }
+  const reason = payloadRecord(ended)?.reason;
+  return {
+    ended: true,
+    reason: typeof reason === "string" && reason.length > 0 ? reason : null,
   };
 }
 

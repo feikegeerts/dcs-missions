@@ -1,4 +1,4 @@
--- src/missions/duel-dynamic/score.lua — pure-logic kill counter.
+-- Shared package-wave kill counter. Not part of the telemetry library.
 -- No DCS API calls: takes a string (player name), returns nothing.
 -- Stays testable in luaunit/busted with plain strings (see docs/dev-setup.md §7.7).
 

@@ -1,3 +1,4 @@
+-- Shared DCS combat capture.
 local M = {}
 
 local function is_finite_number(value)

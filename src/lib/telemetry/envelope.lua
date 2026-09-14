@@ -1,3 +1,4 @@
+-- Shared telemetry event contract.
 local M = {}
 
 local JSON_NULL = {}
@@ -20,6 +21,9 @@ local EVENT_TYPES = {
   ["asset.crashed"] = true,
   ["pilot.dead"] = true,
   ["pilot.ejected"] = true,
+  ["wave.spawned"] = true,
+  ["wave.cleared"] = true,
+  ["gameplay.ended"] = true,
 }
 
 local KNOWN_WEAPON_CATEGORIES = {
@@ -907,6 +911,31 @@ local function normalize_payload(input, event_type)
     payload = copied_payload
   end
 
+  local function positive_integer_field(name, required)
+    local value = payload[name]
+    if value == nil then
+      if required then
+        return nil, event_type .. " payload requires " .. name
+      end
+      return true
+    end
+    if not is_finite_integer(value) or value < 1 then
+      return nil, event_type .. " payload " .. name .. " must be a positive integer"
+    end
+    return true
+  end
+
+  local function optional_text_field(name, maximum_length)
+    local value = payload[name]
+    if value == nil then
+      return true
+    end
+    if type(value) ~= "string" or string.len(value) < 1 or string.len(value) > maximum_length then
+      return nil, event_type .. " payload " .. name .. " must contain 1-" .. maximum_length .. " characters"
+    end
+    return true
+  end
+
   if event_type == "mission.started" then
     local mission_name = payload.mission_name
     if type(mission_name) ~= "string" or string.len(mission_name) < 1 then
@@ -928,6 +957,28 @@ local function normalize_payload(input, event_type)
     if payload.run_classification ~= "test" and payload.run_classification ~= "historical" then
       return nil, "mission.started payload requires run_classification test or historical"
     end
+
+    -- Optional reporting capabilities. Missing means a legacy producer that
+    -- predates explicit milestones; consumers must fall back to derivation
+    -- rather than reading a silent zero.
+    local capabilities = payload.capabilities
+    if capabilities ~= nil then
+      if type(capabilities) ~= "table" then
+        return nil, "mission.started payload capabilities must be a table"
+      end
+      local allowed = { wave_milestones = true, gameplay_outcome = true }
+      for key in pairs(capabilities) do
+        if not allowed[key] then
+          return nil, "mission.started payload capabilities has an unknown capability"
+        end
+      end
+      for _, key in ipairs({ "wave_milestones", "gameplay_outcome" }) do
+        local version = capabilities[key]
+        if version ~= nil and (not is_finite_integer(version) or version ~= 1) then
+          return nil, "mission.started payload capabilities." .. key .. " must be 1"
+        end
+      end
+    end
   elseif event_type == "mission.ended" then
     if payload.reason ~= "mission-end-observed" then
       return nil, "mission.ended payload requires reason mission-end-observed"
@@ -935,6 +986,49 @@ local function normalize_payload(input, event_type)
   elseif event_type == "asset.despawned" then
     if payload.reason ~= "intentional" and payload.reason ~= "unknown" then
       return nil, "asset.despawned payload requires reason intentional or unknown"
+    end
+  elseif event_type == "wave.spawned" then
+    local valid, validation_error = positive_integer_field("wave_number", true)
+    if not valid then
+      return nil, validation_error
+    end
+    valid, validation_error = positive_integer_field("wave_size", true)
+    if not valid then
+      return nil, validation_error
+    end
+    valid, validation_error = positive_integer_field("tier", false)
+    if not valid then
+      return nil, validation_error
+    end
+    valid, validation_error = optional_text_field("donor", 128)
+    if not valid then
+      return nil, validation_error
+    end
+    valid, validation_error = optional_text_field("reason", 256)
+    if not valid then
+      return nil, validation_error
+    end
+  elseif event_type == "wave.cleared" then
+    local valid, validation_error = positive_integer_field("wave_number", true)
+    if not valid then
+      return nil, validation_error
+    end
+    valid, validation_error = positive_integer_field("wave_size", false)
+    if not valid then
+      return nil, validation_error
+    end
+    valid, validation_error = optional_text_field("reason", 256)
+    if not valid then
+      return nil, validation_error
+    end
+  elseif event_type == "gameplay.ended" then
+    local reason = payload.reason
+    if type(reason) ~= "string" or string.len(reason) < 1 or string.len(reason) > 256 then
+      return nil, "gameplay.ended payload requires reason"
+    end
+    local valid, validation_error = optional_text_field("detail", 1024)
+    if not valid then
+      return nil, validation_error
     end
   end
 
@@ -956,7 +1050,14 @@ local function require_null(value, event_type, field_name)
 end
 
 local function validate_event_roles(event_type, fields)
-  if event_type == "mission.started" or event_type == "mission.ended" or event_type == "mission.heartbeat" then
+  if
+    event_type == "mission.started"
+    or event_type == "mission.ended"
+    or event_type == "mission.heartbeat"
+    or event_type == "wave.spawned"
+    or event_type == "wave.cleared"
+    or event_type == "gameplay.ended"
+  then
     for _, field_name in ipairs({ "initiator", "target", "participant", "asset", "weapon", "coalition", "location" }) do
       local valid, validation_error = require_null(fields[field_name], event_type, field_name)
       if not valid then

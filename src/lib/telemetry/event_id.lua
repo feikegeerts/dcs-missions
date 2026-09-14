@@ -1,3 +1,4 @@
+-- Shared telemetry event identity.
 local M = {}
 
 local MAX_SEQUENCE = 9007199254740991

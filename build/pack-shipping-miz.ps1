@@ -15,7 +15,7 @@
 #      make regex brittle). Pure substring search/replace.
 #   4. Embeds the shipping Lua sources as DCS resources under l10n/DEFAULT:
 #        - Moose_.lua   (copied from src/lib/Moose_.lua)
-#        - main.lua     (synthesized: inlines score.lua and the 11 pure
+#        - main.lua     (synthesized: inlines score.lua and the 12 shared
 #                               telemetry modules, wires the production
 #                               telemetry bridge, and patches the dev main.lua
 #                               for stock DCS)
@@ -30,11 +30,13 @@
 
 [CmdletBinding()]
 param(
-    [string]$DevMizPath = "$env:USERPROFILE\Saved Games\DCS.dcs_serverrelease\Missions\duel-dynamic.miz",
+    [string]$DevMizPath = "",
+    [ValidatePattern('^[a-z][a-z0-9-]*$')]
+    [string]$MissionName = "duel-dynamic",
     [string]$SrcRoot    = "",
     [string]$OutDir     = "",
-    [string]$BuildName  = "duel-dynamic-build",
-    [string]$OutName    = "duel-dynamic.miz",
+    [string]$BuildName  = "",
+    [string]$OutName    = "",
     [switch]$Zip        = $false
 )
 
@@ -43,6 +45,19 @@ param(
 # $PSScriptRoot inside param default expressions.
 if (-not $SrcRoot) { $SrcRoot = (Join-Path $PSScriptRoot "..\src") }
 if (-not $OutDir)  { $OutDir  = (Join-Path $PSScriptRoot "..\out") }
+if ($DevMizPath -and -not $PSBoundParameters.ContainsKey('MissionName') -and
+    [System.IO.Path]::GetFileNameWithoutExtension($DevMizPath) -cne 'duel-dynamic') {
+    throw 'A non-legacy source archive requires explicit -MissionName; filenames do not select gameplay.'
+}
+if (-not $BuildName) { $BuildName = "$MissionName-build" }
+if (-not $OutName) { $OutName = "$MissionName.miz" }
+if (-not $DevMizPath) {
+    if ($MissionName -eq 'duel-dynamic') {
+        $DevMizPath = "$env:USERPROFILE\Saved Games\DCS.dcs_serverrelease\Missions\duel-dynamic.miz"
+    } else {
+        $DevMizPath = "$env:USERPROFILE\Saved Games\DCS\Missions\Telemetry\$MissionName.miz"
+    }
+}
 
 $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.IO.Compression
@@ -114,9 +129,11 @@ $mooseSrc = Join-Path $SrcRoot "lib\Moose_.lua"
 if (-not (Test-Path -LiteralPath $mooseSrc)) {
     throw "Moose_.lua not found: $mooseSrc"
 }
-$devMain  = Join-Path $SrcRoot "missions\duel-dynamic\main.lua"
-$devScore = Join-Path $SrcRoot "missions\duel-dynamic\score.lua"
-foreach ($f in @($devMain, $devScore)) {
+$devMain  = Join-Path $SrcRoot "gameplay\package-waves.lua"
+$devScore = Join-Path $SrcRoot "gameplay\score.lua"
+$entryMain = Join-Path $SrcRoot "missions\$MissionName\main.lua"
+$missionConfig = Join-Path $SrcRoot "missions\$MissionName\config.lua"
+foreach ($f in @($devMain, $devScore, $entryMain, $missionConfig)) {
     if (-not (Test-Path -LiteralPath $f)) {
         throw "Dev source not found: $f"
     }
@@ -152,6 +169,15 @@ try {
         throw "Extracted .miz has no `mission` file"
     }
     $mission = [System.IO.File]::ReadAllText($missionPath, [System.Text.Encoding]::UTF8)
+    # Capture validator output under a locally-scoped preference: raw stderr
+    # lines surface as NativeCommandError records under the caller's
+    # ErrorActionPreference=Stop and would bypass the wrapper below that the
+    # build-selection gate asserts on.
+    $validateOutput = & {
+        $ErrorActionPreference = 'Continue'
+        & lua5.1 (Join-Path $PSScriptRoot 'validate-mission-config.lua') $missionConfig $missionPath $MissionName (Join-Path $SrcRoot 'gameplay\package-wave-config.lua') 2>&1 | Out-String
+    }
+    if ($LASTEXITCODE -ne 0) { throw "Mission configuration/template validation failed. $validateOutput" }
 
     # --- 2. Rewrite the trigrules (modern) block ---
     # The dev trigrules triggerStart entry has a single a_do_script action
@@ -303,22 +329,39 @@ $newTrigAction = @"
     # Strip only the anchored development loader pieces. Every strip and
     # shipping-module rewrite is required to match exactly once so source-shape
     # drift fails the build instead of silently producing a dev-dependent file.
-    $devLookupPattern = '(?ms)^-- Load siblings\. Bootstrap set _G\.MY_SCRIPTS_ROOT to the project src/ path\.\r?\n[\s\S]*?^local DIR = ROOT \.\. "missions/duel-dynamic/"\r?\n'
+    $devLookupPattern = '(?ms)^-- Load siblings\. Bootstrap set _G\.MY_SCRIPTS_ROOT to the project src/ path\.\r?\n[\s\S]*?^local DIR = ROOT \.\. "gameplay/"\r?\n'
     $matches = [regex]::Matches($devMainText, $devLookupPattern)
     if ($matches.Count -ne 1) {
         throw "Dev main lookup strip expected exactly one anchored block; found $($matches.Count)."
     }
     $devMainText = [regex]::Replace($devMainText, $devLookupPattern, '')
+    $validatorPattern = '(?m)^local Config = dofile\(DIR \.\. "package-wave-config\.lua"\)\r?\n'
+    if ([regex]::Matches($devMainText, $validatorPattern).Count -ne 1) { throw 'Expected one gameplay validator load.' }
+    $devMainText = [regex]::Replace($devMainText, $validatorPattern, "local Config = PackageWaveConfig`r`n")
 
-    $developmentInitPattern = '(?ms)^local function initDevelopmentTelemetry\(\)\r?\n.*?^end\r?\n'
+    # Embed the actual mission entry, not merely a filename/identity override.
+    $configSource = [System.IO.File]::ReadAllText($missionConfig)
+    $entrySource = [System.IO.File]::ReadAllText($entryMain)
+    $entryRewrites = @(
+        @{ Pattern = '(?m)^local ROOT = assert\(_G\.MY_SCRIPTS_ROOT, "bootstrap must supply the source root"\)\r?\n'; Replacement = '' },
+        @{ Pattern = 'dofile\(ROOT \.\. "missions/' + [regex]::Escape($MissionName) + '/config\.lua"\)'; Replacement = 'MissionConfig()' },
+        @{ Pattern = 'assert\(loadfile\(ROOT \.\. "gameplay/package-waves\.lua"\)\)\(config\)'; Replacement = 'RunPackageWaves(config)' }
+    )
+    foreach ($rewrite in $entryRewrites) {
+        if ([regex]::Matches($entrySource, $rewrite.Pattern).Count -ne 1) {
+            throw "Mission entry rewrite expected one match for $($rewrite.Pattern)"
+        }
+        $entrySource = [regex]::Replace($entrySource, $rewrite.Pattern, $rewrite.Replacement)
+    }
+
+    $developmentInitPattern = '(?ms)^      -- <<TELEMETRY_DEV_IO_BEGIN>>\r?\n.*?^      -- <<TELEMETRY_DEV_IO_END>>\r?\n'
     $matches = [regex]::Matches($devMainText, $developmentInitPattern)
     if ($matches.Count -ne 1) {
-        throw "Development telemetry function strip expected exactly one anchored block; found $($matches.Count)."
+        throw "Development telemetry IO strip expected exactly one anchored block; found $($matches.Count)."
     }
     $devMainText = [regex]::Replace($devMainText, $developmentInitPattern, '')
 
     foreach ($strip in @(
-        @{ Label = 'development telemetry call'; Pattern = '(?m)^initDevelopmentTelemetry\(\)\r?\n' },
         @{ Label = 'development score dofile'; Pattern = '(?m)^dofile\(DIR \.\. "score\.lua"\)\r?\n' }
     )) {
         $matches = [regex]::Matches($devMainText, $strip.Pattern)
@@ -339,28 +382,24 @@ $newTrigAction = @"
         @{ Name = 'asset'; Local = 'TelemetryAsset' },
         @{ Name = 'shot'; Local = 'TelemetryShot' },
         @{ Name = 'combat'; Local = 'TelemetryCombat' },
-        @{ Name = 'participant'; Local = 'TelemetryParticipant' }
+        @{ Name = 'participant'; Local = 'TelemetryParticipant' },
+        @{ Name = 'integration'; Local = 'TelemetryIntegration' }
     )
-    foreach ($module in $telemetryModules) {
-        $dofilePattern = '(?m)^    local (?<variable>[A-Za-z][A-Za-z0-9]*) = dofile\(DIR \.\. "telemetry/' + [regex]::Escape($module.Name) + '\.lua"\)\r?\n'
-        $matches = [regex]::Matches($devMainText, $dofilePattern)
-        if ($matches.Count -ne 1) {
-            throw "Shipping telemetry rewrite for '$($module.Name)' expected exactly one dofile line; found $($matches.Count)."
-        }
-        $variable = $matches[0].Groups['variable'].Value
-        $replacement = "    local $variable = $($module.Local)`r`n"
-        $devMainText = [regex]::Replace($devMainText, $dofilePattern, $replacement)
+    $resolverPattern = '(?m)^  return dofile\(ROOT \.\. "lib/telemetry/" \.\. name \.\. "\.lua"\)\r?\n'
+    if ([regex]::Matches($devMainText, $resolverPattern).Count -ne 1) {
+        throw 'Shipping telemetry resolver rewrite expected exactly one module resolver.'
     }
+    $devMainText = [regex]::Replace($devMainText, $resolverPattern, "  return TelemetryModules[name]`r`n")
 
-    $shippingInitCallPattern = '(?m)^initShippingTelemetry\(\)\r?\n'
+    $shippingInitCallPattern = '(?m)^initTelemetry\(\)\r?\n'
     $matches = [regex]::Matches($devMainText, $shippingInitCallPattern)
     if ($matches.Count -ne 1) {
-        throw "Shipping telemetry flag injection expected exactly one initShippingTelemetry() call; found $($matches.Count)."
+        throw "Shipping telemetry flag injection expected exactly one initTelemetry() call; found $($matches.Count)."
     }
     $devMainText = [regex]::Replace(
         $devMainText,
         $shippingInitCallPattern,
-        "_G.TELEMETRY_SHIPPING_ENABLED = true`r`ninitShippingTelemetry()`r`n"
+        "_G.TELEMETRY_DEVELOPMENT_ENABLED = false`r`n_G.TELEMETRY_SHIPPING_ENABLED = true`r`ninitTelemetry()`r`n"
     )
 
     # Strip the dev-only unattended test-combat block (gated by
@@ -383,8 +422,8 @@ $newTrigAction = @"
     $devMainText = $devMainText -replace '(?m)^env\.info\("\[duel-dynamic\] main start"\)\r?\n', ''
 
     $shippingHeader = @'
--- main.lua - SHIPPING BUILD resource for duel-dynamic.
--- Generated by build/pack-shipping-miz.ps1 from src/missions/duel-dynamic/.
+-- main.lua - SHIPPING BUILD resource with an explicitly selected mission entry.
+-- Generated from the selected entry/config and shared package-wave gameplay.
 -- DO NOT EDIT BY HAND - edit the dev sources and re-run the packager.
 --
 -- This file is loaded as the second DO SCRIPT FILE resource in the .miz's
@@ -392,9 +431,9 @@ $newTrigAction = @"
 --
 -- Diff vs the dev main.lua:
 --   * score.lua is INLINED below; no runtime module loading is needed.
---   * Eleven pure telemetry modules are inlined as IIFE locals below.
+--   * Twelve shared telemetry modules are inlined as IIFE locals below.
 --   * Shipping sets _G.TELEMETRY_SHIPPING_ENABLED and calls
---     initShippingTelemetry(), which starts the deferred bridge with historical
+--     initTelemetry(), which starts the deferred bridge with historical
 --     run classification and an in-memory queue sink. Mission code writes no
 --     telemetry files.
 --   * The production GameGUI hook hooks/duel-dynamic-telemetry.lua durably
@@ -420,43 +459,10 @@ end
 env.info("[duel-dynamic] MOOSE loaded")
 
 -- =====================================================================
--- Inlined score module (was src/missions/duel-dynamic/score.lua)
+-- Inlined score module (src/gameplay/score.lua)
 -- Pure logic, no DCS API - kept here so the shipping .miz is self-contained.
 -- =====================================================================
-local Tracker = {}
-Tracker.kills = {} -- [playerName] = count
-Tracker.total = 0
-
-function Tracker:record(playerName)
-  if not playerName or playerName == "" then
-    return
-  end
-  self.kills[playerName] = (self.kills[playerName] or 0) + 1
-  self.total = self.total + 1
-end
-
-function Tracker:reset()
-  self.kills = {}
-  self.total = 0
-end
-
-function Tracker:format()
-  if self.total == 0 then
-    return "Team kills: 0"
-  end
-  local lines = { string.format("Team kills: %d", self.total) }
-  local names = {}
-  for n, _ in pairs(self.kills) do
-    names[#names + 1] = n
-  end
-  table.sort(names)
-  for _, n in ipairs(names) do
-    lines[#lines + 1] = string.format("  %s: %d", n, self.kills[n])
-  end
-  return table.concat(lines, "\n")
-end
-
-_G.duel_tracker = Tracker
+-- <<SHARED_SCORE>>
 
 if not _G.duel_tracker then
   env.error("[duel-dynamic] inlined score module failed to set _G.duel_tracker")
@@ -469,14 +475,15 @@ end
 
 '@
 
+    $shippingHeader = $shippingHeader.Replace('-- <<SHARED_SCORE>>', [System.IO.File]::ReadAllText($devScore))
     $inlinedTelemetry = ""
     foreach ($module in $telemetryModules) {
-        $modulePath = Join-Path $SrcRoot "missions\duel-dynamic\telemetry\$($module.Name).lua"
+        $modulePath = Join-Path $SrcRoot "lib\telemetry\$($module.Name).lua"
         if (-not (Test-Path -LiteralPath $modulePath)) {
             throw "Telemetry module not found: $modulePath"
         }
         $moduleSource = [System.IO.File]::ReadAllText($modulePath, [System.Text.Encoding]::UTF8)
-        $inlinedTelemetry += "-- Inlined telemetry module: $($module.Name) (was src/missions/duel-dynamic/telemetry/$($module.Name).lua)`r`n"
+        $inlinedTelemetry += "-- Inlined telemetry module: $($module.Name) (from src/lib/telemetry/$($module.Name).lua)`r`n"
         $inlinedTelemetry += "local $($module.Local) = (function()`r`n"
         $inlinedTelemetry += $moduleSource
         if (-not $moduleSource.EndsWith("`r`n")) {
@@ -485,7 +492,16 @@ end
         $inlinedTelemetry += "end)()`r`n`r`n"
     }
 
-    $shippingMain = $shippingHeader + "`r`n" + $inlinedTelemetry + $devMainText
+    $moduleTable = "local TelemetryModules = {`r`n"
+    foreach ($module in $telemetryModules) {
+        $moduleTable += "  $($module.Name) = $($module.Local),`r`n"
+    }
+    $moduleTable += "}`r`n"
+    $embeddedConfig = "local function MissionConfig()`r`n$configSource`r`nend`r`n"
+    $validatorSource = [System.IO.File]::ReadAllText((Join-Path $SrcRoot 'gameplay\package-wave-config.lua'))
+    $embeddedConfig = "local PackageWaveConfig = (function()`r`n$validatorSource`r`nend)()`r`n" + $embeddedConfig
+    $gameplayFunction = "local function RunPackageWaves(...)`r`nlocal selectedConfig = ...`r`nassert(selectedConfig.mission_name == `"$MissionName`", `"entry/config identity mismatch`")`r`n$devMainText`r`nend`r`n"
+    $shippingMain = $shippingHeader + "`r`n" + $inlinedTelemetry + $moduleTable + $embeddedConfig + $gameplayFunction + $entrySource
 
     # Gate the complete synthesized artifact, including inlined modules and the
     # generated header. Comment-only references are documentation and ignored.

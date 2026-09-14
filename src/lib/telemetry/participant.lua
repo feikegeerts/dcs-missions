@@ -1,3 +1,4 @@
+-- Shared DCS participant capture.
 local M = {}
 
 local AIRPLANE_CATEGORY = 0

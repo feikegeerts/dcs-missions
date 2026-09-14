@@ -11,10 +11,12 @@ import { buildAiCallsigns } from "@/telemetry/ai-names";
 import {
   buildRunScoreboard,
   extractAssetSnapshots,
+  extractGameplayOutcome,
   extractSortieOwners,
   formatPartialCost,
   formatWholeUsd,
   missionCatalogEntry,
+  resolveRunWaves,
   type ScoreboardRow,
 } from "@/telemetry/dashboard";
 import {
@@ -318,6 +320,14 @@ export function RunReport({
         scoreboard.red.ordnanceUnpriced + scoreboard.red.aircraftUnpriced,
       )
     : "unpriced";
+  // Explicit scenario milestones only: legacy runs render exactly as before,
+  // and non-wave missions show no wave section at all (baseline, not zeros).
+  const waves = resolveRunWaves(runEvents, run.missionName);
+  const gameplay = extractGameplayOutcome(runEvents);
+  const showMilestones =
+    waves.mode === "explicit" ||
+    waves.mode === "missing" ||
+    gameplay.ended;
 
   return (
     <main>
@@ -377,6 +387,32 @@ export function RunReport({
             </p>
           )}
         </div>
+
+        {showMilestones && (
+          <section className="hud-panel col-12">
+            <h2>Scenario milestones</h2>
+            {gameplay.ended && (
+              <p className="hud-subtitle">
+                Gameplay over — {gameplay.reason ?? "reason not reported"}.
+                This is the scenario outcome, distinct from the DCS session
+                status above.
+              </p>
+            )}
+            {waves.mode === "explicit" && (
+              <p className="hud-subtitle">
+                {waves.summary.spawnedWaves} wave
+                {waves.summary.spawnedWaves === 1 ? "" : "s"} spawned ·{" "}
+                {waves.summary.clearedWaves} cleared (explicit milestones).
+              </p>
+            )}
+            {waves.mode === "missing" && (
+              <p className="hud-subtitle">
+                Wave-capable run with no wave facts recorded yet — a telemetry
+                gap, not a zero score.
+              </p>
+            )}
+          </section>
+        )}
 
         <section className="hud-panel col-12 roster roster-blue">
           <h2 className="coalition-name-blue">Blue coalition</h2>
