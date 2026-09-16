@@ -67,7 +67,14 @@ _Avoid_: Event deletion, log cleanup
 **Aircraft Loss**:
 An aircraft crash or destruction. It incurs aircraft replacement cost even when
 the pilot ejects and survives.
-_Avoid_: Pilot loss, sortie loss
+_Avoid_: Death, pilot loss, sortie loss
+
+**Aircraft Allowance**:
+The number of aircraft a participant may lose during a mission run. Survival
+starts each participant with three aircraft, including the current aircraft.
+Each distinct aircraft loss reduces the remaining allowance by one; surviving
+or dying as a pilot does not change that accounting.
+_Avoid_: Lives, pilot lives, respawn count
 
 **Kill**:
 The destruction of an asset attributed to one primary attacker when attribution

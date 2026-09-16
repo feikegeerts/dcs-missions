@@ -115,8 +115,7 @@ function M.new(options, resolve)
     )
   end
 
-  -- Gameplay outcome is distinct from DCS session termination (mission.ended):
-  -- all pilots down ends the scenario, not the mission process.
+  -- Gameplay outcome is recorded immediately before a terminal mission action.
   function client:report_gameplay_over(info)
     return record_milestone(
       "report_gameplay_over",

@@ -98,7 +98,7 @@ const KNOWN_MISSIONS: Record<string, { title: string; description: string }> = {
   "air-superiority-survival": {
     title: "Air Superiority Survival",
     description:
-      "Survival package waves with per-player lives and escalating AI packages, sharing the package-wave lifecycle.",
+      "Survival package waves with three aircraft per player and escalating AI packages, sharing the package-wave lifecycle.",
   },
 };
 

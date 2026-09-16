@@ -177,7 +177,7 @@ describe("telemetry-event-v1 JSON Schema", () => {
         reason: "previous package defeated",
       }),
       lifecycle("wave.cleared", 17, { wave_number: 2, wave_size: 3 }),
-      lifecycle("gameplay.ended", 18, { reason: "all-pilots-down" }),
+      lifecycle("gameplay.ended", 18, { reason: "all-aircraft-lost" }),
     ];
 
     for (const event of examples) {

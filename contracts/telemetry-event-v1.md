@@ -218,7 +218,7 @@ explicit milestones appear.
   optional `wave_size`, `reason`). Intentional despawns (operator reset,
   empty-server cleanup) MUST NOT emit `wave.cleared`.
 - `gameplay_outcome` version `1`: the run emits `gameplay.ended` when the
-  scenario terminates (`reason`, e.g. `"all-pilots-down"`). This is the
+  scenario terminates (`reason`, e.g. `"all-aircraft-lost"`). This is the
   gameplay outcome, distinct from DCS session termination (`mission.ended`).
 
 Milestone events carry no entity roles (all `null`), exactly like mission

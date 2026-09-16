@@ -74,7 +74,7 @@ function capableStream(runKey: string, missionName: string): TelemetryEvent[] {
       tier: 1,
     }),
     milestone(started, "wave.cleared", 3, { wave_number: 1, wave_size: 2 }),
-    milestone(started, "gameplay.ended", 4, { reason: "all-pilots-down" }),
+    milestone(started, "gameplay.ended", 4, { reason: "all-aircraft-lost" }),
     milestone(started, "mission.ended", 5, {
       reason: "mission-end-observed",
     }),

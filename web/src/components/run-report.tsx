@@ -54,7 +54,7 @@ function CoalitionPanel({
           <dd>{kills}</dd>
         </div>
         <div className="figure">
-          <dt>Losses</dt>
+          <dt>Aircraft losses</dt>
           <dd>{losses}</dd>
         </div>
         <div className="figure">
@@ -90,7 +90,7 @@ function RosterTable({ rows }: { rows: readonly ScoreboardRow[] }) {
             <th scope="col">Player / AI</th>
             <th scope="col">Aircraft</th>
             <th scope="col">Kills</th>
-            <th scope="col">Losses</th>
+            <th scope="col">Aircraft losses</th>
             <th scope="col">Assists</th>
             <th scope="col">Shots</th>
             <th scope="col">Ordnance</th>

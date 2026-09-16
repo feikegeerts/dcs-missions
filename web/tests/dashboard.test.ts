@@ -821,10 +821,10 @@ describe("explicit wave milestones and capabilities", () => {
       extractGameplayOutcome([
         capableStarted(),
         scoreboardEvent(2, "gameplay.ended", {
-          payload: { reason: "all-pilots-down" },
+          payload: { reason: "all-aircraft-lost" },
         }),
       ]),
-    ).toEqual({ ended: true, reason: "all-pilots-down" });
+    ).toEqual({ ended: true, reason: "all-aircraft-lost" });
   });
 });
 

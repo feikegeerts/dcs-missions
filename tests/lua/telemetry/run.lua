@@ -868,11 +868,11 @@ succeeds("wave milestones and gameplay outcome build as sequenced milestone even
   local over, over_error = producer:build({
     event_type = "gameplay.ended",
     sim_time = 30,
-    payload = { reason = "all-pilots-down" },
+    payload = { reason = "all-aircraft-lost" },
   })
   check(over ~= nil, over_error)
   equal(over.event_sequence, 4)
-  equal(over.payload.reason, "all-pilots-down")
+  equal(over.payload.reason, "all-aircraft-lost")
 
   fails(function()
     return producer:build({ event_type = "gameplay.ended", sim_time = 31, payload = {} })
