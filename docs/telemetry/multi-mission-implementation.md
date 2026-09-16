@@ -256,7 +256,7 @@ mission lifecycle events) and consume ordinary sequence numbers:
 - `wave.cleared` (`wave_number`, optional `wave_size`, `reason`) only when a
   complete package is defeated — intentional despawns (F10 reset,
   empty-server cleanup) never emit it;
-- `gameplay.ended` (`reason`, e.g. `all-pilots-down`) for the scenario
+- `gameplay.ended` (`reason`, e.g. `all-aircraft-lost`) for the scenario
   outcome, distinct from DCS session termination (`mission.ended`).
 
 Layering, each with tests: `envelope.lua` validation (legacy + new accepted,

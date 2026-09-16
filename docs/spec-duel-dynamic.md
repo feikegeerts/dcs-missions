@@ -67,8 +67,8 @@ copy the donor's airframe, payload, skill, and route options; DCS
 auto-suffixes the spawned group name with `#NNN`.
 
 `PLAYER_GROUP_NAMES` defines the available blue roster. Each player identity
-has three lives by default for one mission run; players with no lives remaining
-are excluded when the next package is sized. `BANDIT_GROUP_NAMES`
+has three aircraft by default for one mission run; players with no aircraft
+remaining are excluded when the next package is sized. `BANDIT_GROUP_NAMES`
 (the nine active names, ascending, `Bandit-7` excluded) is both the donor
 list and the telemetry allow-list; the actual chosen donor name is passed
 as the configured name when a spawned wave is registered with telemetry.
@@ -116,7 +116,10 @@ done and the poll retries.
   spawners are eligible; if a tier has no initialized donor on this server
   (e.g. the Su-33 module is absent), the wave falls back to any initialized
   active donor — never to the excluded `Bandit-7`. The spawn log names the
-  chosen donor and tier (`donor <X> tier <N>`).
+   chosen donor and tier (`donor <X> tier <N>`). Draws are without replacement
+   within a tier: refill the randomized bag only after every eligible donor
+   has been used, or when advancing to a new tier. With all templates available,
+   waves 1–3 include the MiG-21 and waves 4–6 include at least one F-16.
 - **Progressive difficulty.** The first three waves match the eligible live
   blue package. Every three waves already spawned adds one bandit to the next
   package: waves 4–6 get +1, waves 7–9 get +2, and so on. Package size is
@@ -133,20 +136,42 @@ done and the poll retries.
 - **Player enters during a live wave.** The current DCS group is not mutated or
   reset. The joiner is included in the next wave. DCS cannot add an aircraft to
   an already spawned group.
-- **Player leaves.** Remaining lives are retained and the current red package
+- **Player leaves.** Remaining aircraft are retained and the current red package
   remains available to the other players. If every blue slot becomes empty, a
   one-second delayed cleanup destroys the package and cancels pending wave work.
 - **Player aircraft is lost.** `playerDeathWatcher` deduplicates `Dead` and
-  `Crash` by unit name and removes one life. Identity is the non-empty player
-  UCID when DCS supplies it, otherwise the slot group name with a one-time
-  warning. A missing lives entry discovered on a verified loss is initialized
-  to the configured `LIVES_PER_PLAYER=3` default before decrementing. Rejoining
-  with the same UCID, including in another slot, retains the remaining lives.
-- **Player reaches zero lives.** That identity remains tracked but is excluded
-  from package sizing. If every tracked identity reaches zero, the mission
-  enters terminal state once and announces `All pilots down — mission over.`
-  The current red wave is not despawned. New scheduled and F10 wave requests
-  are refused; there is no forced-respawn loop or scripted DCS mission end.
+  `Crash` for each aircraft incarnation and removes one aircraft. Identity is
+  the non-empty player UCID when DCS supplies it, otherwise the slot group name
+  with a one-time warning. A missing allowance entry discovered on a verified
+  loss is initialized to the configured three-aircraft default before
+  decrementing. Rejoining with the same UCID, including in another slot,
+  retains the remaining aircraft.
+- **Players reach zero aircraft.** An identity with no aircraft remaining is
+  excluded from package sizing. The installed server hook queries the mission
+  synchronously on every Blue slot request (same `dostring_in` transport as
+  the telemetry handshake): `duel_can_enter_blue_slot(ucid, slotID)` rejects
+  an exhausted UCID even while other players still have aircraft; when the
+  UCID key is unknown it resolves the requested seat from the server slot ID
+  (numeric-part match against the runtime slot unit IDs) and checks that
+  seat's current identity. Unknown players/unknown slots fail open, and the
+  hook additionally blocks all Blue slot changes once the terminal
+  `gameplay.ended` event is drained. Pre-simulation entry events can lack the
+  UCID; the slot-fallback allowance is then merged into the UCID allowance on
+  the first UCID sighting (min of balances, live aircraft ownership migrated;
+  two distinct UCIDs are never merged), so one player can never accumulate
+  two allowances.
+- **Mission end.** If every tracked human identity reaches zero, the mission
+  announces `All aircraft lost — mission ending in 60 seconds.`, reports the
+  `gameplay.ended` telemetry event, and stops wave progression while the
+  current red wave stays alive for the 60-second missile grace period. The
+  grace timer then sets the `DUEL_SURVIVAL_END` user flag; the shipping
+  archive's native ONCE trigger (`c_flag_is_true` →
+  `a_end_mission("blue", "", 0)`) ends the DCS mission with Blue as the
+  survival/high-score winner. This is not an SSE `trigger.action.endMission`
+  call. Development loaders need the same flag-trigger pair to exercise
+  mission ending. Player announcements say `Wave N — hostiles inbound` and
+  `Bandit down — team N`; enemy package size/remaining strength stays in logs
+  and telemetry, not in player messages.
 - **Bandit is killed.** The individual loss is counted, but no replacement
   spawns while any aircraft from that wave remains alive.
 - **Whole wave is killed.** The 30-second timer begins after the final red loss.
@@ -208,12 +233,13 @@ menu. Available from MISSION START.
   aircraft plus the current escalation. It announces `New bandit wave inbound.`,
   `No players in the air.`, `Not ready yet — try again in a second.`, or
   `Mission over — no more waves.` as applicable.
-- **Show lives** — displays `Lives:` followed by each tracked display name and
-  remaining lives, or `No players yet.` before anyone has been tracked.
+- **Show aircraft remaining** — displays `Aircraft remaining:` followed by each
+  tracked display name and remaining aircraft, or `No players yet.` before
+  anyone has been tracked.
 
 Wave and loss calls use the same concise briefing voice: `Wave N — N hostile(s)
-inbound`, `Bandit down — team N, N hostile(s) left`, `Aircraft lost — N lives
-left.`, `Aircraft lost — 1 life left.`, and `Aircraft lost — out of lives.`
+inbound`, `Bandit down — team N, N hostile(s) left`, `Aircraft lost — N aircraft
+remaining.`, and `Aircraft lost — out of aircraft.`
 
 ---
 
@@ -336,7 +362,7 @@ MOOSE's `GROUP:Teleport(coord)` calls `Respawn(nil, false)`. The
 position-update logic — when the group is dead, the guard fails and the
 new group is spawned at the **ME template position**, not at `coord`.
 Symptom: a "ghost" blue group at the original airbase plus the intended new
-group at the target position. The lives handler does not respawn or teleport
+  group at the target position. The aircraft allowance handler does not respawn or teleport
 player aircraft.
 
 The proper way to respawn a player at a new coord is
@@ -367,12 +393,19 @@ the team total and show the remaining hostile count. The victim-side event
 still cannot authoritatively identify the killer; individual attribution is
 deferred to telemetry Slice 14.
 
-### 6.6 DCS-native player respawn cannot be blocked per identity
+### 6.6 DCS-native player respawn ends with the mission terminal state
 
-The script cannot prevent DCS from respawning a human whose tracked identity
-has zero lives. A zero-life identity that re-enters any slot is announced with
-`Out of lives — excluded from the package.` and remains excluded from package
-sizing; the slot itself is not blocked or forcibly removed.
+The mission event handler alone cannot block a native DCS slot: it runs after
+DCS has granted the slot. The production GameGUI hook therefore watches the
+mission's `gameplay.ended` telemetry event and returns `false` from
+`onPlayerTryChangeSlot` for later Blue slot requests. A zero-aircraft identity
+that enters during the short propagation window is still excluded from package
+sizing and receives `Out of aircraft — excluded from the package.`
+
+Once every tracked human identity reaches zero, the mission announces the
+60-second grace period, leaves the current red group alive, and calls
+`trigger.action.endMission(coalition.side.BLUE)`. The DCS mission then ends,
+preserving Blue as the survival/high-score winner.
 
 ---
 
@@ -438,10 +471,12 @@ The first `SCRIPTING ERROR` line names the file and line.
   uses the new live-player count.
 - **First red loss in a multi-ship wave:** no respawn timer yet.
 - **Final red loss:** one 30-second timer, followed by one complete new group.
-- **Player loss:** one life removed per aircraft despite a Dead/Crash pair;
-  zero-life identities do not contribute to the next package size.
+- **Player loss:** one aircraft removed per aircraft incarnation despite a
+  Dead/Crash/Ejection pair; zero-aircraft identities do not contribute to the
+  next package size.
 - **All tracked identities at zero:** one terminal announcement, no further
-  package spawn, and no forced despawn of the current red wave.
+  package spawn, Blue slot requests vetoed by the server hook, the current red
+  wave retained for 60 seconds, then a DCS mission end with Blue as winner.
 - **All players leave:** the current group is destroyed after the one-second
   slot-switch grace period.
 

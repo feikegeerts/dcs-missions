@@ -1,18 +1,18 @@
-# §6.4 live verification runbook (player lives / escalation / messages)
+# §6.4 live verification runbook (aircraft allowance / escalation / messages)
 
-Closes the parked queue item `s64-live-verification`. §6.4 (per-identity lives,
+Closes the parked queue item `s64-live-verification`. §6.4 (per-identity aircraft,
 wave escalation, in-fiction messages) is implemented and **offline-verified**
 (unit tests + line-by-line review); what remains is a live human-in-seat pass to
 confirm the behaviour against real player slots and real player deaths.
 
 ## Why this is human-in-seat
 
-A *life* is only consumed by a real player **death** (a `Dead`/`Crash` event on
-a blue player slot). Ejecting is a *leave* (`PlayerLeaveUnit`) — it releases the
-slot **without** consuming a life. `TEST_COMBAT` spawns AI blue and drives its
-own wave logic (it bypasses `spawnWave` and uses no player slots), so it does
-**not** exercise §6.4. This pass therefore needs at least one human in an
-`Aerial-*` seat who can actually die.
+An aircraft is consumed by a real player loss (`Dead`, `Crash`, or `Ejection`)
+on a blue player slot. `PlayerLeaveUnit` only releases the slot after the loss;
+the matching loss callbacks are deduplicated. `TEST_COMBAT` spawns AI blue and
+drives its own wave logic (it bypasses `spawnWave` and uses no player slots), so
+it does **not** exercise §6.4. This pass therefore needs at least one human in
+an `Aerial-*` seat who can actually lose aircraft.
 
 ## Setup
 
@@ -23,7 +23,8 @@ own wave logic (it bypasses `spawnWave` and uses no player slots), so it does
      without repacking. To validate exact shipping behaviour, load the
      self-contained shipping `.miz` on a **stock** (sanitized) server instead.
 2. **Knobs** — `src/missions/duel-dynamic/main.lua`:
-   `LIVES_PER_PLAYER = 3`, `WAVE_ESCALATION_EVERY = 3`,
+    `aircraft_per_player = 3` (legacy `lives_per_player` is accepted),
+    `WAVE_ESCALATION_EVERY = 3`,
    `MAX_PACKAGE_SIZE = 8`, `WAVE_TIER_EVERY = 3` with `WAVE_DONOR_TIERS`
    (waves 1–3: `Bandit-10`/`Bandit-3`/`Bandit-6`; waves 4–6:
    `Bandit-3`/`Bandit-6`/`Bandit-4`/`Bandit-5`; waves 7+:
@@ -39,19 +40,19 @@ own wave logic (it bypasses `spawnWave` and uses no player slots), so it does
 | Event | In-game message (BLUE coalition) |
 |---|---|
 | Wave spawns | `Wave N — K hostiles inbound` (singular `hostile` when K=1) |
-| Player loses an aircraft, lives remain | `Aircraft lost — N lives left.` / `Aircraft lost — 1 life left.` |
-| Player loses last life | `Aircraft lost — out of lives.` |
-| Zero-life identity re-enters any slot | `Out of lives — excluded from the package.` |
-| All identities at zero | `All pilots down — mission over.` |
+| Player loses an aircraft, aircraft remain | `Aircraft lost — N aircraft remaining.` |
+| Player loses last aircraft | `Aircraft lost — out of aircraft.` |
+| Zero-aircraft identity re-enters any slot | `Out of aircraft — excluded from the package.` |
+| All identities at zero | `All aircraft lost — mission ending in 60 seconds.` |
 | Bandit killed | `Bandit down — team T, K hostiles left` |
 | F10 forced reset, new wave | `New bandit wave inbound.` (else `No players in the air.`) |
 | F10 forced reset after terminal | `Mission over — no more waves.` |
 
-**Primary live check — F10 `Air Superiority Survival` → `Show lives`:** posts the current
-per-identity life table to the BLUE coalition:
+**Primary live check — F10 `Air Superiority Survival` → `Show aircraft remaining`:** posts
+the current per-identity aircraft table to the BLUE coalition:
 
 ```
-Lives:
+Aircraft remaining:
   <player name>: 2
   <player name>: 3
 ```
@@ -68,17 +69,18 @@ escalation cadence (T6) without waiting 30 s between waves.
 - UCID fallback (once only, if `IniPlayerUCID` is absent): `[duel-dynamic] player UCID unavailable — using the slot group name as the per-run identity`
 - spawn: `[duel-dynamic] spawning K-ship package … (<reason>, donor <X> tier <N>, alt … ft, speed … kt, escalation +E)` — the `escalation +E` suffix appears from wave 4 onward; the `tier <N>` names the difficulty tier (1 for waves 1–3, 2 for waves 4–6, 3 for waves 7+)
 - wave defeated: `[duel-dynamic] wave N defeated — next package in 30s`
-- terminal: `[duel-dynamic] all tracked player identities are out of lives — mission terminal`
+- terminal: `[duel-dynamic] all tracked player identities are out of aircraft — ending DCS mission in 60 seconds`
 - post-terminal spawn suppression: `[duel-dynamic] mission terminal — spawn request ignored (<reason>)` / `mission terminal — wave schedule ignored (<reason>)`
+- post-terminal Blue slot rejection: `TELEMETRY_BRIDGE_HOOK ... blue-slot-policy=blocked ...` and `blue-slot-rejected ...`
 
 ## Identity model
 
 - **Identity** = the player's UCID (`EventData.IniPlayerUCID`) when present;
   otherwise the slot group name (`Aerial-1`…`Aerial-5`) with the one-time
   warning above.
-- **`lives` is per mission run**: a restart (`LeftShift+R` / WebGUI restart /
-  `net.load_mission`) resets every identity to 3 lives and `waveNumber` to 0.
-- **Reconnect keeps lives**: re-entering with the *same identity* (same UCID, or
+- **Aircraft allowance is per mission run**: a restart (`LeftShift+R` / WebGUI restart /
+  `net.load_mission`) resets every identity to 3 aircraft and `waveNumber` to 0.
+- **Reconnect keeps aircraft**: re-entering with the *same identity* (same UCID, or
   the same slot under the fallback) keeps the current count — it is **not**
   reset to 3.
 
@@ -86,31 +88,30 @@ escalation cadence (T6) without waiting 30 s between waves.
 
 **T1 — baseline wave size (1 player).** One human in `Aerial-1`.
 Expected: wave 1 spawns a 1-ship package (log `spawning 1-ship package …`).
-F10 `Show lives` shows the identity at `3`.
+F10 `Show aircraft remaining` shows the identity at `3`.
 
-**T2 — one life removed per real loss (Dead+Crash dedup).** Get the player
-killed once (shot down / crash — do **not** just eject). Expected: exactly one
-life removed → F10 `2`; in-game `Aircraft lost — 2 lives left.`; no
-`initialized missing lives` log line. A single death must produce exactly **one**
-decrement despite the Dead/Crash event pair. Re-enter the same native slot and
-lose the replacement aircraft: DCS may reuse `Aerial-*-1`, but its distinct DCS
-object ID must consume another life.
+**T2 — one aircraft removed per real loss (Dead/Crash/Ejection dedup).** Get the
+player killed once. Expected: exactly one aircraft removed → F10 `2`; in-game
+`Aircraft lost — 2 aircraft remaining.` A single loss must produce exactly
+**one** decrement despite the callback pair. Re-enter the same native slot and
+lose the replacement aircraft: DCS may reuse `Aerial-*-1`, but its distinct
+incarnation must consume another aircraft.
 
 **T3 — UCID identity.** Check the log for the one-time UCID warning. Present →
 identity is the slot name (fallback); absent → UCID identity is in use. Record
 which, since it keys reconnect. (Residual risk: `IniPlayerUCID` availability on
 this dedicated-server build is unproven; the slot fallback covers its absence.)
 
-**T4 — reconnect keeps lives.** After T2 (2 lives left), the player ejects (slot
-released, no life lost) and re-enters the same slot (same identity). Expected:
-F10 still shows `2` (**not** reset to 3). If the identity has 0 lives at
-re-entry, expect `Out of lives — excluded from the package.` and exclusion from
+**T4 — reconnect keeps aircraft.** After T2 (2 aircraft left), the player leaves
+the slot and re-enters the same slot (same identity). Expected: F10 still shows
+`2` (**not** reset to 3). If the identity has 0 aircraft at re-entry, expect
+`Out of aircraft — excluded from the package.` and exclusion from
 sizing instead.
 
-**T5 — zero-life exclusion from package sizing.** Bring one player to 0 lives
-(3 deaths) while another still has lives. Expected: the 0-life identity
+**T5 — zero-aircraft exclusion from package sizing.** Bring one player to 0
+aircraft (3 losses) while another still has aircraft. Expected: the zero-aircraft identity
 contributes 0 to the next package size (size is based on the other player(s)
-only), and on re-entry shows `Out of lives — excluded from the package.`
+only), and on re-entry shows `Out of aircraft — excluded from the package.`
 
 **T6 — escalation cadence.** With a fixed N live players, watch successive wave
 sizes (force them with F10 `Respawn bandit wave`). Expected size =
@@ -136,11 +137,12 @@ per wave: waves 1–3 donors are only `Bandit-10`/`Bandit-3`/`Bandit-6`
 initialize). `Bandit-7` must never appear as a donor. Package sizes still
 follow the T6 formula — tiers change only the donor pool, not the size.
 
-**T7 — terminal state.** Drive **all** tracked identities to 0 lives. Expected:
-one `All pilots down — mission over.` message, log `… out of lives — mission
-terminal`, and **no further package spawns** (any spawn request logs
-`mission terminal — spawn request ignored`). The current red wave is **not**
-force-despawned. F10 `Respawn bandit wave` then reports
+**T7 — terminal state.** Drive **all** tracked identities to 0 aircraft.
+Expected: one `All aircraft lost — mission ending in 60 seconds.` message, log
+`… out of aircraft — ending DCS mission in 60 seconds`, and **no further package
+spawns**. The current red wave remains for 60 seconds. The installed server
+hook rejects subsequent Blue native slot changes, then the mission ends with
+Blue as the survival winner. F10 `Respawn bandit wave` reports
 `Mission over — no more waves.`
 
 **T8 (optional) — multi-player geometry.** 2–5 players; inspect in Tacview: one
@@ -149,7 +151,7 @@ centroid (`spec-duel-dynamic.md §9`).
 
 ## Reset between tests
 
-- `LeftShift+R` (SP) or WebGUI restart / `net.load_mission` resets lives to 3
+- `LeftShift+R` (SP) or WebGUI restart / `net.load_mission` resets aircraft to 3
   and `waveNumber` to 0.
 - WebGUI force-slot / kick-to-slot controls (or the in-mission slot selector)
   add/remove players mid-mission.
@@ -163,20 +165,20 @@ centroid (`spec-duel-dynamic.md §9`).
   ignored rather than risking a duplicate decrement.
 - **(b)** Live availability of `EventData.IniPlayerUCID` on this dedicated-server
   build is unproven; the slot-name fallback covers absence (one-time warning).
-- **(c)** DCS-native respawn cannot be blocked per identity: a 0-life identity
-  that re-enters is announced + excluded but the slot is not blocked
-  (`spec-duel-dynamic.md §6.6`).
+- **(c)** The GameGUI hook must be installed and loaded for native Blue slot
+  rejection; mission-side events alone are too late (`spec-duel-dynamic.md §6.6`).
 
 ## PASS / FAIL
 
 - **PASS:** T1–T7 all match the expected behaviour (including the T6b tier
   progression: correct tier token per wave, `Bandit-7` never a donor);
-  F10 `Show lives` counts never drift from the observed deaths; exactly one
-  decrement per death; terminal suppresses all further spawns.
-- **FAIL:** any of — a single death removes more/less than one life; a reconnect
-  resets a non-zero identity to 3; a 0-life identity contributes to package
-  size; a spawn occurs after terminal; a same-human reconnect (same UCID) gets
-  fresh lives.
+  F10 `Show aircraft remaining` counts never drift from observed losses; exactly
+  one decrement per aircraft; terminal suppresses all further spawns and Blue
+  slot requests.
+- **FAIL:** any of — a single loss removes more/less than one aircraft; a
+  reconnect resets a non-zero identity to 3; a zero-aircraft identity contributes
+  to package size; a spawn occurs after terminal; or a same-human reconnect
+  (same UCID) gets fresh aircraft.
 
 On PASS, record the run in `progress.md` and flip queue item
 `s64-live-verification` to `completed` with the run key and evidence.

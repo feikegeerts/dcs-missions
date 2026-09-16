@@ -79,7 +79,8 @@ without an explicit test window.
 Edit a mission's `config.lua` for values and its `main.lua` for distinct rules.
 The optional `gameplay` table accepts:
 
-- `lives_per_player`, `wave_escalation_every`, `wave_tier_every`,
+- `aircraft_per_player` (legacy `lives_per_player` is still accepted),
+  `wave_escalation_every`, `wave_tier_every`,
   `max_package_size`, `respawn_delay_s`;
 - `spawn_distance_min_sm`, `spawn_distance_max_sm` (statute miles);
 - `spawn_alt_min_ft`, `spawn_alt_max_ft`, `cap_alt_min_ft`, `cap_alt_max_ft`;
