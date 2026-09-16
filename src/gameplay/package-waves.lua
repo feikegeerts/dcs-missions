@@ -4,7 +4,7 @@ local MISSION_CONFIG = assert(..., "package-wave mission configuration required"
 -- Red donors: Bandit-1 .. Bandit-6 plus Bandit-8 .. Bandit-10
 -- (late-activated ME aircraft, one per donor group). Bandit-7 (F-5E-3)
 -- remains in the ME template but is excluded from waves. Each wave picks
--- one donor uniformly at random from its difficulty tier and clones it
+-- one donor from a randomized, without-replacement difficulty-tier bag and clones it
 -- to wave size, so airframe, payload, skill, chaff/flare, and ME group
 -- options vary per wave.
 -- Event-driven package waves: one red aircraft per live blue player, cloned
@@ -146,12 +146,14 @@ local CAP_ALT_MIN_FT = SETTINGS.cap_alt_min_ft or 15000
 local CAP_ALT_MAX_FT = SETTINGS.cap_alt_max_ft or 30000
 local CAP_SPEED_MIN_KT = SETTINGS.cap_speed_min_kt or 350
 local CAP_SPEED_MAX_KT = SETTINGS.cap_speed_max_kt or 550
-local LIVES_PER_PLAYER = SETTINGS.lives_per_player or 3
+-- Keep the legacy configuration key compatible with existing mission configs.
+local AIRCRAFT_PER_PLAYER = SETTINGS.aircraft_per_player or SETTINGS.lives_per_player or 3
 local WAVE_ESCALATION_EVERY = SETTINGS.wave_escalation_every or 3
 local MAX_PACKAGE_SIZE = SETTINGS.max_package_size or 8
 local RESPAWN_DELAY = SETTINGS.respawn_delay_s or 30
 local WAVE_ASSEMBLY_DELAY = 3
 local EMPTY_SERVER_CLEANUP_DELAY = 1
+local TERMINAL_GRACE_PERIOD = 60
 local FORMATION_LATERAL_M = 1.5 * 1852
 local FORMATION_TRAIL_M = 0.5 * 1852
 local INIT_DELAY = 1 -- first attempt delay (seconds) before the world-touching setup
@@ -266,13 +268,21 @@ local waveSpawnPending = false
 local waveScheduleToken = 0
 local occupiedPlayerSlots = {}
 local countedBanditUnits = {}
-local lives = {}
+local aircraftRemaining = {}
 local slotIdentity = {}
 local playerIdentityName = {}
-local countedPlayerAircraft = {}
+local playerAircraftByKey = {}
+local playerAircraftByObject = {}
 local missionTerminal = false
+local terminalEndScheduled = false
 local warnedMissingPlayerUCID = false
 local initDone = false
+-- Seat -> runtime DCS unit ID. The server hook passes the raw slot ID with
+-- every Blue slot request; resolving it lets the gate enforce the requested
+-- seat's allowance even when the hook-side UCID string differs from the
+-- mission event identity keys.
+local slotUnitIdToIndex = {}
+local slotGateLogged = false
 
 local spawnWave
 local scheduleWave
@@ -310,39 +320,188 @@ local function identityForSlot(idx)
   return slotIdentity[idx] or fallbackIdentity(idx)
 end
 
-local function formatLives()
-  if next(lives) == nil then
+local function setSlotIdentity(idx, identity)
+  local previous = slotIdentity[idx] or PLAYER_GROUP_NAMES[idx]
+  -- Only a slot fallback is an alias; different UCIDs are different people.
+  if previous ~= PLAYER_GROUP_NAMES[idx] then
+    slotIdentity[idx] = identity
+    return identity
+  end
+  if previous and previous ~= identity then
+    -- A MOOSE PlayerEnterAircraft event can initially lack UCID even though
+    -- the telemetry subscriber receives it. Do not let the same human split
+    -- into a fallback allowance and a UCID allowance across respawns. Merge
+    -- conservatively: the lower balance can only preserve recorded losses,
+    -- never grant an extra aircraft.
+    for _, aircraft in pairs(playerAircraftByKey) do
+      if aircraft.identity == previous then
+        aircraft.identity = identity
+      end
+    end
+    local previousRemaining = aircraftRemaining[previous]
+    local currentRemaining = aircraftRemaining[identity]
+    if previousRemaining ~= nil then
+      if currentRemaining == nil then
+        currentRemaining = previousRemaining
+      else
+        currentRemaining = math.min(currentRemaining, previousRemaining)
+      end
+      aircraftRemaining[identity] = currentRemaining
+      aircraftRemaining[previous] = nil
+    end
+    if not playerIdentityName[identity] and playerIdentityName[previous] then
+      playerIdentityName[identity] = playerIdentityName[previous]
+    end
+    playerIdentityName[previous] = nil
+    env.info(
+      string.format(
+        "[duel-dynamic] reconciled slot identity %s from %s to %s remaining=%s",
+        PLAYER_GROUP_NAMES[idx],
+        tostring(previous),
+        tostring(identity),
+        tostring(aircraftRemaining[identity])
+      )
+    )
+  end
+  slotIdentity[idx] = identity
+  return identity
+end
+
+local function recordSlotUnitIds()
+  for idx, pname in ipairs(PLAYER_GROUP_NAMES) do
+    local pg = GROUP:FindByName(pname)
+    local dcsGroup = pg and pg:GetDCSObject()
+    if dcsGroup and type(dcsGroup.getUnits) == "function" then
+      local ok, units = pcall(dcsGroup.getUnits, dcsGroup)
+      if ok and type(units) == "table" then
+        for _, unit in pairs(units) do
+          if unit and type(unit.getID) == "function" then
+            local ok2, id = pcall(unit.getID, unit)
+            if ok2 and id then
+              slotUnitIdToIndex[tostring(id)] = idx
+            end
+          end
+        end
+      end
+    end
+  end
+end
+
+local function slotIndexForSlotId(slotID)
+  if type(slotID) ~= "string" or slotID == "" then
+    return nil
+  end
+  if next(slotUnitIdToIndex) == nil then
+    recordSlotUnitIds()
+  end
+  local idx = slotUnitIdToIndex[slotID]
+  if idx then
+    return idx
+  end
+  -- Server slot IDs may wrap the numeric unit ID (e.g. "101_9"); scan the
+  -- numeric parts against the known slot unit IDs.
+  for candidate in slotID:gmatch("%d+") do
+    idx = slotUnitIdToIndex[candidate]
+    if idx then
+      return idx
+    end
+  end
+  return nil
+end
+
+-- Read-only slot gate. The dedicated-server hook queries this synchronously
+-- on every Blue slot request (net.dostring_in -> a_do_script). The UCID
+-- identified on the mission side is authoritative; when that key is unknown
+-- the requested seat's current identity is checked instead, so exhaustion is
+-- enforced even if the hook-side UCID format differs from the event-side
+-- identity. Unknown players and unknown slots fail open; the global terminal
+-- block remains the last line of defense.
+_G.duel_can_enter_blue_slot = function(ucid, slotID)
+  local decision
+  local ucidKeyed = type(ucid) == "string" and ucid ~= "" and aircraftRemaining[ucid] ~= nil
+  if missionTerminal then
+    decision = false
+  elseif ucidKeyed then
+    decision = aircraftRemaining[ucid] > 0
+  else
+    decision = nil
+    local idx = slotIndexForSlotId(slotID)
+    if idx then
+      local remaining = aircraftRemaining[slotIdentity[idx] or PLAYER_GROUP_NAMES[idx]]
+      if remaining ~= nil then
+        decision = remaining > 0
+      end
+    end
+  end
+  if decision == nil then
+    decision = true
+  end
+  if not slotGateLogged then
+    slotGateLogged = true
+    env.info(
+      string.format(
+        "[duel-dynamic] slot gate: slotID=%s ucid_keyed=%s decision=%s",
+        tostring(slotID),
+        tostring(ucidKeyed),
+        tostring(decision)
+      )
+    )
+  end
+  return decision
+end
+
+local function formatAircraftRemaining()
+  if next(aircraftRemaining) == nil then
     return "No players yet."
   end
   local identities = {}
-  for identity in pairs(lives) do
+  for identity in pairs(aircraftRemaining) do
     identities[#identities + 1] = identity
   end
   table.sort(identities)
-  local lines = { "Lives:" }
+  local lines = { "Aircraft remaining:" }
   for _, identity in ipairs(identities) do
-    lines[#lines + 1] = string.format("  %s: %d", playerIdentityName[identity] or "Player", lives[identity])
+    lines[#lines + 1] = string.format("  %s: %d", playerIdentityName[identity] or "Player", aircraftRemaining[identity])
   end
   return table.concat(lines, "\n")
 end
 
-local function enterTerminalStateIfAllPilotsDown()
-  if missionTerminal or next(lives) == nil then
+local function enterTerminalStateIfAllAircraftLost()
+  if missionTerminal or next(aircraftRemaining) == nil then
     return
   end
-  for _, remaining in pairs(lives) do
+  for _, remaining in pairs(aircraftRemaining) do
     if remaining > 0 then
       return
     end
   end
   missionTerminal = true
-  MESSAGE:New("All pilots down — mission over.", 8):ToCoalition(coalition.side.BLUE)
-  env.info("[duel-dynamic] all tracked player identities are out of lives — mission terminal")
-  -- Gameplay outcome is distinct from DCS session termination: report it
-  -- explicitly so the dashboard never conflates the two. Never blocks gameplay.
+  terminalEndScheduled = true
+  MESSAGE:New("All aircraft lost — mission ending in 60 seconds.", 8):ToCoalition(coalition.side.BLUE)
+  env.info("[duel-dynamic] all tracked player identities are out of aircraft — ending DCS mission in 60 seconds")
   if telemetry then
-    telemetry:report_gameplay_over({ reason = "all-pilots-down" })
+    telemetry:report_gameplay_over({ reason = "all-aircraft-lost" })
   end
+  -- Stop wave progression immediately, but leave the current red group alive
+  -- for a short grace period so missiles already in flight can finish. A soft
+  -- flag alone is insufficient: the delayed hard end below is what prevents a
+  -- dedicated server from accepting a new slot after the grace period.
+  -- Blue remains the mission winner: this is a high-score survival mission,
+  -- not a red-versus-blue victory assessment.
+  SCHEDULER:New(nil, function()
+    if not terminalEndScheduled then
+      return
+    end
+    env.info("[duel-dynamic] ending DCS mission with Blue as the survival winner")
+    if trigger and trigger.action and type(trigger.action.setUserFlag) == "function" then
+      local ok, error_message = pcall(trigger.action.setUserFlag, "DUEL_SURVIVAL_END", 1)
+      if not ok then
+        env.error("[duel-dynamic] failed to end DCS mission: " .. tostring(error_message))
+      end
+    else
+      env.error("[duel-dynamic] DCS mission-end flag action is unavailable")
+    end
+  end, {}, TERMINAL_GRACE_PERIOD)
 end
 
 local function livePlayerPackage()
@@ -350,7 +509,7 @@ local function livePlayerPackage()
   local sumX, sumY, sumZ = 0, 0, 0
   for idx, pname in ipairs(PLAYER_GROUP_NAMES) do
     local identity = occupiedPlayerSlots[idx] and identityForSlot(idx) or nil
-    if identity and lives[identity] ~= 0 then
+    if identity and aircraftRemaining[identity] ~= 0 then
       local coord = getPlayerCoord(pname)
       if coord then
         players[#players + 1] = { name = pname, group = GROUP:FindByName(pname), coord = coord }
@@ -470,6 +629,7 @@ local function donorTierForWave(nextWaveNumber)
   return tier
 end
 
+local donorBag, donorBagTier = {}, nil
 local function selectWaveDonor(nextWaveNumber)
   local tier = donorTierForWave(nextWaveNumber)
   local candidates = {}
@@ -492,7 +652,13 @@ local function selectWaveDonor(nextWaveNumber)
   if #candidates == 0 then
     return nil, tier
   end
-  return candidates[randInt(1, #candidates)], tier
+  -- Draw without replacement within each tier. Independent random draws
+  -- over-weight airframes with multiple donor variants and permit long runs
+  -- of identical opponents (the live run drew six MiG-29 waves).
+  if donorBagTier ~= tier or #donorBag == 0 then
+    donorBag, donorBagTier = candidates, tier
+  end
+  return table.remove(donorBag, randInt(1, #donorBag)), tier
 end
 
 spawnWave = function(reason)
@@ -558,7 +724,7 @@ spawnWave = function(reason)
   currentWaveAlive = size
   currentWaveSize = size
   taskBanditPackage(grp, players, playerCentroid, capAltFt, capSpeedKt)
-  MESSAGE:New(string.format("Wave %d — %d hostile%s inbound", waveNumber, size, size == 1 and "" or "s"), 8)
+  MESSAGE:New(string.format("Wave %d — hostiles inbound", waveNumber), 8)
     :ToCoalition(coalition.side.BLUE)
   -- Explicit wave milestone; intentional despawns (F10 reset, empty-server
   -- cleanup) never emit a cleared fact. Reporting never blocks gameplay.
@@ -637,8 +803,8 @@ MENU_COALITION_COMMAND:New(coalition.side.BLUE, "Respawn bandit wave", menu, fun
   end
 end)
 
-MENU_COALITION_COMMAND:New(coalition.side.BLUE, "Show lives", menu, function()
-  MESSAGE:New(formatLives(), 10):ToCoalition(coalition.side.BLUE)
+MENU_COALITION_COMMAND:New(coalition.side.BLUE, "Show aircraft remaining", menu, function()
+  MESSAGE:New(formatAircraftRemaining(), 10):ToCoalition(coalition.side.BLUE)
 end)
 
 -- =====================================================================
@@ -680,10 +846,16 @@ local function exactPlayerSlotIndex(groupName)
   return nil
 end
 
+local registerPlayerAircraft
+
 local function onPlayerEnter(EventData)
   local gname = playerEventGroupName(EventData)
   local idx = gname and findIdxByName(gname, PLAYER_GROUP_NAMES) or nil
   if not idx then
+    return
+  end
+  if missionTerminal then
+    MESSAGE:New("Mission ending — no aircraft remaining.", 8):ToCoalition(coalition.side.BLUE)
     return
   end
   occupiedPlayerSlots[idx] = true
@@ -691,21 +863,21 @@ local function onPlayerEnter(EventData)
   local identity
   if type(ucid) == "string" and ucid ~= "" then
     identity = ucid
-    slotIdentity[idx] = identity
   else
-    slotIdentity[idx] = nil
-    identity = fallbackIdentity(idx)
+    identity = slotIdentity[idx] or fallbackIdentity(idx)
   end
   local displayName = EventData.IniPlayerName
   if type(displayName) ~= "string" or displayName == "" then
     displayName = "Player"
   end
+  setSlotIdentity(idx, identity)
   playerIdentityName[identity] = displayName
-  if lives[identity] == nil then
-    lives[identity] = LIVES_PER_PLAYER
-  elseif lives[identity] == 0 then
-    MESSAGE:New("Out of lives — excluded from the package.", 8):ToCoalition(coalition.side.BLUE)
+  if aircraftRemaining[identity] == nil then
+    aircraftRemaining[identity] = AIRCRAFT_PER_PLAYER
+  elseif aircraftRemaining[identity] == 0 then
+    MESSAGE:New("Out of aircraft — excluded from the package.", 8):ToCoalition(coalition.side.BLUE)
   end
+  registerPlayerAircraft(EventData, false, identity)
   env.info(
     string.format("[duel-dynamic] player '%s' entered %s", EventData.IniPlayerName or "Player", PLAYER_GROUP_NAMES[idx])
   )
@@ -726,12 +898,13 @@ local function onPlayerLeave(EventData)
     return
   end
   occupiedPlayerSlots[idx] = nil
+  slotIdentity[idx] = nil
   env.info(
     string.format("[duel-dynamic] player left %s — current red package remains active", PLAYER_GROUP_NAMES[idx])
   )
 
   SCHEDULER:New(nil, function()
-    if anyPlayerSlotOccupied() then
+    if missionTerminal or anyPlayerSlotOccupied() then
       return
     end
     env.info("[duel-dynamic] no player slots occupied — cleaning up the bandit wave")
@@ -787,11 +960,69 @@ local function eventUnitObjectId(EventData)
   return tostring(objectId)
 end
 
--- Player aircraft losses consume per-identity lives. This watcher is separate
--- from the bandit watcher because both subscribe to Dead and Crash.
+-- Player aircraft losses consume per-identity aircraft allowances. This watcher is separate
+-- from the bandit watcher because both subscribe to Dead, Crash, and Ejection.
 local playerDeathWatcher = BASE:New()
 playerDeathWatcher:HandleEvent(EVENTS.Dead)
 playerDeathWatcher:HandleEvent(EVENTS.Crash)
+if EVENTS.Ejection then
+  playerDeathWatcher:HandleEvent(EVENTS.Ejection)
+end
+playerDeathWatcher:HandleEvent(EVENTS.Birth)
+
+-- A client slot can reuse both its name and its numeric DCS ID after respawn.
+-- Birth establishes a fresh incarnation; enter/rejoin alone never resets a
+-- counted aircraft. Retain raw-object associations to reject late old losses.
+registerPlayerAircraft = function(EventData, isBirth, identity)
+  local unitName = eventUnitName(EventData)
+  local objectId = eventUnitObjectId(EventData)
+  if not unitName or not objectId then
+    return nil
+  end
+  local key = unitName .. ":" .. objectId
+  local raw = EventData.IniDCSUnit
+  local observedTime = EventData.time
+  local aircraft = playerAircraftByKey[key]
+  if isBirth then
+    if aircraft and aircraft.birthTime and observedTime and observedTime <= aircraft.birthTime then
+      return aircraft -- repeated or out-of-order Birth
+    end
+    if aircraft and not observedTime and playerAircraftByObject[raw] == aircraft then
+      return aircraft -- ambiguous duplicate Birth without event time
+    end
+    if aircraft and not aircraft.counted and not aircraft.birthTime then
+      -- PlayerEnterAircraft can arrive before Birth. Complete that pending
+      -- record instead of creating an orphan record for the same incarnation.
+      aircraft.birthTime = observedTime
+    else
+      aircraft = nil
+    end
+  end
+  if not aircraft then
+    aircraft = { birthTime = isBirth and observedTime or nil, counted = false }
+    playerAircraftByKey[key] = aircraft
+  end
+  -- Entry supplies UCID after Birth. Never attribute an old aircraft to a new
+  -- occupant merely because its delayed loss arrives after a slot change.
+  if identity then
+    aircraft.identity = identity
+  elseif isBirth then
+    local ucid = EventData.IniPlayerUCID
+    aircraft.identity = type(ucid) == "string" and ucid ~= "" and ucid or nil
+  end
+  playerAircraftByObject[raw] = aircraft
+  return aircraft
+end
+
+function playerDeathWatcher:OnEventBirth(EventData)
+  if not EventData or EventData.IniCoalition ~= coalition.side.BLUE then
+    return
+  end
+  local idx = exactPlayerSlotIndex(playerEventGroupName(EventData))
+  if idx then
+    registerPlayerAircraft(EventData, true, identityForSlot(idx))
+  end
+end
 
 local function handlePlayerLoss(EventData)
   if not EventData or EventData.IniCoalition ~= coalition.side.BLUE then
@@ -813,35 +1044,49 @@ local function handlePlayerLoss(EventData)
     return
   end
   local aircraftKey = unitName .. ":" .. objectId
-  if countedPlayerAircraft[aircraftKey] then
+  local aircraft = playerAircraftByObject[EventData.IniDCSUnit] or playerAircraftByKey[aircraftKey]
+  if not aircraft then
+    -- A loss callback is not a new slot entry. In particular, the same
+    -- MOOSE/DCS object ID may be reused, so keep a counted latest record as
+    -- the duplicate guard instead of creating a replacement incarnation here.
+    aircraft = registerPlayerAircraft(EventData, false)
+  end
+  if aircraft.birthTime and EventData.time and EventData.time < aircraft.birthTime then
+    return -- stale loss predating this incarnation, even if its ID was reused
+  end
+  if aircraft.counted then
     return
   end
-  countedPlayerAircraft[aircraftKey] = true
+  aircraft.counted = true
+  playerAircraftByObject[EventData.IniDCSUnit] = aircraft
 
-  local identity = identityForSlot(idx)
-  if lives[identity] == nil then
-    lives[identity] = LIVES_PER_PLAYER
+  local identity = aircraft.identity or identityForSlot(idx)
+  if aircraftRemaining[identity] == nil then
+    aircraftRemaining[identity] = AIRCRAFT_PER_PLAYER
     playerIdentityName[identity] = playerIdentityName[identity] or "Player"
-    env.info(string.format("[duel-dynamic] initialized missing lives for %s on verified loss", PLAYER_GROUP_NAMES[idx]))
+    env.info(string.format("[duel-dynamic] initialized missing aircraft allowance for %s on verified loss", PLAYER_GROUP_NAMES[idx]))
   end
-  lives[identity] = math.max(0, lives[identity] - 1)
-  local remaining = lives[identity]
+  aircraftRemaining[identity] = math.max(0, aircraftRemaining[identity] - 1)
+  local remaining = aircraftRemaining[identity]
+  env.info(string.format("[duel-dynamic] aircraft loss slot=%s object=%s birth=%s remaining=%d",
+    PLAYER_GROUP_NAMES[idx], objectId, tostring(aircraft.birthTime), remaining))
   local text
   if remaining == 0 then
-    text = "Aircraft lost — out of lives."
-  elseif remaining == 1 then
-    text = "Aircraft lost — 1 life left."
+    text = "Aircraft lost — out of aircraft."
   else
-    text = string.format("Aircraft lost — %d lives left.", remaining)
+    text = string.format("Aircraft lost — %d aircraft remaining.", remaining)
   end
   MESSAGE:New(text, 8):ToCoalition(coalition.side.BLUE)
-  enterTerminalStateIfAllPilotsDown()
+  enterTerminalStateIfAllAircraftLost()
 end
 
 function playerDeathWatcher:OnEventDead(EventData)
   handlePlayerLoss(EventData)
 end
 function playerDeathWatcher:OnEventCrash(EventData)
+  handlePlayerLoss(EventData)
+end
+function playerDeathWatcher:OnEventEjection(EventData)
   handlePlayerLoss(EventData)
 end
 
@@ -867,10 +1112,8 @@ local function handleBanditKill(EventData)
   Tracker:record("Team")
   MESSAGE:New(
     string.format(
-      "Bandit down — team %d, %d hostile%s left",
-      Tracker.total,
-      currentWaveAlive,
-      currentWaveAlive == 1 and "" or "s"
+      "Bandit down — team %d",
+      Tracker.total
     ),
     8
   ):ToCoalition(coalition.side.BLUE)
@@ -990,14 +1233,16 @@ local function doInit()
     if getPlayerCoord(pname) then
       occupiedPlayerSlots[i] = true
       local identity = identityForSlot(i)
-      if lives[identity] == nil then
-        lives[identity] = LIVES_PER_PLAYER
+      if aircraftRemaining[identity] == nil then
+        aircraftRemaining[identity] = AIRCRAFT_PER_PLAYER
         playerIdentityName[identity] = "Player"
       end
       registerPlayerAssets(GROUP:FindByName(pname))
       env.info(string.format("[duel-dynamic] %s already occupied at init — adding to first package roster", pname))
     end
   end
+
+  recordSlotUnitIds()
 
   initDone = true
   scheduleWave(WAVE_ASSEMBLY_DELAY, "initial player package assembled")

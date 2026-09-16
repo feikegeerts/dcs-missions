@@ -291,6 +291,30 @@ $newTrigAction = @"
     $mission = $mission.Substring(0, $startupIdx) + $startupReplacement + $mission.Substring($startupIdx + $startupAction.Length)
     Write-Host "Patched trig.funcStartup block"
 
+    # Native END MISSION is a trigger-environment action, not an SSE
+    # trigger.action.endMission API. Append valid mission Lua assignments so
+    # existing editor tables and loadouts remain byte-for-byte untouched.
+    $mission += @'
+
+-- Shipping survival terminal action (SSE sets this flag after the grace period).
+do
+    local index = 1
+    for key in pairs(mission.trig.actions) do
+        if type(key) == "number" and key >= index then index = key + 1 end
+    end
+    mission.trig.conditions[index] = 'return(c_flag_is_true("DUEL_SURVIVAL_END"))'
+    mission.trig.actions[index] = 'a_end_mission("blue", "", 0); mission.trig.func[' .. index .. ']=nil;'
+    mission.trig.func[index] = 'if mission.trig.conditions[' .. index .. ']() then mission.trig.actions[' .. index .. ']() end'
+    mission.trig.flag[index] = true
+    mission.trigrules[#mission.trigrules + 1] = {
+        comment = "Survival complete - Blue winner",
+        predicate = "triggerOnce", eventlist = "", colorItem = "0xff0000ff",
+        rules = { { predicate = "c_flag_is_true", flag = "DUEL_SURVIVAL_END" } },
+        actions = { { predicate = "a_end_mission", winner = "blue", text = "", start_delay = 0 } },
+    }
+end
+'@
+
     # DO SCRIPT FILE actions reference resource keys, not arbitrary archive
     # paths. Register both embedded payloads in mapResource; DCS resolves those
     # names under l10n/DEFAULT at mission start. Literal "Scripts/..." paths are

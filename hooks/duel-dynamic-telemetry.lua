@@ -543,6 +543,7 @@ local state = {
   queue_empty_verified = false,
   missing_runtime = false,
   transport_logged = false,
+  slot_blocked = false,
 }
 
 local function clock_now()
@@ -687,6 +688,7 @@ local function begin_generation()
   state.queue_empty_verified = false
   state.missing_runtime = false
   state.transport_logged = false
+  state.slot_blocked = false
   state.run_key = make_run_key()
   state.spool_path = state.run_key and join_path(telemetry_directory, state.run_key .. ".ndjson") or nil
   state.spool_segment_path = state.spool_path
@@ -765,6 +767,21 @@ local function spool_lines(decoded)
   state.spool_size = verified_size
   state.spool_verified_sequence = math.max(state.spool_verified_sequence, decoded.last_sequence)
   return true
+end
+
+local function observe_gameplay_terminal(decoded)
+  for _, line in ipairs(decoded.lines or {}) do
+    if
+      string.find(line, '"event_type":"gameplay.ended"', 1, true)
+      and string.find(line, '"all-aircraft-lost"', 1, true)
+    then
+      if not state.slot_blocked then
+        write_log("blue-slot-policy=blocked reason=all-aircraft-lost generation=%d", state.generation)
+      end
+      state.slot_blocked = true
+      return
+    end
+  end
 end
 
 local function nonnegative_integer(value)
@@ -900,6 +917,7 @@ local function poll_cycle()
     )
     return "failed"
   end
+  observe_gameplay_terminal(decoded)
   if not spool_lines(decoded) then
     return "stuck"
   end
@@ -972,6 +990,40 @@ end
 
 local callbacks = {}
 
+function callbacks.onPlayerTryChangeSlot(playerID, side, slotID)
+  -- DCS coalition IDs are 1=Red and 2=Blue. Returning false here is the
+  -- server-side veto; the mission's PlayerEnterAircraft event is too late to
+  -- prevent native slot entry.
+local blocked = side == 2 and state.slot_blocked
+  if side == 2 and not blocked then
+    local info = type(net.get_player_info) == "function" and net.get_player_info(playerID) or nil
+    local ucid = (info and type(info.ucid) == "string") and info.ucid or ""
+    local values, reason = mission_eval(
+      "if type(duel_can_enter_blue_slot) ~= 'function' then return true end\n"
+        .. "return duel_can_enter_blue_slot("
+        .. string.format("%q", ucid)
+        .. ", "
+        .. string.format("%q", tostring(slotID))
+        .. ")"
+    )
+    if values then
+      blocked = values[1] == false
+    else
+      write_log("blue-slot-policy=query-failed reason=%s", tostring(reason))
+    end
+  end
+  if blocked then
+    write_log(
+      "blue-slot-rejected player=%s side=%s slot=%s reason=aircraft-exhausted",
+      tostring(playerID),
+      tostring(side),
+      tostring(slotID)
+    )
+    return false
+  end
+  return true
+end
+
 function callbacks.onMissionLoadBegin()
   begin_generation()
 end
@@ -1021,15 +1073,18 @@ local function protect_callback(name, callback)
   return function(...)
     local arguments = { ... }
     local argument_count = select("#", ...)
+    local result
     local ok = pcall(function()
-      callback(unpack(arguments, 1, argument_count))
+      result = callback(unpack(arguments, 1, argument_count))
     end)
     if not ok then
       state.busy = false
       state.failure_count = state.failure_count + 1
       write_log("hook-error %s generation=%d", name, state.generation)
+      -- A hook failure must never strand a client from all slots.
+      result = true
     end
-    return nil
+    return result
   end
 end
 

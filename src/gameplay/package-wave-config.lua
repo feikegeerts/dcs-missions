@@ -44,6 +44,9 @@ function M.validate(config)
       cap_alt_max_ft = 30000,
       cap_speed_min_kt = 350,
       cap_speed_max_kt = 550,
+      aircraft_per_player = 3,
+      -- Accepted for compatibility with older mission configs. New configs
+      -- should use aircraft_per_player.
       lives_per_player = 3,
       wave_escalation_every = 3,
       wave_tier_every = 3,
@@ -51,7 +54,13 @@ function M.validate(config)
       respawn_delay_s = 30,
     }
     local integers =
-      { lives_per_player = true, wave_escalation_every = true, wave_tier_every = true, max_package_size = true }
+      {
+        aircraft_per_player = true,
+        lives_per_player = true,
+        wave_escalation_every = true,
+        wave_tier_every = true,
+        max_package_size = true,
+      }
     for key, value in pairs(settings) do
       assert(
         numeric[key] or key == "bandit_task" or key == "wave_donor_tiers",
