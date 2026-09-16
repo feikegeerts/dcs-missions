@@ -52,12 +52,17 @@ end)
 test("custom supported values and zero replacement delay validate", function()
   local c = config()
   c.gameplay = {
-    lives_per_player = 1,
+    aircraft_per_player = 1,
     respawn_delay_s = 0,
     spawn_distance_min_sm = 5,
     spawn_distance_max_sm = 10,
     bandit_task = "INTERCEPT",
   }
+  assert(validator.validate(c))
+end)
+test("legacy lives setting remains accepted for older mission archives", function()
+  local c = config()
+  c.gameplay = { lives_per_player = 1 }
   assert(validator.validate(c))
 end)
 test("unknown tier donor rejects", function()

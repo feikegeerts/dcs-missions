@@ -163,11 +163,18 @@ local playerCoords = {
 }
 
 local playerGroups = {}
-for _, name in ipairs(PLAYER_GROUP_NAMES) do
+-- Stable per-slot DCS unit IDs (observed: Aerial-1 -> 1, Aerial-3 -> 9). The
+-- slot gate resolves the server slot ID against these.
+local SLOT_UNIT_IDS = { 1, 3, 9, 11, 13 }
+for index, name in ipairs(PLAYER_GROUP_NAMES) do
   local dcsUnit = {}
   function dcsUnit:setPosition(_, _)
     -- The mission randomizes player headings during deferred init.  The
     -- position itself is intentionally not changed by this mock.
+  end
+
+  function dcsUnit:getID()
+    return SLOT_UNIT_IDS[index]
   end
 
   local dcsGroup = {}
@@ -383,6 +390,8 @@ local EVENTS = {
   PlayerLeaveUnit = "PlayerLeaveUnit",
   Dead = "Dead",
   Crash = "Crash",
+  Ejection = "Ejection",
+  Birth = "Birth",
 }
 
 local watchers = {}
@@ -398,6 +407,17 @@ end
 
 local coalition = {
   side = { NEUTRAL = 0, RED = RED, BLUE = BLUE },
+}
+
+local missionEndCalls = {}
+local trigger = {
+  action = {
+    setUserFlag = function(flag, value)
+      equal(flag, "DUEL_SURVIVAL_END", "wrong terminal flag")
+      equal(value, 1, "terminal flag not set")
+      missionEndCalls[#missionEndCalls + 1] = BLUE
+    end,
+  },
 }
 
 local menus = {}
@@ -531,6 +551,7 @@ local GLOBAL_NAMES = {
   "ZONE_RADIUS",
   "ENUMS",
   "coalition",
+  "trigger",
   "MY_SCRIPTS_ROOT",
   "TELEMETRY_DEVELOPMENT_ENABLED",
   "TELEMETRY_SHIPPING_ENABLED",
@@ -561,6 +582,7 @@ _G.AUFTRAG = AUFTRAG
 _G.ZONE_RADIUS = ZONE_RADIUS
 _G.ENUMS = ENUMS
 _G.coalition = coalition
+_G.trigger = trigger
 _G.MY_SCRIPTS_ROOT = "src/"
 _G.TELEMETRY_DEVELOPMENT_ENABLED = false
 _G.TELEMETRY_SHIPPING_ENABLED = true
@@ -659,11 +681,17 @@ local function findWatcher(event)
   return nil
 end
 
-local function hasExactlyEvents(watcher, first, second)
-  if not watcher or #watcher.handled_events ~= 2 then
+local function hasExactlyEvents(watcher, ...)
+  local expected = { ... }
+  if not watcher or #watcher.handled_events ~= #expected then
     return false
   end
-  return watcher.handled_events[1] == first and watcher.handled_events[2] == second
+  for index, event in ipairs(expected) do
+    if watcher.handled_events[index] ~= event then
+      return false
+    end
+  end
+  return true
 end
 
 local function firePlayerEvent(watcher, method, groupName, playerName, playerUCID)
@@ -967,7 +995,7 @@ succeeds("5. the first unit kill scores once and does not schedule a respawn", f
   check(killMessage ~= nil, "first bandit kill did not post a message")
   equal(
     killMessage.text,
-    string.format("Bandit down — team %d, 1 hostile left", tracker.total),
+    string.format("Bandit down — team %d", tracker.total),
     "kill message has the wrong team total or package remainder"
   )
 
@@ -1101,8 +1129,8 @@ succeeds("10. the three required event watchers are registered", function()
     "bandit watcher handles events other than dead/crash"
   )
   check(
-    hasExactlyEvents(playerDeathWatcher, EVENTS.Dead, EVENTS.Crash),
-    "player-death watcher handles events other than dead/crash"
+    hasExactlyEvents(playerDeathWatcher, EVENTS.Dead, EVENTS.Crash, EVENTS.Ejection, EVENTS.Birth),
+    "player aircraft watcher must handle dead/crash/ejection/birth"
   )
 end)
 
@@ -1265,18 +1293,30 @@ end)
 
 local livesScenario = nil
 
+succeeds("16b. a late UCID is reconciled with the prior fallback allowance", function()
+  loadInitializedMission({ { slot = "Aerial-1", name = "LateIdentity", ucid = nil } })
+  firePlayerLoss("OnEventDead", "Aerial-1", "Aerial-1-1", nil, 201)
+  firePlayerEvent(findWatcher(EVENTS.PlayerEnterAircraft), "OnEventPlayerEnterAircraft", "Aerial-1", "LateIdentity", "late-ucid")
+  menuCommands["Show aircraft remaining"].callback()
+  equal(
+    messages[#messages].text,
+    "Aircraft remaining:\n  LateIdentity: 2",
+    "late UCID received a fresh allowance instead of inheriting the fallback loss"
+  )
+end)
+
 succeeds("17. player lives decrement once and follow a UCID across slots", function()
   livesScenario = loadInitializedMission({
     { slot = "Aerial-1", name = "Springfield", ucid = "ucid-springfield" },
   })
   local messagesBefore = #messages
   firePlayerLoss("OnEventDead", "Aerial-1", "Aerial-1-1", nil, 101)
-  equal(messages[#messages].text, "Aircraft lost — 2 lives left.", "first player loss message is wrong")
+  equal(messages[#messages].text, "Aircraft lost — 2 aircraft remaining.", "first player loss message is wrong")
   firePlayerLoss("OnEventCrash", "Aerial-1", "Aerial-1-1", nil, 101)
   equal(#messages, messagesBefore + 1, "duplicate player crash posted another loss message")
 
-  menuCommands["Show lives"].callback()
-  equal(messages[#messages].text, "Lives:\n  Springfield: 2", "Show lives did not report two remaining lives")
+  menuCommands["Show aircraft remaining"].callback()
+  equal(messages[#messages].text, "Aircraft remaining:\n  Springfield: 2", "allowance did not report two aircraft")
 
   firePlayerEvent(
     livesScenario.retained.player,
@@ -1292,33 +1332,33 @@ succeeds("17. player lives decrement once and follow a UCID across slots", funct
     "Springfield",
     "ucid-springfield"
   )
-  menuCommands["Show lives"].callback()
-  equal(messages[#messages].text, "Lives:\n  Springfield: 2", "rejoin into another slot reset UCID lives")
+  menuCommands["Show aircraft remaining"].callback()
+  equal(messages[#messages].text, "Aircraft remaining:\n  Springfield: 2", "rejoin reset UCID allowance")
 
   firePlayerEvent(livesScenario.retained.player, "OnEventPlayerEnterAircraft", "Aerial-1", "Colt", "ucid-colt")
-  menuCommands["Show lives"].callback()
-  equal(messages[#messages].text, "Lives:\n  Colt: 3\n  Springfield: 2", "new UCID did not receive fresh lives")
+  menuCommands["Show aircraft remaining"].callback()
+  equal(messages[#messages].text, "Aircraft remaining:\n  Colt: 3\n  Springfield: 2", "new UCID did not receive three aircraft")
 end)
 
 succeeds("17b. a reused unit name with a new DCS object consumes another life", function()
   firePlayerEvent(livesScenario.retained.player, "OnEventPlayerLeaveUnit", "Aerial-1", "Colt", "ucid-colt")
   firePlayerEvent(livesScenario.retained.player, "OnEventPlayerEnterAircraft", "Aerial-1", "Colt", "ucid-colt")
   firePlayerLoss("OnEventDead", "Aerial-1", "Aerial-1-1", nil, 102)
-  equal(messages[#messages].text, "Aircraft lost — 2 lives left.", "reused-name aircraft loss was not counted")
+  equal(messages[#messages].text, "Aircraft lost — 2 aircraft remaining.", "reused-name aircraft loss was not counted")
   firePlayerLoss("OnEventCrash", "Aerial-1", "Aerial-1-1", nil, 102)
-  menuCommands["Show lives"].callback()
+  menuCommands["Show aircraft remaining"].callback()
   equal(
     messages[#messages].text,
-    "Lives:\n  Colt: 2\n  Springfield: 2",
+    "Aircraft remaining:\n  Colt: 2\n  Springfield: 2",
     "reused-name Dead/Crash lifecycle did not decrement exactly once"
   )
 end)
 
 succeeds("18. a zero-life identity is excluded even after DCS-native re-entry", function()
   firePlayerLoss("OnEventDead", "Aerial-2", "springfield-aircraft-2")
-  equal(messages[#messages].text, "Aircraft lost — 1 life left.", "singular life message is wrong")
+  equal(messages[#messages].text, "Aircraft lost — 1 aircraft remaining.", "single aircraft message is wrong")
   firePlayerLoss("OnEventDead", "Aerial-2", "springfield-aircraft-3")
-  equal(messages[#messages].text, "Aircraft lost — out of lives.", "out-of-lives message is wrong")
+  equal(messages[#messages].text, "Aircraft lost — out of aircraft.", "exhausted allowance message is wrong")
 
   local spawnsBefore = #spawnRecords
   menuCommands["Respawn bandit wave"].callback()
@@ -1333,13 +1373,14 @@ succeeds("18. a zero-life identity is excluded even after DCS-native re-entry", 
     "Springfield",
     "ucid-springfield"
   )
-  equal(messages[#messages].text, "Out of lives — excluded from the package.", "zero-life re-entry message is wrong")
+  equal(messages[#messages].text, "Out of aircraft — excluded from the package.", "exhausted allowance re-entry message is wrong")
 end)
 
 succeeds("19. terminal state fires once and blocks scheduled and forced replacement", function()
   local package = livesScenario.package
   local destroyBefore = package.destroy_count
   local schedulesBeforeDefeat = #schedules
+  local missionEndCallsBefore = #missionEndCalls
   killPackageFully(livesScenario.retained.bandit, package)
   local pendingReplacement = latestPendingSchedule(30, false, schedulesBeforeDefeat)
   check(pendingReplacement ~= nil, "pre-terminal wave defeat did not leave a scheduled replacement")
@@ -1350,15 +1391,31 @@ succeeds("19. terminal state fires once and blocks scheduled and forced replacem
   firePlayerLoss("OnEventDead", "Aerial-1", "colt-aircraft-2")
   firePlayerLoss("OnEventDead", "Aerial-1", "colt-aircraft-3")
   equal(
-    countExactMessages("All pilots down — mission over.", terminalMessageStart),
+    countExactMessages("All aircraft lost — mission ending in 60 seconds.", terminalMessageStart),
     1,
     "terminal message did not fire exactly once"
   )
+  equal(#missionEndCalls, missionEndCallsBefore, "DCS mission ended before the missile grace period")
+  local terminalSchedule = latestPendingSchedule(60, false, schedulesBeforeDefeat)
+  check(terminalSchedule ~= nil, "terminal mission-end callback was not scheduled")
 
   local spawnsBefore = #spawnRecords
   runSchedule(pendingReplacement)
   equal(#spawnRecords, spawnsBefore, "pre-terminal scheduled callback spawned after terminal state")
   equal(package.destroy_count, destroyBefore, "terminal transition despawned the active wave")
+
+  local messagesBeforeRejectedEntry = #messages
+  firePlayerEvent(livesScenario.retained.player, "OnEventPlayerEnterAircraft", "Aerial-1", "Colt", "ucid-colt")
+  equal(
+    messages[#messages].text,
+    "Mission ending — no aircraft remaining.",
+    "terminal state allowed a new player entry"
+  )
+  equal(#messages, messagesBeforeRejectedEntry + 1, "terminal player entry was not rejected")
+
+  runSchedule(terminalSchedule)
+  equal(#missionEndCalls, missionEndCallsBefore + 1, "DCS mission did not end after the missile grace period")
+  equal(missionEndCalls[#missionEndCalls], BLUE, "blue coalition was not retained as the survival winner")
 
   menuCommands["Respawn bandit wave"].callback()
   equal(messages[#messages].text, "Mission over — no more waves.", "terminal F10 refusal message is wrong")
@@ -1366,10 +1423,148 @@ succeeds("19. terminal state fires once and blocks scheduled and forced replacem
   equal(package.destroy_count, destroyBefore, "terminal F10 command despawned the finished wave wrapper")
   firePlayerLoss("OnEventCrash", "Aerial-1", "colt-aircraft-3")
   equal(
-    countExactMessages("All pilots down — mission over.", terminalMessageStart),
+    countExactMessages("All aircraft lost — mission ending in 60 seconds.", terminalMessageStart),
     1,
     "duplicate loss repeated the terminal transition"
   )
+  equal(#missionEndCalls, missionEndCallsBefore + 1, "duplicate loss ended DCS mission again")
+end)
+
+-- Model real client-slot respawns: identical name AND numeric ID, but a new
+-- aircraft incarnation at each Birth. Loss callbacks may use fresh handles.
+local function aircraftEvent(raw, time, ucid)
+  return {
+    IniCoalition = BLUE,
+    IniGroupName = "Aerial-1",
+    IniDCSUnitName = "Aerial-1-1",
+    IniDCSUnit = raw,
+    IniPlayerName = "Respawn",
+    IniPlayerUCID = ucid or "respawn-player",
+    time = time,
+  }
+end
+
+local function reusedIdUnit()
+  return { getID = function() return 101 end }
+end
+
+succeeds("startup fallback balances merge before two-player exhaustion and native policy", function()
+  setAlivePlayers({ "Aerial-1", "Aerial-3" })
+  local before = #schedules
+  dofile("src/missions/air-superiority-survival/main.lua")
+  -- Live order: Birth and init catch-up precede UCID-bearing entry events.
+  local players = {
+    { slot = "Aerial-1", ucid = "pilot-a", id = 1 },
+    { slot = "Aerial-3", ucid = "pilot-b", id = 9 },
+  }
+  local function event(player, time, withIdentity)
+    return {
+      IniCoalition = BLUE, IniGroupName = player.slot,
+      IniDCSUnitName = player.slot .. "-1", time = time,
+      IniDCSUnit = { getID = function() return player.id end },
+      IniPlayerUCID = withIdentity and player.ucid or nil,
+      IniPlayerName = player.ucid,
+    }
+  end
+  for _, player in ipairs(players) do
+    dispatchCurrentGameplayEvent("OnEventBirth", event(player, 0, false))
+  end
+  runSchedule(latestPendingSchedule(1, true, before))
+  for _, player in ipairs(players) do
+    dispatchCurrentGameplayEvent("OnEventPlayerEnterAircraft", event(player, 1, true))
+  end
+  menuCommands["Show aircraft remaining"].callback()
+  equal(messages[#messages].text, "Aircraft remaining:\n  pilot-a: 3\n  pilot-b: 3", "phantom startup allowances remain")
+  for playerIndex, player in ipairs(players) do
+    for incarnation = 1, 3 do
+      if incarnation > 1 then
+        dispatchCurrentGameplayEvent("OnEventBirth", event(player, incarnation * 100, false))
+        dispatchCurrentGameplayEvent("OnEventPlayerEnterAircraft", event(player, incarnation * 100 + 1, true))
+      end
+      dispatchCurrentGameplayEvent("OnEventDead", event(player, incarnation * 100 + 10, false))
+    end
+    equal(_G.duel_can_enter_blue_slot(player.ucid), false, "exhausted pilot can enter Blue")
+    if playerIndex == 1 then
+      equal(_G.duel_can_enter_blue_slot("pilot-b"), true, "other pilot blocked prematurely")
+      -- Seat-based fallback: a UCID unknown to the mission is still checked
+      -- against the requested seat's allowance (raw and wrapped slot IDs).
+      equal(_G.duel_can_enter_blue_slot("stranger-ucid", "1"), false, "exhausted seat allowed via slot fallback")
+      equal(_G.duel_can_enter_blue_slot("stranger-ucid", "101_9"), true, "live seat blocked via wrapped slot ID")
+      equal(_G.duel_can_enter_blue_slot("stranger-ucid", "999"), true, "unknown slot must fail open")
+    end
+  end
+  equal(_G.duel_can_enter_blue_slot("new-pilot"), false, "terminal mission accepts new pilot")
+  equal(_G.duel_can_enter_blue_slot("stranger-ucid", "1"), false, "terminal mission accepts a slot fallback entry")
+  local ending = latestPendingSchedule(60, false, before)
+  check(ending, "phantom balances prevented terminal timer")
+  local calls = #missionEndCalls
+  runSchedule(ending)
+  equal(#missionEndCalls, calls + 1, "terminal flag not raised after grace period")
+end)
+
+succeeds("19b. three same-slot aircraft losses exhaust allowance even when DCS IDs repeat", function()
+  loadInitializedMission({ { slot = "Aerial-1", name = "Respawn", ucid = "respawn-player" } })
+  local oldRaw
+  for incarnation = 1, 3 do
+    local raw = reusedIdUnit()
+    local birth = aircraftEvent(raw, incarnation * 100)
+    dispatchCurrentGameplayEvent("OnEventBirth", birth)
+    dispatchCurrentGameplayEvent("OnEventPlayerEnterAircraft", birth)
+    dispatchCurrentGameplayEvent("OnEventBirth", birth) -- duplicate birth must not reset anything
+    if oldRaw then
+      -- A delayed callback with an old raw handle must not consume the new aircraft.
+      dispatchCurrentGameplayEvent("OnEventCrash", aircraftEvent(oldRaw, incarnation * 100 + 1))
+      -- Nor may a fresh handle carrying an old event timestamp resolve to it.
+      dispatchCurrentGameplayEvent("OnEventDead", aircraftEvent(reusedIdUnit(), incarnation * 100 - 1))
+    end
+    dispatchCurrentGameplayEvent("OnEventPilotDead", aircraftEvent(raw, incarnation * 100 + 5))
+    menuCommands["Show aircraft remaining"].callback()
+    equal(messages[#messages].text, "Aircraft remaining:\n  Respawn: " .. (4 - incarnation),
+      "birth, pilot death or stale loss consumed an aircraft")
+    dispatchCurrentGameplayEvent("OnEventDead", aircraftEvent(raw, incarnation * 100 + 10))
+    local afterLoss = #messages
+    dispatchCurrentGameplayEvent("OnEventCrash", aircraftEvent(reusedIdUnit(), incarnation * 100 + 10))
+    dispatchCurrentGameplayEvent("OnEventBirth", birth)
+    dispatchCurrentGameplayEvent("OnEventPlayerEnterAircraft", aircraftEvent(raw, incarnation * 100 + 11))
+    dispatchCurrentGameplayEvent("OnEventDead", aircraftEvent(raw, incarnation * 100 + 12))
+    -- Re-entry at zero posts a refusal, not another loss.
+    equal(#messages, afterLoss + (incarnation == 3 and 1 or 0), "duplicate callbacks counted another loss")
+    menuCommands["Show aircraft remaining"].callback()
+    equal(messages[#messages].text, "Aircraft remaining:\n  Respawn: " .. (3 - incarnation), "allowance did not decrement")
+    oldRaw = raw
+  end
+  local spawnsBefore = #spawnRecords
+  menuCommands["Respawn bandit wave"].callback()
+  equal(#spawnRecords, spawnsBefore, "three losses did not stop wave progression")
+  equal(messages[#messages].text, "Mission over — no more waves.", "terminal state missing")
+end)
+
+succeeds("19c. delayed old-aircraft loss is charged to its pilot, not the new slot occupant", function()
+  loadInitializedMission({ { slot = "Aerial-1", name = "Respawn", ucid = "respawn-player" } })
+  local oldRaw, newRaw = reusedIdUnit(), reusedIdUnit()
+  dispatchCurrentGameplayEvent("OnEventBirth", aircraftEvent(oldRaw, 100))
+  dispatchCurrentGameplayEvent("OnEventPlayerEnterAircraft", aircraftEvent(oldRaw, 101))
+  dispatchCurrentGameplayEvent("OnEventBirth", aircraftEvent(newRaw, 200, "new-player"))
+  dispatchCurrentGameplayEvent("OnEventPlayerEnterAircraft", aircraftEvent(newRaw, 201, "new-player"))
+  dispatchCurrentGameplayEvent("OnEventDead", aircraftEvent(oldRaw, 202))
+  menuCommands["Show aircraft remaining"].callback()
+  equal(messages[#messages].text, "Aircraft remaining:\n  Respawn: 3\n  Respawn: 2", "loss charged to new occupant")
+  dispatchCurrentGameplayEvent("OnEventCrash", aircraftEvent(oldRaw, 203))
+  dispatchCurrentGameplayEvent("OnEventDead", aircraftEvent(newRaw, 210, "new-player"))
+  menuCommands["Show aircraft remaining"].callback()
+  equal(messages[#messages].text, "Aircraft remaining:\n  Respawn: 2\n  Respawn: 2", "new aircraft loss not counted separately")
+end)
+
+succeeds("19d. a raw object reused across Births still gets a fresh aircraft allowance charge", function()
+  loadInitializedMission({ { slot = "Aerial-1", name = "Respawn", ucid = "respawn-player" } })
+  local raw = reusedIdUnit()
+  for incarnation = 1, 2 do
+    dispatchCurrentGameplayEvent("OnEventBirth", aircraftEvent(raw, incarnation * 100))
+    dispatchCurrentGameplayEvent("OnEventPlayerEnterAircraft", aircraftEvent(raw, incarnation * 100 + 1))
+    dispatchCurrentGameplayEvent("OnEventCrash", aircraftEvent(raw, incarnation * 100 + 10))
+  end
+  menuCommands["Show aircraft remaining"].callback()
+  equal(messages[#messages].text, "Aircraft remaining:\n  Respawn: 1", "reused raw object suppressed replacement loss")
 end)
 
 succeeds("20. two-player package escalation follows 2,2,2,3", function()
@@ -1439,20 +1634,20 @@ succeeds("23. player-facing messages use the approved concise voice", function()
   equal(messages[#messages].text, "Not ready yet — try again in a second.", "pre-init F10 message is wrong")
   menuCommands["Show kills"].callback()
   equal(messages[#messages].text, "Team kills: 0", "Show kills zero-state header is wrong")
-  menuCommands["Show lives"].callback()
-  equal(messages[#messages].text, "No players yet.", "Show lives empty-state message is wrong")
+  menuCommands["Show aircraft remaining"].callback()
+  equal(messages[#messages].text, "No players yet.", "aircraft allowance empty-state message is wrong")
 
   firePlayerEvent(retained.player, "OnEventPlayerEnterAircraft", "Aerial-1", "Viper", "message-player")
   local initSchedule = latestPendingSchedule(1, true, schedulesBefore)
   equal(runSchedule(initSchedule), false, "message scenario init did not complete")
   runSchedule(latestPendingSchedule(3, false, schedulesBefore))
-  equal(messages[#messages].text, "Wave 1 — 1 hostile inbound", "inbound message is wrong")
+  equal(messages[#messages].text, "Wave 1 — hostiles inbound", "inbound message is wrong")
 
   menuCommands["Respawn bandit wave"].callback()
   equal(messages[#messages].text, "New bandit wave inbound.", "forced-wave success message is wrong")
   local activePackage = latestSpawn().wrapper
   fireBanditEvent(retained.bandit, "OnEventDead", activePackage, activePackage.units[1].name)
-  equal(messages[#messages].text, "Bandit down — team 1, 0 hostiles left", "bandit kill message is wrong")
+  equal(messages[#messages].text, "Bandit down — team 1", "bandit kill message is wrong")
   menuCommands["Show kills"].callback()
   equal(messages[#messages].text, "Team kills: 1\n  Team: 1", "Show kills scored header is wrong")
   menuCommands["Reset kills"].callback()
@@ -1483,13 +1678,13 @@ succeeds("24. player-death watcher is retained, shares Dead/Crash, and ignores r
   equal(#watchers, context.watchersBefore + 3, "fresh mission did not register exactly three gameplay watchers")
   check(context.retained.playerDeath ~= nil, "player-death watcher is not strongly retained")
   check(
-    hasExactlyEvents(context.retained.playerDeath, EVENTS.Dead, EVENTS.Crash),
-    "player-death watcher does not handle exactly Dead and Crash"
+    hasExactlyEvents(context.retained.playerDeath, EVENTS.Dead, EVENTS.Crash, EVENTS.Ejection, EVENTS.Birth),
+    "player aircraft watcher does not handle Dead, Crash, Ejection and Birth"
   )
-  menuCommands["Show lives"].callback()
+  menuCommands["Show aircraft remaining"].callback()
   local livesBefore = messages[#messages].text
   firePlayerLoss("OnEventDead", "Aerial-1", "red-loss-must-not-count", RED)
-  menuCommands["Show lives"].callback()
+  menuCommands["Show aircraft remaining"].callback()
   equal(messages[#messages].text, livesBefore, "red-coalition death changed player lives")
 end)
 
@@ -1508,10 +1703,10 @@ succeeds("25. slot fallback initializes missing lives and warns once per mission
   firePlayerEvent(retained.player, "OnEventPlayerEnterAircraft", "Aerial-2", nil, nil)
   equal(runSchedule(latestPendingSchedule(1, true, schedulesBefore)), false, "fallback scenario init did not complete")
   runSchedule(latestPendingSchedule(3, false, schedulesBefore))
-  menuCommands["Show lives"].callback()
+  menuCommands["Show aircraft remaining"].callback()
   equal(
     messages[#messages].text,
-    "Lives:\n  Player: 3\n  Player: 3",
+    "Aircraft remaining:\n  Player: 3\n  Player: 3",
     "slot fallback did not initialize both identities"
   )
   local warningsAfter = 0
@@ -1579,6 +1774,19 @@ succeeds("28. tiered donor selection follows waves 1-3, 4-6, and 7+ with unchang
   check(logContains("donor Bandit-") and logContains("tier 1"), "spawn log does not name the tier-1 donor selection")
   check(logContains("tier 2"), "spawn log does not name the tier-2 donor selection")
   check(logContains("tier 3"), "spawn log does not name the tier-3 donor selection")
+end)
+
+succeeds("donor bags prevent repeated draws until the tier is exhausted", function()
+  loadInitializedMission({ { slot = "Aerial-1", name = "Variety", ucid = "variety" } })
+  local seen, tier = {}, 1
+  for wave = 1, 15 do
+    local currentTier = tierForWave(wave)
+    if currentTier ~= tier or wave == 13 then seen, tier = {}, currentTier end
+    local donor = latestSpawn().template
+    check(not seen[donor], "donor repeated before bag exhaustion in tier " .. tier)
+    seen[donor] = true
+    if wave < 15 then menuCommands["Respawn bandit wave"].callback() end
+  end
 end)
 
 succeeds("29. an unavailable tier degrades to surviving donors without reintroducing Bandit-7", function()

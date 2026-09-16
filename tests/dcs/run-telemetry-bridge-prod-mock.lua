@@ -553,13 +553,13 @@ local function run_mapping(mapping)
       return self.runtime
     end
 
-    function system:add_line(sequence, payload)
+    function system:add_line(sequence, payload, event_type)
       local state = self.export.state
       local event = {
         schema_version = 1,
         event_id = state.producer_id .. ":" .. state.run_key .. ":" .. tostring(sequence),
         event_sequence = sequence,
-        event_type = "participant.entered",
+        event_type = event_type or "participant.entered",
         source = "moose-mission",
         source_version = "duel-dynamic-telemetry-v1",
         producer_id = state.producer_id,
@@ -1249,6 +1249,62 @@ local function run_mapping(mapping)
     system.hook_env.net = system.fake_net
     system:advance(0.25)
     equal(system.export.state.last_acked_sequence, 1)
+  end)
+
+  succeeds("individual exhaustion veto is synchronous and independent of telemetry", function()
+    local system = new_system()
+    system:new_generation(true)
+    local exhausted = "pilot-'quoted'\\identity"
+    system.fake_net.get_player_info = function(id)
+      return { ucid = id == 2 and exhausted or "stranger-ucid" }
+    end
+    -- Mirror the mission gate: UCID-keyed when the mission knows the UCID,
+    -- otherwise the requested seat's allowance (raw or wrapped slot ID).
+    system.mission.duel_can_enter_blue_slot = function(ucid, slotID)
+      local byUcid = { [exhausted] = 0, ["live-pilot"] = 2 }
+      local bySeat = { ["1"] = 0, ["9"] = 2 }
+      if byUcid[ucid] ~= nil then
+        return byUcid[ucid] > 0
+      end
+      local remaining = bySeat[slotID] or bySeat[slotID:match("_(%d+)$")]
+      return remaining == nil or remaining > 0
+    end
+    equal(system.callbacks.onPlayerTryChangeSlot(2, 2, 1), false, "exhausted UCID allowed")
+    equal(system.callbacks.onPlayerTryChangeSlot(2, 2, 9), false, "exhausted UCID allowed (other seat)")
+    equal(system.callbacks.onPlayerTryChangeSlot(3, 2, 1), false, "unknown UCID on exhausted seat allowed")
+    equal(system.callbacks.onPlayerTryChangeSlot(3, 2, "101_1"), false, "unknown UCID on exhausted seat (wrapped ID) allowed")
+    equal(system.callbacks.onPlayerTryChangeSlot(3, 2, 9), true, "unknown UCID on live seat blocked")
+    equal(system.callbacks.onPlayerTryChangeSlot(3, 2, 42), true, "unknown seat must fail open")
+    equal(system.callbacks.onPlayerTryChangeSlot(2, 0, ""), true, "spectator side vetoed")
+    equal(system.callbacks.onPlayerTryChangeSlot(2, 1, 1), true, "red side vetoed")
+    check(not system.export.state.slot_blocked, "test accidentally used global terminal block")
+    check(not system:contains("blue-slot-policy=query-failed"), "query failure logged without a transport fault")
+    -- Gate absent (mission script not started yet): fail open.
+    system.mission.duel_can_enter_blue_slot = nil
+    equal(system.callbacks.onPlayerTryChangeSlot(2, 2, 1), true, "absent gate must fail open")
+    -- Broken bridge transport: fail open and log the query failure.
+    local original_dostring = system.fake_net.dostring_in
+    system.fake_net.dostring_in = function()
+      return "TLM_TRANSPORT_FAIL"
+    end
+    equal(system.callbacks.onPlayerTryChangeSlot(2, 2, 1), true, "query failure must fail open")
+    check(system:contains("blue-slot-policy=query-failed"))
+    system.fake_net.dostring_in = original_dostring
+    system.mission.duel_can_enter_blue_slot = function() return false end
+    equal(system.callbacks.onPlayerTryChangeSlot(3, 2, 1), false, "terminal gate allowed a slot")
+    check(system:contains("blue-slot-rejected"))
+  end)
+
+  succeeds("terminal gameplay event vetoes later Blue slot changes", function()
+    local system = new_system()
+    system:new_generation(true)
+    equal(system.callbacks.onPlayerTryChangeSlot(2, 2, 1), true)
+    local next_sequence = system.export.state.last_acked_sequence + 1
+    system:add_line(next_sequence, { reason = "all-aircraft-lost" }, "gameplay.ended")
+    system:advance(0.25)
+    check(system.export.state.slot_blocked, "terminal gameplay event did not update slot policy")
+    equal(system.callbacks.onPlayerTryChangeSlot(2, 2, 1), false)
+    equal(system.callbacks.onPlayerTryChangeSlot(2, 1, 1), true)
   end)
 
   succeeds("logs contain only operational metadata and no decoded payload", function()
