@@ -1,11 +1,17 @@
 # Multi-mission telemetry implementation
 
-## Working branch and scope
+## Current state and scope
 
-Started 2026-09-14 in `worktrees/telemetry-decoupling`, branch
-`feature/telemetry-decoupling`. This is an incremental implementation, not a
-completed three-mission rollout. No installed mission, hook, service, database,
-or deployment is changed by this work.
+Implementation started 2026-09-14 in `worktrees/telemetry-decoupling` on
+`feature/telemetry-decoupling` and was merged to `main` on 2026-09-14. The
+current repository contains the completed source separation, integration API,
+named builds, explicit milestones, and mission-scoped dashboard history.
+
+The implementation is offline-verified and remains compatible with the existing
+telemetry service and production path. It does **not** claim completion of the
+owner-authorized live BVR → ACM → Survival → BVR rotation or real-player
+acceptance. The original source archives remain generic loaders; they were not
+silently rebound to select a mission by filename.
 
 Target: separate mission entry scripts and configuration, optional shared
 gameplay helpers, one shared telemetry library, and one existing delivery
@@ -126,20 +132,23 @@ Increment-3 evidence: **309 Lua checks and three architecture checks passed**;
 all three named builds plus a legacy regression build passed the shipping
 syntax/banned-API gates and generated-script sandbox handshake/identity/ACK
 checks. Three negative build-selection cases passed without producing an
-invalid shipping artifact. Formatting and `git diff --check` passed. No live
-server or production acceptance is claimed.
+invalid shipping artifact. Formatting and `git diff --check` passed. This was
+offline evidence; the later integrated telemetry acceptance is recorded in
+`slice-18-5-e-evidence.md`, while the named mission rotation remains open.
 
-## Dashboard finding (still open)
+## Dashboard and event-contract result
 
-The current `summarizeRunWaves` derives package completion from aircraft
-spawn/loss events. There are no explicit wave lifecycle events in the current
-shared event contract. The mission page additionally enables this calculation
-only for `duel-dynamic`.
+The dashboard now recognizes all four package-wave identities and uses
+mission-scoped history queries before applying the result limit. New runs carry
+optional capabilities and explicit `wave.spawned`, `wave.cleared`, and
+`gameplay.ended` milestones. Projections prefer those milestones and retain the
+legacy spawn/loss derivation for older runs; non-wave missions remain
+`not-applicable` rather than looking like a zero-wave run. Gameplay termination
+and DCS session termination remain distinct.
 
-Do not silently treat every red group in every future mission as a wave. Preserve
-the legacy derivation for old runs, and introduce explicit optional capabilities
-and scenario milestones with contract/projection tests before generalizing the
-dashboard. Gameplay termination and DCS session termination remain distinct.
+Do not treat this as generic world discovery: a future non-wave mission must
+opt into the telemetry integration explicitly and must not import the package
+wave implementation.
 
 ## Verification
 
@@ -161,7 +170,8 @@ Final increment-2 verification: **282 Lua checks + three architecture checks
 passed**, together with the generated shipping sandbox, the shipping build's
 syntax/banned-API gates, StyLua on changed Lua files, and `git diff --check`.
 
-Run from this worktree, not the main checkout:
+These commands document the implementation verification battery; run them from
+the repository root:
 
 ```powershell
 python tests/test_telemetry_boundaries.py
@@ -193,7 +203,7 @@ outage recovery. No live acceptance is claimed.
 
 ## Increment 4: dashboard catalogue generalization (no contract/schema change)
 
-Completed 2026-09-14 in the same worktree on the free track. The dashboard now
+Completed 2026-09-14 and merged to `main`. The dashboard now
 recognizes all four package-wave identities with explicit titles/descriptions
 and replaces the `duel-dynamic`-only wave-report gate with `isWaveMission()`.
 Legacy `duel-dynamic` derivation (`summarizeRunWaves` from spawn/loss events)
@@ -218,7 +228,7 @@ and `eslint` clean.
    and selector-based until explicitly rebound; they are not silently upgraded.
 4. **Completed in increment 4 (free track):** dashboard catalogue + wave-page
    gate generalized without contract/schema changes.
-5. **Completed in the Step-2 session (this worktree, uncommitted):**
+5. **Completed in Step 2 and merged to `main`:**
    optional reporting capabilities and explicit wave milestones across the
    event contract, capture, ingest, and projections; mission-scoped database
    pagination before the global run limit; Drizzle 0005 metadata
@@ -229,13 +239,14 @@ and `eslint` clean.
    Live DCS/production steps remain owner-authorized; offline evidence does not
    claim live acceptance.
 
-Any database migration requires first reconciling the existing 0005 Drizzle
-metadata gap; production writes and deployment remain separate owner actions.
+The 0005 Drizzle metadata gap is reconciled and the production migration is
+already applied. Any future database migration still requires the normal
+schema review and owner approval; do not reapply 0005.
 
 ## Step 2: capabilities, explicit wave milestones, mission-scoped history
 
-Completed 2026-09-14 in the same worktree on branch
-`feature/telemetry-decoupling` (uncommitted). Main had moved to `83d465e`
+Completed 2026-09-14 on branch `feature/telemetry-decoupling` and subsequently
+merged to `main`. Main had moved to `83d465e`
 ("Fix player lives for reused DCS aircraft names"); the branch was
 fast-forwarded to it and the one conflict
 (`src/missions/duel-dynamic/main.lua`, now a 4-line entry) was resolved

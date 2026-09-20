@@ -1,11 +1,13 @@
-# Shipping `duel-dynamic` — packaging checklist
+# Shipping package builds — `duel-dynamic` and named missions
 
-**Multi-mission worktree update:** use explicit `-MissionName` for BVR, ACM,
-and Survival builds. The packager now embeds the selected entry/config and
-shared gameplay/telemetry, with template validation before assembly. Commands
-and compatibility limits: `docs/multi-mission-development.md`. The legacy
-no-argument build still selects `duel-dynamic`; named builds are not yet live
-accepted or deployed.
+**Current shipping state:** use explicit `-MissionName` for BVR, ACM, and
+Survival builds. The packager embeds the selected entry/config and shared
+gameplay/telemetry, validates the selected mission template, and adds the
+native Survival terminal trigger. The named builds and generated no-filesystem
+sandbox are offline-verified. Integrated unattended telemetry acceptance also
+passed for development and stock-scripting shipping paths, but the named
+mission rotation and human-in-seat Survival gate remain open. See
+`docs/multi-mission-development.md` for selection rules.
 
 The dev `.miz` is a **dumb loader** that does `loadfile` on
 `C:\Projects\dcs-missions\src\bootstrap.lua`. This **requires** both:
@@ -17,9 +19,10 @@ the mission must be **self-contained** and run on a stock, sanitized DCS
 install.
 
 This doc covers the steps. The mission-only self-contained build was verified
-on the stock, sanitized dedicated server on 2026-09-02. The newly packaged
-production telemetry bridge still requires the owner-gated S17-p4 live test;
-the dev `.miz` remains the normal hot-reload workflow.
+on the stock, sanitized dedicated server, and the production telemetry bridge
+completed the integrated unattended acceptance documented in
+`docs/telemetry/slice-18-5-e-evidence.md`. The dev `.miz` remains the normal
+hot-reload workflow.
 
 ---
 
@@ -79,20 +82,21 @@ What the packager does:
    and `main.lua`. Literal archive paths are not valid DO SCRIPT FILE resource
    references and are silently ignored by stock DCS.
 
-4. **Synthesizes `l10n/DEFAULT/main.lua`** from `src/missions/duel-dynamic/main.lua`:
-   - Inlines `src/missions/duel-dynamic/score.lua` at the top.
-   - Strips the dev-only `MY_SCRIPTS_ROOT` lookup, the complete
-     `initDevelopmentTelemetry` function and call, and the development
-     `dofile(DIR .. "score.lua")` line. These are exact, anchored,
-     fail-loud rewrites rather than optional substitutions.
-   - Inlines the 11 pure telemetry modules (`event_id`, `envelope`, `json`,
+4. **Synthesizes `l10n/DEFAULT/main.lua`** from the selected mission entry and
+   shared gameplay sources:
+   - Inlines `src/gameplay/score.lua` at the top.
+   - Strips the dev-only `MY_SCRIPTS_ROOT` lookup and development file-I/O
+     block, replaces the development module resolver with an embedded table,
+     and removes the development `dofile(DIR .. "score.lua")` line. These are
+     exact, anchored, fail-loud rewrites rather than optional substitutions.
+   - Inlines the shared telemetry modules (`event_id`, `envelope`, `json`,
      `lifecycle`, `bridge`, `bridge_frame`, `bridge_queue`, `asset`, `shot`,
-     `combat`, and `participant`) as IIFE locals before the mission body. It
-     keeps `initShippingTelemetry`, rewrites each of its 11 `dofile` lines to
-     the corresponding inlined local, and injects
-     `_G.TELEMETRY_SHIPPING_ENABLED = true` immediately before the shipping
-     init call. The bridge uses historical run classification and an in-memory
-     queue; it performs no mission-side file writes.
+     `combat`, `participant`, and `integration`) as IIFE locals before the mission
+     body. It rewrites the production telemetry module loads to the corresponding
+     inlined local, and injects `_G.TELEMETRY_SHIPPING_ENABLED = true`
+     immediately before the shipping init call. The bridge uses historical run
+     classification and an in-memory queue; it performs no mission-side file
+     writes.
    - Replaces `os.time()` (nilled in stock DCS) with
      `math.floor(timer.getTime() * 1000)` for the LCG seed.
    - Adds a `main.lua — SHIPPING BUILD` header explaining
@@ -124,7 +128,8 @@ member names that are valid ZIP but unusable for DCS resources. Make changes in
 The shipping mission does not need the hook to run. Without it, telemetry
 events remain in the bounded mission-memory queue and no spool file appears.
 The production GameGUI hook is what handshakes with the bridge and makes those
-events durable and deliverable.
+events durable and deliverable. The same compatibility hook is used by all
+named mission builds; the mission identity travels in the event stream.
 
 Copy the repository hook:
 
@@ -155,19 +160,20 @@ mission state.
 
 ### Verifying on a stock DCS
 
-This is the owner-gated S17-p4 test and is not run by the automated packaging
-loop. Without it, shipping telemetry has not been proven in the live DCS
-runtime.
+The unattended shipping telemetry path has passed integrated acceptance on a
+stock-scripting dedicated server. The remaining stock-DCS work is gameplay
+acceptance: human player slots, package behavior, Survival aircraft allowance
+and terminal state, plus the named mission rotation.
 
 **Important live-test distinction:** starting the dedicated server by itself is
 enough to validate the stock shipping load, bridge handshake, lifecycle events,
 hook spool, and collector capture, but it does **not** exercise the mission's
 AI package behavior. The mission intentionally waits for an occupied
 `Aerial-1`–`Aerial-5` client slot before `init done` and bandit-wave spawning.
-For the full S17-p4 mission gate, a DCS client must connect to the local server
-and occupy at least one `Aerial-*` slot. Do not enable `TEST_COMBAT` or alter
-the shipping artifact to bypass this gate; that would test the development path
-instead of the shipped mission.
+For the gameplay gate, a DCS client must connect to the local server and occupy
+the intended `Aerial-*` slots. Do not enable `TEST_COMBAT` or alter the shipping
+artifact to bypass this gate; that would test the development path instead of
+the shipped mission.
 
 1. Keep the dedicated server's install-level `MissionScripting.lua` **stock**.
    Do not add an `autoexec.cfg` unsafe-API exception. Confirm mission-state
@@ -205,15 +211,14 @@ instead of the shipped mission.
 The dev `.miz` is NEVER overwritten. To re-enter dev mode, restore
 the de-sanitized `MissionScripting.lua` and continue editing `src/`.
 
-### 6. Update the docs
+### 6. Remaining release checks
 
 After future shipping-build behavior changes are verified:
 
-- Update `docs/dev-setup.md §8` to describe the now-working shipping
-  process (remove the "not implemented yet" note).
-- Update `docs/PROJECT-STATUS.md §6.3` to check off the box.
-- Add a short note at the top of `docs/spec-duel-dynamic.md`
-  ("Shipping status: dev only" or "Shipping status: built, see …").
+- rebuild the affected named artifact with explicit `-MissionName`;
+- rerun the shipping syntax, banned-API, template, and sandbox gates;
+- repeat the owner-approved live gameplay/rotation checks; and
+- update `docs/PROJECT-STATUS.md` and the relevant mission evidence.
 
 ---
 

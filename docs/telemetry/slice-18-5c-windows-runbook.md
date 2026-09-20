@@ -2,10 +2,11 @@
 
 ## Boundary and fixed state
 
-These are owner-gated instructions. This slice does not install a service,
-register a task, acquire WinSW, or provision a credential. Prefer WinSW; use the
-Scheduled Task only when a service is not approved. Never make it a repeating or
-per-second launcher.
+This runbook records the installed steady state and the reversible owner
+operations around it. The repository does not silently acquire WinSW, register
+services, or provision credentials; those steps remain explicit administrative
+actions. Prefer WinSW; use the Scheduled Task only when a service is not
+approved. Never make it a repeating or per-second launcher.
 
 The confirmed input path is
 `C:\Users\g_for\Saved Games\DCS.dcs_serverrelease\Logs\telemetry\`. The owner
@@ -117,7 +118,10 @@ During an owner-approved local window:
 5. Reboot with DCS stopped. Confirm the collector starts independently, then
    starts collecting when DCS later writes telemetry.
 
-Live install/boot/restart/duplicate/restricted-identity checks remain owner-gated.
+Duplicate-start rejection, graceful shutdown, and restart were live-validated
+on 2026-09-13. The host boot check and running under the dedicated identity
+remain owner actions; the current service runs as the documented LocalSystem
+interim because of the WinSW 1064 issue.
 
 ## `--status` field guide
 

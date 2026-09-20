@@ -14,8 +14,11 @@ src/
   lib/Moose_.lua             # framework (one pinned build, shared)
   missions/
     <mission-name>/
-      main.lua               # entry point for that mission
-      score.lua              # any sibling files (load via _G.MY_SCRIPTS_ROOT)
+      main.lua               # independent entry point
+      config.lua             # mission identity, roster, gameplay overrides
+  gameplay/
+      package-waves.lua      # shared optional wave behavior
+  lib/telemetry/             # shared telemetry integration
       ...
   .current-mission           # one line: the active mission's name
 ```
@@ -70,9 +73,8 @@ missions = change `.current-mission` (one line) and restart.
 5. On the dedicated server, add the mission via the WebGUI
    (`http://localhost:8088`) → mission list → Add.
 
-The project's `missions/` folder is **not part of the dev loop** — it's only
-read by `build\pack-miz.ps1` when building a shippable `.miz`. Leave it alone
-during dev.
+The source `src/missions/` folder is part of the dev loop and is also consumed
+by `build\pack-shipping-miz.ps1`; generated archive staging lives under `out/`.
 
 You won't touch the editor again unless templates/zones/weather/client slots change.
 
@@ -107,17 +109,18 @@ inside it doesn't change. Only the pointer file does.
 
 ## Shipping (static mode)
 
-For a shipped mission that must work on a stock (sanitized) DCS:
+For a shipped mission that must work on a stock (sanitized) DCS, run the
+repository packager from the project root:
 
-1. Disable all `:TraceOn()` calls.
-2. Switch the trigger to multiple `DO SCRIPT FILE` entries — order matters:
-   - `lib\Moose_.lua`
-   - `bootstrap.lua` (modified to not read from disk — chains in-memory)
-   - `missions\<name>\main.lua` (and its siblings)
-3. Or, extend `build\pack-miz.ps1` to assemble the .miz with embedded scripts.
-   (Current `pack-miz.ps1` only re-zips an existing unpacked tree — it does
-   not yet rewrite the trigger or embed scripts. Dev .mizs require the
-   de-sanitized env, see `docs/dev-setup.md §2`.)
-4. The shipped .miz must not depend on `lfs`/`io`/`os` — its only
-   file-system interaction is `loadfile()` from within the .miz itself,
-   which doesn't need the unsanitized env.
+```powershell
+pwsh -File build\pack-shipping-miz.ps1 -MissionName duel-dynamic-bvr -Zip
+pwsh -File build\pack-shipping-miz.ps1 -MissionName duel-dynamic-acm -Zip
+pwsh -File build\pack-shipping-miz.ps1 -MissionName air-superiority-survival -Zip
+```
+
+The packager rewrites the Mission Start trigger, embeds MOOSE and the selected
+entry/config plus shared gameplay and telemetry as resource-backed `DO SCRIPT
+FILE` payloads, adds the native Survival terminal trigger, and rejects stock-
+incompatible filesystem APIs. See `docs/shipping-duel-dynamic.md` for the
+validation and live-acceptance checklist. Shipping missions do not read
+`.current-mission` and do not require a de-sanitized `MissionScripting.lua`.

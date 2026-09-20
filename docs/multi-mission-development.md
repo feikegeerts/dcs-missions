@@ -1,7 +1,16 @@
 # Independent mission scripts and builds
 
-Implemented on `feature/telemetry-decoupling`; not merged or deployed. The
-original `.miz` files and running DCS/collector setup are unchanged.
+The multi-mission refactor was merged to `main` on 2026-09-14 and is included
+in the current `main`/`origin/main` tree. BVR, ACM, and Survival have separate
+entries and configurations, while gameplay and telemetry remain shared where
+that is intentional. Named builds and the generated no-filesystem shipping
+sandbox are verified offline. Live mission rotation and real-player acceptance
+are still pending; do not treat the named builds as final releases yet.
+
+The original `.miz` files remain generic development loaders. They still load
+the main-checkout bootstrap and do not identify their scenario from the
+filename. Use explicit named builds or named development-loader arguments when
+testing a specific mission.
 
 ## Source boundaries
 
@@ -71,8 +80,9 @@ The selected identity is also asserted when the embedded entry invokes gameplay.
 
 Shipping outputs contain no runtime disk dependency and do not read
 `.current-mission`. They are offline-verified candidates, not live-accepted
-releases. Do not replace development loaders or deploy to the active test session
-without an explicit test window.
+releases. Candidate archives may be deployed for an owner-approved test
+window, but do not replace the development loaders or call a mission released
+until the live rotation and player gates pass.
 
 ## Mission-specific adjustments
 
@@ -142,7 +152,12 @@ lua5.1 tests/lua/run-package-wave-config.lua
 lua5.1 tests/lua/telemetry/run-shipping-integration.lua out/duel-dynamic-bvr-build/l10n/DEFAULT/main.lua duel-dynamic-bvr
 ```
 
-Still pending: optional capability/wave reporting across the contract and
-dashboard, mission-scoped database pagination, the owner's gameplay adjustments,
-and live mission-switch/player acceptance. No production schema, deployment,
-service, hook, or source-archive changes are part of this increment.
+Completed since the original implementation notes: optional capability/wave
+reporting, explicit wave milestones, mission-scoped database pagination, and
+Drizzle 0005 metadata reconciliation. The remaining work is owner-specific
+BVR/ACM tuning (their configs currently preserve shared defaults), followed by
+live BVR → ACM → Survival → BVR switching, outage recovery, and real-player
+capture. The collector service is already installed and running; service
+health-post deployment still needs verification if the installed distribution
+predates the current source build. See
+`docs/telemetry/multi-mission-implementation.md` for evidence and boundaries.

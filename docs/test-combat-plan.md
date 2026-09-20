@@ -4,6 +4,10 @@ Status: **implemented + live-verified (2026-09-02)** — `run-20260902T181007Z-7
 Decided: 2026-09-02
 Supersedes: the A/B question in `docs/telemetry/unattended-test-loop.md` §Ordnance.
 
+This is a completed design/evidence record, not an instruction to reapply the
+changes. The implementation is already in `src/` and the shipping packager;
+the procedure sections below are retained for auditability.
+
 ## Final design (implemented + live-verified; supersedes everything below)
 
 Supersedes the `createGroupOnMap` and `_DATABASE:Spawn(Aerial-1 copy)`

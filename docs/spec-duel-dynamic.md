@@ -16,18 +16,21 @@ mission identifier and source directory stay `duel-dynamic`).
 
 This is the active test bed for the dynamic-spawn pipeline.
 
-**Shipping status:** the self-contained `.miz` is built and verified on a stock,
-sanitized dedicated server. See `docs/shipping-duel-dynamic.md`.
+**Shipping status:** the self-contained `.miz` and stock-scripting telemetry
+path are verified. The Survival allowance/terminal behavior still needs the
+post-fix human-in-seat run, and the named multi-mission rotation is not yet
+live-accepted. See `docs/shipping-duel-dynamic.md` and
+`docs/s64-live-verification.md`.
 
 ---
 
 ## 1. What's in the repo
 
-Worktree multi-mission refactor: the legacy behavior described below is now in
+The multi-mission refactor: the legacy behavior described below is now in
 `src/gameplay/package-waves.lua`. Each mission has an independent entry and
 configuration; telemetry lives separately under `src/lib/telemetry/`. See
 `docs/multi-mission-development.md`. This does not change the active selector or
-claim live validation of the new builds.
+claim live acceptance of the named builds.
 
 ```
 src/
@@ -251,15 +254,16 @@ DCS's mission sandbox disables `math.randomseed`. A tiny LCG is used
 instead (Glibc-style constants):
 
 ```lua
-local _rngState = (os.time() % 2147483648)
+local _rngState = math.floor(timer.getTime() * 1000) % 2147483648
 local function randInt(min, max)
   _rngState = (_rngState * 1103515245 + 12345) % 2147483648
   return min + (_rngState % (max - min + 1))
 end
 ```
 
-Adequate for a duel (not cryptographically random). Seeded from `os.time()`
-at MISSION START, so it changes every run.
+Adequate for a duel (not cryptographically random). Seeded from simulation time
+at MISSION START, so it changes every run without requiring the sanitized `os`
+library.
 
 ### 4.2 The init poll loop
 
@@ -389,23 +393,25 @@ simulation frame. Inside the callback the group is alive but the
 All player-facing messages are coalition-wide because this mission uses
 `MESSAGE:ToCoalition(BLUE)`; a loss notice cannot be restricted reliably to the
 affected human with the current mission API surface. Bandit kill popups label
-the team total and show the remaining hostile count. The victim-side event
-still cannot authoritatively identify the killer; individual attribution is
-deferred to telemetry Slice 14.
+the team total and show the remaining hostile count. Individual hit/kill
+attribution is handled by the telemetry projection when the source events
+provide sufficient evidence; it is not a mission-side score guarantee.
 
 ### 6.6 DCS-native player respawn ends with the mission terminal state
 
 The mission event handler alone cannot block a native DCS slot: it runs after
-DCS has granted the slot. The production GameGUI hook therefore watches the
-mission's `gameplay.ended` telemetry event and returns `false` from
-`onPlayerTryChangeSlot` for later Blue slot requests. A zero-aircraft identity
-that enters during the short propagation window is still excluded from package
-sizing and receives `Out of aircraft — excluded from the package.`
+DCS has granted the slot. The production GameGUI hook therefore performs a
+synchronous mission-side allowance query on every Blue slot request, also
+retaining the global `gameplay.ended` block. A zero-aircraft identity that
+enters during a propagation window is excluded from package sizing and receives
+`Out of aircraft — excluded from the package.`
 
 Once every tracked human identity reaches zero, the mission announces the
-60-second grace period, leaves the current red group alive, and calls
-`trigger.action.endMission(coalition.side.BLUE)`. The DCS mission then ends,
-preserving Blue as the survival/high-score winner.
+60-second grace period, leaves the current red group alive, and sets the
+`DUEL_SURVIVAL_END` user flag. The shipping archive contains a native ONCE
+trigger (`c_flag_is_true` → `a_end_mission("blue", "", 0)`) that ends the DCS
+mission while preserving Blue as the survival/high-score winner. The development
+loader needs the same trigger pair in its test archive.
 
 ---
 

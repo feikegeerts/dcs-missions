@@ -1,11 +1,20 @@
 # Near-live telemetry: Slice 16/17 follow-ups and Slice 18.5
 
-**Status — 2026-09-07:** Owner-approved architecture and slice-plan
-incorporation. All new parts below are **planned, not implemented**. This
-document is not authorization to start DCS, provision credentials, install a
-service, modify databases, deploy, commit/push, or start/extend an overnight
-Loop. Applicable Gate E checkpoints in the
-[master plan](../telemetry-implementation-plan.md) still apply.
+**Status — 2026-09-20:** The approved S16/S17 follow-ups and S18.5 parts are
+implemented for their intended scope. Persistent collection, fair delivery,
+Windows operations, browser polling, and integrated unattended acceptance are
+covered by the evidence docs linked from
+`docs/PROJECT-STATUS.md`. The installed collector service remains the steady-
+state delivery path.
+
+The remaining live work is mission behavior: the repaired Survival
+human-in-seat test, BVR → ACM → Survival → BVR rotation, outage recovery across
+a switch, and real-player capture. This document is now the architecture and
+operations record, not authorization to make unreviewed production changes.
+
+The owner decisions and authorization notes below are dated historical planning
+records; do not read their earlier “planned” or “pending” wording as the
+current implementation status.
 
 **Owner deployment decisions — 2026-09-07 (after live test runs):**
 (1) Collection cadence: **~5 seconds**, not ~1 second (owner: 1 s is too

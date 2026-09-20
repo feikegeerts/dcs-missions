@@ -179,12 +179,13 @@ globals as `read_globals`. MOOSE's own repo `.luacheckrc` is a good reference.
 ```
 C:\Projects\dcs-missions\
   src\
-    bootstrap.lua        # entry point loaded by the .miz trigger
-    lib\Moose_.lua       # pinned MOOSE build (per mission, deliberate upgrades)
-    spawn\ score\ ...    # your modules
-  build\pack-miz.ps1     # packs missions\<name>\ → out\<name>.miz (shipping only)
-  missions\<name>\       # unpacked .miz tree (gitignored, derived)
-  out\                   # packed .miz files
+    bootstrap.lua        # development dispatcher
+    lib\Moose_.lua       # pinned MOOSE build
+    lib\telemetry\      # shared telemetry modules
+    gameplay\            # shared wave/score implementation
+    missions\<name>\    # independent entry + configuration
+  build\pack-shipping-miz.ps1 # self-contained shipping build
+  out\                   # generated artifacts and staging trees
   docs\                  # this manual
 ```
 
@@ -194,13 +195,15 @@ The repo holds any number of missions; only one is "active" (in edit mode) at a 
 Each mission lives in its own subfolder; the dispatcher and framework are shared.
 
 ```
-src/
-  bootstrap.lua                          # dispatcher — never mission-specific
-  lib/Moose_.lua                         # framework (one pinned build, shared)
-  missions/
-    <mission-name>/
-      main.lua                           # entry point
-      ...                                # siblings (score.lua, spawn.lua, ...)
+  src/
+    bootstrap.lua                          # dispatcher — never mission-specific
+    lib/Moose_.lua                         # framework (one pinned build, shared)
+    lib/telemetry/                          # shared telemetry integration
+    gameplay/                               # shared wave and score behavior
+    missions/
+      <mission-name>/
+        main.lua                           # independent entry point
+        config.lua                         # identity, roster, overrides
   .current-mission                       # one line: the active mission's name
 ```
 
@@ -243,15 +246,15 @@ the channel you're testing on. Most dev is on the dedicated server:
 with `Get-ChildItem $env:USERPROFILE\Saved Games -Directory`.)
 
 You won't touch the editor again unless templates/zones/weather/slots change.
-The project's `missions/` folder is only used by `build\pack-miz.ps1` for
-shipping — not part of the dev loop.
+The source `src/missions/` folder is used by both the development dispatcher and
+the shipping packager; generated archive staging lives under `out/`.
 
 ### 5.4 bootstrap.lua (the dispatcher — in `src/`)
 
 Already in the repo at `src/bootstrap.lua`. Reads `.current-mission`, sets
-`_G.MY_SCRIPTS_ROOT` for mission code to find siblings, loads MOOSE, then loads
-`missions/<name>/main.lua`. Don't edit it for a new mission — just add a folder
-under `src/missions/<name>/`.
+`_G.MY_SCRIPTS_ROOT` for development, loads MOOSE, then loads
+`missions/<name>/main.lua`. Don't edit it for a new mission — add a folder with
+`main.lua` and `config.lua` under `src/missions/<name>/`.
 
 ### 5.5 Mission main.lua (in `src/missions/<name>/`)
 
@@ -265,19 +268,20 @@ if not _G.MOOSE then
   return
 end
 
--- Load siblings (set by bootstrap)
+-- Load the mission configuration and shared gameplay (set by bootstrap)
 local ROOT = _G.MY_SCRIPTS_ROOT
-local DIR  = ROOT .. "missions/<mission-name>/"
-dofile(DIR .. "score.lua")
+local config = dofile(ROOT .. "missions/<mission-name>/config.lua")
+assert(loadfile(ROOT .. "gameplay/package-waves.lua"))(config)
 
 -- ... mission setup: F10 menus, event handlers, spawn templates, ...
 env.info("[<mission-name>] main done")
 ```
 
 > Shipping (static mode) swaps the trigger for `DO SCRIPT FILE` entries embedding
-> Moose_.lua + the mission scripts into the .miz, so the shipped file needs no
-> de-sanitized environment. Static-mode packaging from `build/pack-miz.ps1` is
-> not implemented yet — see `docs/mission-loader.md`.
+> Moose_.lua, the selected mission entry, shared gameplay, and telemetry into the
+> .miz, so the shipped file needs no de-sanitized environment. Use
+> `build/pack-shipping-miz.ps1`; named BVR, ACM, and Survival builds require
+> explicit `-MissionName`. See `docs/shipping-duel-dynamic.md`.
 
 ---
 
@@ -387,9 +391,14 @@ The shipping build is assembled by `build/pack-shipping-miz.ps1`. Read
 it strips, what to verify). TL;DR:
 
 ```pwsh
-# From the project root:
-pwsh -File build\pack-shipping-miz.ps1       # leaves out/duel-dynamic-build/ for inspection
+# From the project root, legacy duel-dynamic build:
+pwsh -File build\pack-shipping-miz.ps1       # leaves staging for inspection
 pwsh -File build\pack-shipping-miz.ps1 -Zip  # also produces out/duel-dynamic.miz
+
+# Explicit named builds:
+pwsh -File build\pack-shipping-miz.ps1 -MissionName duel-dynamic-bvr -Zip
+pwsh -File build\pack-shipping-miz.ps1 -MissionName duel-dynamic-acm -Zip
+pwsh -File build\pack-shipping-miz.ps1 -MissionName air-superiority-survival -Zip
 ```
 
 What the packager does:
@@ -400,8 +409,9 @@ What the packager does:
    modern (`trigrules`) and legacy (`trig`) trigger representations.
 3. Registers MOOSE and main script resource keys in
    `l10n/DEFAULT/mapResource`.
-4. Synthesizes `l10n/DEFAULT/main.lua` from `src/missions/<name>/main.lua`:
-   inlines `score.lua`, removes the dev-only `MY_SCRIPTS_ROOT` lookup,
+4. Synthesizes `l10n/DEFAULT/main.lua` from the selected mission entry and
+   shared gameplay/telemetry sources: inlines the score module, removes the
+   dev-only `MY_SCRIPTS_ROOT` lookup,
    replaces `os.time()` with `timer.getTime()*1000` for the LCG seed,
    refuses to ship if any `TraceOn`/`os.*`/`io.open`/`lfs.*` reference
    survives in non-comment lines.

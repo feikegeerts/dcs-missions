@@ -1,21 +1,48 @@
 # Project status
 
-**Multi-mission telemetry started — 2026-09-14 (worktree only):**
-`feature/telemetry-decoupling` extracts the shared telemetry library into
-`src/lib/telemetry/`, preserves the legacy shipping/hook interfaces, and adds
-non-wave baseline and mission-identity isolation regressions. Increment 2 adds
-the shared failure-safe integration API, removes normal gameplay's raw adapter
-access, and tests generated shipping startup/handshake without filesystem APIs.
-Increment 3 adds independent entry scripts/configurations for BVR, ACM, and
-Survival, explicit `-MissionName` builds, and template/selection validation.
-Increment 4 generalizes the dashboard catalogue and wave-report gate to all
-four package-wave identities without contract/schema changes. The three
-original source archives still load the main-checkout bootstrap; they have
-not been rebound or replaced. Explicit wave milestones, mission-scoped DB
-pagination, any migration, and live acceptance remain parked/pending;
-nothing is deployed. See
-`docs/telemetry/multi-mission-implementation.md` for the inventory, verification,
-compatibility boundaries, and remaining sequence.
+**Current summary — 2026-09-20:** The multi-mission telemetry refactor and
+explicit wave-milestone work are merged to `main` and pushed. The repository is
+clean at `90f913c` (`main...origin/main`). BVR, ACM, and Survival each have an
+independent source entry/configuration, named shipping builds, mission-scoped
+dashboard history, and the shared failure-safe telemetry integration.
+
+The telemetry path has passed integrated unattended acceptance: the persistent
+Windows collector automatically collected and delivered both development and
+stock-scripting shipping runs to production, including derived projections.
+The collector service is installed and left running. The service identity is
+currently the documented LocalSystem interim; the dedicated-identity and boot
+checks remain owner actions. The collector-health source update exists, but the
+installed `dist` must be checked/upgraded before treating dashboard health as
+verified; use `build/update-collector-service.ps1` without replacing state or
+credentials.
+
+The main remaining functional gate is **post-fix human-in-the-seat Survival
+validation**. The latest run exposed a pre-simulation UCID/slot-fallback race;
+the reconciliation, synchronous slot veto, and native mission-end fixes are
+implemented and offline-tested, but the repaired build still needs a fresh
+two-player, three-loss DCS run. After that, validate the BVR → ACM → Survival →
+BVR rotation, collector outage across a mission switch, and real-player capture.
+
+Named builds are offline-verified candidates, not yet final live-accepted
+releases. The original `.miz` archives remain generic development loaders; do
+not infer mission identity from their filenames. Historical slice notes below
+are retained as evidence and may describe the state before the changes above.
+
+## Current readiness
+
+| Area | Status | Current meaning |
+|---|---|---|
+| Offline source/build verification | **Passed** | Lua, contract, collector, web, configuration, named-build, and shipping sandbox checks are green. |
+| Unattended telemetry acceptance | **Passed** | Development and stock-scripting shipping legs were automatically collected and delivered by the persistent service; production was restored to the two-run baseline. |
+| Human-in-seat Survival acceptance | **Pending** | The UCID/slot-fallback repair needs a fresh two-player, three-loss run proving allowance decrement, slot veto, terminal state, and native mission end. |
+| BVR → ACM → Survival → BVR rotation | **Pending** | Requires live mission switching, collector continuity/outage recovery, and real-player capture. |
+| Collector-health deployment | **Needs verification** | The source build contains the health-posting update, but the installed service distribution must be checked and upgraded if stale. |
+
+Before a live run, recheck the server process, `MissionScripting.lua`, the
+installed production hook, the collector service, the mission archive, and the
+latest `dcs.log`; this document does not guarantee that the host is running.
+
+## Historical status addenda
 
 **Slice 18.5 complete + section 6.4 merged — 2026-09-13:** Integrated
 acceptance (S18.5-e) passed on both legs with the persistent
@@ -95,7 +122,7 @@ production map + aircraft decision. Historical next queue was Slice 16 → 17 �
 order without starting or extending an execution queue.
 Durable queue + evidence: `progress.md`.
 
-### Current test readiness — read this before starting DCS
+### Historical test readiness snapshot — 2026-09-07
 
 **Last host check:** 2026-09-07. This is an operational snapshot, not a
 promise that the server will still be running later; recheck the paths and log
@@ -449,23 +476,25 @@ To get the player teleporting to a new position on death, we need
    position, not the ME position.
 6. Update `spec-duel-dynamic.md §6.2` to reflect the new behaviour.
 
-### 6.2 Telemetry next step: Slice 12
+### 6.2 Telemetry current state
 
-Slice 12 is approved after the offline hardening review. Implement expenditure
-projection and participant drilldown with grouping by participant, aircraft
-incarnation, airframe, and coalition. Use the latest participant name within a
-run while preserving event-level name/callsign snapshots. Existing historical
-runs remain unassigned and unpriced; do not backfill them. The live rejoin
-validation is parked and is not being represented as complete. The production
-map and aircraft pair remain undecided.
+Slices 12–18.5 are implemented, merged, deployed where applicable, and
+covered by the dated evidence documents. Expenditure projection, participant
+drilldown, aircraft loss and hit/kill attribution, dashboard views, explicit
+wave milestones, mission-scoped history, persistent collection, durable
+delivery, and collector health are all in the current tree. Historical runs
+remain immutable; no catalogue or milestone facts are backfilled into old runs.
+The remaining telemetry gate is the live multi-mission rotation with real
+player capture and an outage across a mission switch.
 
 ### 6.3 Ship the mission (static mode)
 
-Status: **built and stock-runtime verified** (2026-09-02).
+Status: **built and stock-runtime verified; named builds offline-verified**.
 `build/pack-shipping-miz.ps1`
-assembles `out/duel-dynamic.miz` (~840 KB, self-contained) from the
-dev `.miz` and `src/`. The generated mission, mapResource, MOOSE, and shipping
-main script parse as Lua 5.1.
+assembles a self-contained artifact from the selected dev `.miz` and `src/`.
+The no-argument legacy build produces `out/duel-dynamic.miz`; explicit
+`-MissionName` builds produce the BVR, ACM, or Survival artifacts. The generated
+mission, mapResource, MOOSE, and shipping main script parse as Lua 5.1.
 
 - [x] Build a self-contained `.miz` that loads via `DO SCRIPT FILE` —
       `build/pack-shipping-miz.ps1` writes to `out/duel-dynamic.miz`
@@ -505,7 +534,8 @@ main script parse as Lua 5.1.
       a tasked 1-ship package, a mutual player/bandit kill, the 30-second
       replacement schedule, and wave 2 spawning exactly 30 seconds later.
       Tacview recorded the run with playback delay zero.
-- [ ] Final QA on a fresh dedicated server install.
+- [ ] Final live QA: repaired Survival human-in-seat behavior, named mission
+      rotation, outage recovery across a switch, and real-player capture.
 
 See `docs/shipping-duel-dynamic.md` for what the packager does and
 how to verify, and `docs/dev-setup.md §8` for the build/QA loop.
@@ -513,17 +543,17 @@ how to verify, and `docs/dev-setup.md §8` for the build/QA loop.
 ### 6.4 Smaller polish
 
 - [x] Remove coalition-wide player death/respawn notices and label bandit kill
-      totals honestly as team totals. Individual attribution remains planned
-      for telemetry Slice 14.
+      totals honestly as team totals. Individual attribution is handled by the
+      telemetry projection when source evidence permits.
 - [x] Replace per-player bandit resets with whole-package waves. Partial red
       losses are held; the 30-second timer starts after the final red loss.
-- [x] Give each human player a finite, configurable number of lives. Track lives
-      across aircraft losses/rejoins and end the mission once no human player has
-      any lives remaining; define the terminal-state handling and announcement.
-      Implemented 2026-09-13: `LIVES_PER_PLAYER` (default 3) keyed on UCID with a
-      slot fallback, per run; reconnect keeps lives; zero-life players are
-      excluded from the package; the terminal state announces and stops waves.
-      Offline-verified; live human-in-seat validation parked.
+- [x] Give each human player a finite, configurable aircraft allowance. Track
+      aircraft across losses/rejoins and end the mission once no human player
+      has any aircraft remaining. Implemented with three aircraft per player by
+      default, UCID/slot-fallback reconciliation, reconnect retention,
+      zero-aircraft exclusion, synchronous Blue slot veto, and native mission
+      end after the grace period. The latest pre-simulation race fix is
+      offline-verified; post-fix human-in-seat validation remains pending.
 - [x] Make bandit waves progressively harder. Decide whether escalation adds one
       bandit every 3 or every 5 completed waves (or use another cadence), then
       define the maximum package size and difficulty knobs. Implemented
@@ -537,9 +567,9 @@ how to verify, and `docs/dev-setup.md §8` for the build/QA loop.
       player orientation and the mission-end state. Reworked 2026-09-13 to a
       concise in-fiction voice (final strings reported to the owner for review);
       offline-verified, live validation parked.
-- The parked §6.4 live validation is now owner-ready:
+- The §6.4 live validation is owner-ready:
       `docs/s64-live-verification.md` is a code-grounded runbook (exact
-      in-fiction message strings, F10 `Air Superiority Survival` → `Show lives` / `Respawn
+      in-fiction message strings, F10 `Air Superiority Survival` → `Show aircraft remaining` / `Respawn
       bandit wave` as the primary live checks, log anchors including the
       `donor <X> tier <N>` token, an 8-case test
       matrix plus the T6b tier-progression check, and explicit PASS/FAIL criteria). On a PASS, record the run in
@@ -563,6 +593,13 @@ how to verify, and `docs/dev-setup.md §8` for the build/QA loop.
       FA-18C + Su-33. Pick the final pair and update the ME / spec.
 
 ### 6.5 Telemetry
+
+**Current state:** Slices 1–18.5 are complete for their approved scope. The
+shared multi-mission library, explicit wave milestones, mission-scoped history,
+collector service, dashboard refresh, stock-scripting hook path, and integrated
+unattended acceptance are all covered by the current tree and dated evidence.
+The older slice-by-slice detail below is historical evidence. The remaining
+live work is real-player Survival validation and the named mission rotation.
 
 Slices 1–10 are complete. Slice 5 was validated with controlled and two-player
 dedicated-server runs, and the development environment was restored to stock
@@ -666,25 +703,23 @@ Telemetry now has priority over the optional MIST respawn work. Slices
 near-live collector service, and integrated acceptance) are recorded in the
 dated addenda at the top and in the `docs/telemetry/` evidence docs; the
 collector-health migration `web/drizzle/0005_wakeful_redwing.sql` is committed
-and applied on 2026-09-14. Reconcile the Drizzle journal/snapshot before
-generating another migration.
+and applied on 2026-09-14, with its Drizzle journal and snapshot reconciled.
+Any future migration requires the normal schema review and owner approval; do
+not reapply 0005.
 
 ---
 
 ## 7. Re-entering the project
 
-1. Pull / read the project, read this file and
-   `docs/spec-duel-dynamic.md`.
-2. Verify the env: see §2 — `MissionScripting.lua` on the dedicated-server
-   install is currently **stock** (restored 2026-09-04 after the Slice 11
-   matrix run). To re-enter dev mode (dynamic `src/` loading), patch per
-   `docs/dev-setup.md §2`; keep it stock before any shipping build or
-   before flying/joining untrusted missions/servers.
-3. Start the dedicated server, WebGUI → Restart `duel-dynamic`.
-4. Sanity check: the log shows the init sequence from
-   `spec-duel-dynamic.md §7`. The bandit spawns. F10 menu works.
-5. For telemetry, review the Slice 11 matrix and catalogue research, then
-   implement the approved Slice 12 scope. The Slice 11 catalogue schema and
-   immutable version 1 are already deployed in Neon. Other work remains in
-   §6.1, §6.2, and §6.4. §6.3 builds a self-contained `.miz`; final QA on a
-   stock install remains.
+1. Pull / read this file, `docs/spec-duel-dynamic.md`, and
+   `docs/multi-mission-development.md`.
+2. Recheck the live environment before testing: server process, hook,
+   collector service, mission archive, `MissionScripting.lua`, and `dcs.log`.
+   The shipping path requires stock sanitization; the development loader
+   requires the temporary de-sanitized variant described in `docs/dev-setup.md`.
+3. For development, set `src/.current-mission` to the intended source entry and
+   restart the mission. For named shipping builds, pass explicit `-MissionName`
+   to `build/pack-shipping-miz.ps1`.
+4. The next functional test is the post-fix human-in-seat Survival run in
+   `docs/s64-live-verification.md`. After it passes, run the BVR → ACM →
+   Survival → BVR rotation with collector outage and real-player capture.

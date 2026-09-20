@@ -1,7 +1,14 @@
 # SOL handoff — Step 2: capabilities, wave milestones, mission-scoped history, migration reconciliation
 
-Copy everything below the `--- COPY BELOW ---` line into the Sol-capable agent session.
-Worktree-only change so far; nothing merged or deployed.
+**Historical handoff — completed and merged 2026-09-14.** This file records the
+implementation prompt and acceptance criteria that were used for Step 2. Do
+not dispatch it again or treat the branch/worktree instructions below as the
+current repository state. Current status and remaining live gates are in
+`docs/PROJECT-STATUS.md` and
+`docs/telemetry/multi-mission-implementation.md`.
+
+The resulting source is merged to `main`; production telemetry acceptance was
+performed later under the owner-authorized Slice 18.5 window.
 
 --- COPY BELOW ---
 

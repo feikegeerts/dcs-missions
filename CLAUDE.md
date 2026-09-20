@@ -21,12 +21,14 @@ C:\Projects\dcs-missions\
     bootstrap.lua               # dispatcher (shared, never mission-specific)
     .current-mission            # one line: the active mission's name
     lib\Moose_.lua              # pinned MOOSE build (comment-stripped)
+    lib\telemetry\              # shared telemetry integration
+    gameplay\                    # shared wave and score implementation
     missions\<name>\            # one folder per mission
       main.lua                  # entry point
-      score.lua                 # siblings
+      config.lua                # mission identity, roster, overrides
   lib\moose-src\                # MOOSE source tree (for IDE only)
-  build\pack-miz.ps1            # re-zips missions\<name>\ → out\<name>.miz (dev only)
-  build\pack-shipping-miz.ps1   # builds a self-contained shipping .miz from the dev .miz + src/
+  build\pack-miz.ps1            # legacy archive utility
+  build\pack-shipping-miz.ps1   # builds a selected self-contained .miz from dev archive + src/
   out\                          # generated .miz files + staging dir for inspection
   docs\                         # see "Documentation" below
   worktrees\                    # gitignored; git worktrees for delegated implementation tasks
@@ -64,9 +66,9 @@ loader first.
 
 - `docs/dev-setup.md` — full env setup, dev loop, debugging, troubleshooting.
 - `docs/mission-loader.md` — the dev loader pattern (why the .miz is a dumb loader).
-- `docs/spec-duel-dynamic.md` — **active mission spec** (1–4 vs 1–4 dynamic spawn). Read this for the current state of the code.
-- `docs/PROJECT-STATUS.md` — pre-PTO snapshot: what's done, what's broken, what's left to ship. Read this first when coming back.
-- `docs/shipping-duel-dynamic.md` — checklist for packaging the mission for distribution (self-contained .miz, sanitized DCS).
+- `docs/spec-duel-dynamic.md` — **active mission spec** (1–5 player slots vs progressive package waves). Read this for the current state of the code.
+- `docs/PROJECT-STATUS.md` — current status, live gates, and remaining work. Read this first when coming back.
+- `docs/shipping-duel-dynamic.md` — checklist for packaging the legacy and named missions (self-contained .miz, sanitized DCS).
 
 ## Key technical decisions
 
@@ -80,7 +82,13 @@ Both the **client** AND the **dedicated server** install need this (the dev `.mi
 
 ### 2. Hot-reload from disk instead of re-zipping
 
-Mission bootstrap loads scripts from `Saved Games\DCS\MyMissions\scripts\` via `dofile(lfs.writedir() .. ...)`. An absolute `assert(loadfile(path))()` (VEAF pattern) also works. Gate static-vs-dynamic behind a flag: **dynamic from disk for dev, statically embedded for shipping** — never ship a .miz that requires a de-sanitized env. This project uses the absolute `assert(loadfile([[C:\Projects\dcs-missions\src\bootstrap.lua]]))()` pattern; `bootstrap.lua` reads `.current-mission` and dispatches to the active mission's `main.lua`. The dispatch pattern is documented in `docs/mission-loader.md`.
+Mission bootstrap loads the source tree dynamically in development through the
+absolute `assert(loadfile([[C:\Projects\dcs-missions\src\bootstrap.lua]]))()`
+pattern; `bootstrap.lua` reads `.current-mission` and dispatches to the active
+mission's `main.lua`. Gate static-vs-dynamic behind a flag: **dynamic from disk
+for dev, statically embedded for shipping** — never ship a `.miz` that requires
+a de-sanitized environment. The dispatch pattern is documented in
+`docs/mission-loader.md`.
 
 ### 3. Local dedicated server for the test loop
 
@@ -97,7 +105,9 @@ Use the modular **"DCS World Dedicated Server"** installer (no textures/sound, W
 
 Required entries: `mission`, `options`, `warehouses`, `l10n\DEFAULT\dictionary`. Optional: `l10n\DEFAULT\mapResource` + embedded payloads referenced by ResKeys. DCS writes slightly non-standard zips — 7-Zip's benign `Headers Error` warning when extracting editor-saved files is normal.
 
-Repack with `build\pack-miz.ps1` — never re-zip manually in the editor mid-dev. Proven alternatives: **pydcs** (Python lib, generates complete .miz), **VEAF-mission-converter** (git-versioned unpacked-mission pattern).
+For shipping, use `build\pack-shipping-miz.ps1` with explicit `-MissionName`
+for BVR, ACM, or Survival; never re-zip manually in the editor. The legacy
+`build\pack-miz.ps1` remains a utility, not the named release packager.
 
 ## Development loop
 
@@ -153,7 +163,7 @@ Repack with `build\pack-miz.ps1` — never re-zip manually in the editor mid-dev
 - **MOOSE agent skill**: `.opencode/skills/moose/` — class map, canonical patterns, gotchas. Use it for all MOOSE scripting work.
 - **Setup manual**: `docs/dev-setup.md` — full env setup, dev loop, debugging, shipping, troubleshooting.
 - **Active mission spec**: `docs/spec-duel-dynamic.md` — current mission behaviour, knobs, and known limitations.
-- **Project status**: `docs/PROJECT-STATUS.md` — pre-PTO snapshot, what's done / broken / next.
+- **Project status**: `docs/PROJECT-STATUS.md` — current status, live gates, and remaining work.
 - **Shipping checklist**: `docs/shipping-duel-dynamic.md` — how to package the mission for distribution.
 - Hoggit wiki (canonical DCS scripting API ref): `https://wiki.hoggitworld.com`
 - MOOSE docs: `https://flightcontrol-master.github.io/MOOSE/` · class API: `.../MOOSE_DOCS/Documentation/index.html` (develop: `.../MOOSE_DOCS_DEVELOP/Documentation/index.html`) · includes: `github.com/FlightControl-Master/MOOSE_INCLUDE` · source: `github.com/FlightControl-Master/MOOSE` (`master-ng`) · examples: `MOOSE_MISSIONS_UNPACKED` / `MOOSE_Demos` · Discord: `https://discord.gg/gj68fm969S`

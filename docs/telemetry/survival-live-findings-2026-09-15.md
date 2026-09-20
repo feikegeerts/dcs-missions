@@ -110,6 +110,11 @@ The dashboard store reads the latest global health row, not a mission-filtered
 row. This points to a stale service deployment rather than survival-specific
 health routing. Confirm the running service's executable arguments before
 upgrading; preserve its state, credentials, and single-owner arrangement.
+The repository now includes `build/update-collector-service.ps1`, which performs
+that narrow distribution upgrade only after checking the source build,
+dependencies, schema, and running service, and leaves the durable state and
+private settings untouched. Deployment and the resulting health row still need
+to be verified in an owner-approved service window.
 
 ## Aircraft allowance and terminal-state failure
 

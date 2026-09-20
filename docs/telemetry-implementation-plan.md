@@ -1,14 +1,25 @@
 # DCS Telemetry Implementation Plan
 
-**Status (2026-09-07):** Implementation in progress. The owner approved
-incorporating the near-live architecture into this plan: new Slice 16
-correctness follow-ups, Slice 17 transport hardening, and scoped Slice 18.5
-automatic delivery/browser refresh. These additions are **planned, not
-implemented**. Slice 17 parts 1–3 have offline evidence; part 4 has a recorded
-partial stock-server live pass through local collection, not player/combat or
-API delivery acceptance. See `progress.md` for the dated evidence and
-[`slice-18-5-near-live-plan.md`](telemetry/slice-18-5-near-live-plan.md) for
-the new work breakdown, dependencies, and acceptance matrix.
+**Status (2026-09-20):** The approved S16/S17 hardening and S18.5 near-live
+work are complete for their intended scope. Integrated unattended acceptance
+passed on both the development writer path and the stock-scripting shipping
+hook path using the persistent collector service; see
+[`slice-18-5-e-evidence.md`](telemetry/slice-18-5-e-evidence.md). The shared
+multi-mission telemetry implementation, explicit wave milestones, and
+mission-scoped history are merged to `main`; see
+[`multi-mission-implementation.md`](telemetry/multi-mission-implementation.md).
+
+Remaining work is live mission behavior rather than this telemetry foundation:
+the repaired Survival human-in-seat test, BVR → ACM → Survival → BVR rotation,
+collector outage across a switch, and real-player capture. Slice 18 user
+authentication remains deferred. Slice 19's MOD/server-side feasibility study
+also remains deferred; the shared mission-side library outcome has already been
+implemented by the multi-mission work.
+
+The detailed slice sections below preserve the original design and acceptance
+record. When an older section says “planned” or “not implemented”, treat that
+as the status at the time of the section; the current status is the summary
+above and `docs/PROJECT-STATUS.md`.
 
 This plan turns the duel-dynamic mission into a telemetry producer and adds a
 public read-only dashboard backed by a protected ingestion API. Work is split
@@ -1093,20 +1104,19 @@ recoverable network backlog.
 **Exit criteria:** A damaged projection is rebuildable and interrupted runs are
 classified without treating a temporary network outage as a mission abort.
 
-**Near-live follow-ups (planned; existing evidence is not revoked):**
+**Near-live follow-ups (completed; existing evidence is not revoked):**
 
-- **S16-p7 — Ingest identity and partial-failure repair (Sol):** distinguish
+- **S16-p7 — Ingest identity and partial-failure repair:** distinguish
   identical duplicates from conflicting content; project retained events;
   recover run summaries and projections after failures between writes; test
   commit-before-response-loss without duplicate costs/kills/losses/assists.
-- **S16-p8 — Authoritative lifecycle ordering (Sol):** replace first-ingest
+- **S16-p8 — Authoritative lifecycle ordering:** replace first-ingest
   supersession with trustworthy source/process-generation evidence; define
   composite producer/run targeting and credential scope; allow late facts and
   genuine `mission.ended` after an abort; keep unknown/stale distinct from death.
 
-Both require explicit compatibility/migration review where needed. These are
-prerequisites for safe continuous delivery, not user-login work from Slice 18.
-Exact boundaries and tests: [near-live plan](telemetry/slice-18-5-near-live-plan.md).
+Both were implemented and independently verified before the S18.5 work. Exact
+boundaries and tests: [near-live plan](telemetry/slice-18-5-near-live-plan.md).
 
 ### Slice 17: Stock-sanitized shipping bridge
 
@@ -1123,26 +1133,26 @@ DCS-gRPC/HTTP/IPC alternative. Preserve NUL-free, capped `DDBRIDGE1` frames,
 verified local append before acknowledgement, no mission-side `io`/`os`/`lfs`,
 and self-contained shipping packaging.
 
-**Evidence:** S17-p1 queue/protocol, p2 production hook, and p3 packaging are
-implemented offline. S17-p4 has a recorded 2026-09-07 partial live pass: stock
-shipping hook/handshake/spool and two local collection passes, five gapless
-lifecycle events. No player joined; no ingest API delivery occurred. See the
-dated `progress.md` addendum; the hook's STOP text is not proof of arbitrary
-multi-frame tail completeness.
+**Evidence:** S17-p1 queue/protocol, p2 production hook, and p3 packaging were
+implemented offline. S17-p5/p6 hardening and the later S18.5 integrated
+acceptance are complete. The stock-scripting shipping leg reached production
+through the persistent collector with gapless events and an authoritative empty
+peek at stop; see `telemetry/slice-18-5-e-evidence.md`. Player/combat behavior
+is a separate live mission gate and is not implied by unattended telemetry.
 
-**Near-live follow-ups (planned; Sol-required):**
+**Historical follow-ups (completed):**
 
-- **S17-p5 — Ambiguous ACK reconciliation:** exercise ACK execution followed by
+- **S17-p5 — Ambiguous ACK reconciliation:** ACK execution followed by
   response loss; reconcile verified spool and mission ACK cursors, using existing
   bridge status where possible; prevent stale-peek stalls and unsafe advancement.
-- **S17-p6 — Bounded hook work and truthful stop:** remove lifetime-growing
+- **S17-p6 — Bounded hook work and truthful stop:** lifetime-growing
   verification work while preserving byte verification; bound callback effort;
   verify polling-clock behavior; distinguish verified empty, pending, and unknown
   stop tails. Never add an unbounded final-drain loop.
-- **S17-p7 — Post-hardening live validation:** revalidate the exact hardened
-  shipping artifact/hook on stock DCS, including player/combat behavior, restart,
-  ambiguous-return recovery where injectable, multi-frame stop, and long-run
-  callback cost. Preserve S17-p4's partial evidence rather than relabeling it.
+- **S17-p7 — Post-hardening live validation:** the unattended shipping and
+  collector path is covered by Slice 18.5-e. Human player/combat behavior,
+  mission rotation, and a long-run callback stress check remain separate
+  owner-authorized follow-ups.
 
 **Constraint:** Do not redesign mission event semantics in this slice. If the
 Slice 3 assumptions no longer hold, stop and update the bridge decision first.
@@ -1169,9 +1179,9 @@ without introducing public user accounts.
 
 ### Slice 18.5: Near-live collector delivery and dashboard refresh
 
-**Status:** Architecture/slice plan approved for incorporation 2026-09-07;
-implementation not started. [Detailed plan](telemetry/slice-18-5-near-live-plan.md)
-supersedes the earlier notes-only proposal.
+**Status:** Implemented and integrated acceptance passed on 2026-09-13.
+[Detailed plan](telemetry/slice-18-5-near-live-plan.md) remains the design and
+operational record; `slice-18-5-e-evidence.md` is the acceptance evidence.
 
 **Purpose:** Start a mission and see source-derived facts update automatically,
 including eventual final state after temporary outages, without involving DCS in
@@ -1181,11 +1191,11 @@ network delivery or replacing durable spooling.
 
 | Part | Bounded outcome | Dependencies |
 |---|---|---|
-| S18.5-a | Single-owner persistent collector, bounded reads and independent scheduling | Existing collector contract; ownership/lifecycle design reviewed by Sol |
-| S18.5-b | Fair durable delivery retries and lifecycle outbox | a + S16-p7/p8 |
-| S18.5-c | Windows supervision, secret isolation, logs/backlog/crash recovery | a/b; operator provisioning approval before installation |
-| S18.5-d | Browser polling, reconnect/focus refresh, preserved UI and honest freshness | Existing public reads; independent offline work |
-| S18.5-e | Offline failure matrix and authorized end-to-end latency/load gate | a–d + S17-p5/p6/p7; live/API approval |
+| S18.5-a | Single-owner persistent collector, bounded reads and independent scheduling | **Complete** |
+| S18.5-b | Fair durable delivery retries and lifecycle outbox | **Complete** |
+| S18.5-c | Windows supervision, secret isolation, logs/backlog/crash recovery | **Complete; boot/dedicated-identity checks remain owner actions** |
+| S18.5-d | Browser polling, reconnect/focus refresh, preserved UI and honest freshness | **Complete offline** |
+| S18.5-e | Offline failure matrix and authorized end-to-end latency/load gate | **Passed** |
 
 **Routing:** Sol owns concurrency, lifecycle, security, schema/API compatibility,
 and framework lifecycle behavior. Only isolated routine fixtures/prose/UI
@@ -1220,12 +1230,16 @@ mission code. Whether telemetry belongs in the mission script at all (as
 opposed to a DCS MOD or server-side collection) is an architectural question
 that moves the DCS/server boundary — Sol's domain.
 
-**Purpose:** Decide how telemetry is loaded and configured so it can be reused
-across multiplayer missions, and confirm that mission identity (name and
-version) flows end-to-end so the dashboard can filter by mission.
+**Purpose:** Historical study of how telemetry could be decoupled from a
+single mission. The shared mission-side library, configured mission identity,
+and end-to-end dashboard filtering were implemented instead by the merged
+multi-mission work. A DCS MOD/server-side replacement remains an optional
+future study, not a prerequisite for the current project.
 
-**This is a study slice.** It ends with a decision doc and an implementation
-plan, not a code migration.
+**Current disposition:** the mission-side option is implemented and live
+telemetry-compatible. The MOD/server-side alternatives remain unimplemented
+and deferred; this document's detailed coupling audit is historical research,
+not an active implementation queue.
 
 **Scope:**
 
