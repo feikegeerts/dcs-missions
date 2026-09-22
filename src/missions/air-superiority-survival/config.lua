@@ -1,6 +1,6 @@
 return {
   mission_name = "air-superiority-survival",
-  mission_version = "1",
+  mission_version = "2",
   title = "Air Superiority Survival",
   player_group_names = { "Aerial-1", "Aerial-2", "Aerial-3", "Aerial-4", "Aerial-5" },
   bandit_group_names = {
@@ -12,7 +12,6 @@ return {
     "Bandit-6",
     "Bandit-8",
     "Bandit-9",
-    "Bandit-10",
   },
-  gameplay = {},
+  gameplay = { respawn_delay_s = 20, lives_per_player = 2 },
 }

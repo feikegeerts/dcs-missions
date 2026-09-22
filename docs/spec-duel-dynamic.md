@@ -2,7 +2,7 @@
 
 Current active mission (`.current-mission = duel-dynamic`). **1–5 player slots vs
 progressively larger AI package waves**. Each wave picks a uniform-random
-donor from its difficulty tier (waves 1–3: `Bandit-10`/`Bandit-3`/`Bandit-6`;
+donor from its difficulty tier (waves 1–3: `Bandit-3`/`Bandit-6`;
 waves 4–6: `Bandit-3`/`Bandit-6`/`Bandit-4`/`Bandit-5`; waves 7+:
 `Bandit-1`/`Bandit-2`/`Bandit-4`/`Bandit-5`/`Bandit-8`/`Bandit-9`) and spawns
 one multi-aircraft DCS group in close formation 55–85 statute miles from the
@@ -58,7 +58,7 @@ environment artifacts, not tracked source files in this repository.
 | Role | Mission Editor groups |
 |---|---|
 | Blue player roster | `Aerial-1`, `Aerial-2`, `Aerial-3`, `Aerial-4`, `Aerial-5` |
-| Red wave donors (active) | `Bandit-1` .. `Bandit-6`, `Bandit-8` .. `Bandit-10` (one aircraft each, Late Activation; `Bandit-7` excluded) |
+| Red wave donors (active) | `Bandit-1` .. `Bandit-6`, `Bandit-8` .. `Bandit-9` (one aircraft each, Late Activation; `Bandit-7` and `Bandit-10` excluded) |
 
 The player slots are normal client slots. The red groups are **Late Activation
 ✓**. Each wave picks one donor uniformly at random from its difficulty tier;
@@ -69,12 +69,14 @@ at eight), while
 copy the donor's airframe, payload, skill, and route options; DCS
 auto-suffixes the spawned group name with `#NNN`.
 
-`PLAYER_GROUP_NAMES` defines the available blue roster. Each player identity
-has three aircraft by default for one mission run; players with no aircraft
-remaining are excluded when the next package is sized. `BANDIT_GROUP_NAMES`
-(the nine active names, ascending, `Bandit-7` excluded) is both the donor
-list and the telemetry allow-list; the actual chosen donor name is passed
-as the configured name when a spawned wave is registered with telemetry.
+`PLAYER_GROUP_NAMES` defines the available blue roster. The first assembled
+blue package creates one shared mission-wide pool of two lives per joined
+player. Every player draws from that pool; joining another slot contributes
+two lives to the initial pool rather than creating a separate allowance.
+`BANDIT_GROUP_NAMES` (the eight active
+names, ascending, with `Bandit-7` and `Bandit-10` excluded) is both the donor
+list and the telemetry allow-list; the actual chosen donor name is passed as
+the configured name when a spawned wave is registered with telemetry.
 
 ### Donor table (2026-09-13 mission file)
 
@@ -93,7 +95,6 @@ never touches them.
 | Bandit-7 | F-5E-3 | 30 / 15 | AIM-9 short-range only | threat-estimate (excluded from waves; ME template retained) |
 | Bandit-8 | Su-33 | 48 / 48 | R-73 + R-27ER + R-60 mix | max-range |
 | Bandit-9 | Su-33 | 48 / 48 | R-73 + R-27ER + R-60 mix | max-range |
-| Bandit-10 | MiG-21Bis | 18 / 40 | 2x R-3S + 2x R-3R + ASO-2 pod | threat-estimate |
 
 Note: the Su-33 module is not installed on the test server, so `SPAWN:New`
 for Bandit-8/Bandit-9 may fail there. Init logs the failure per donor and
@@ -109,11 +110,11 @@ done and the poll retries.
 - **Initial spawn.** The init poll catches all occupied slots, then waits a
   three-second assembly window. One red DCS group is spawned with one aircraft
   per live blue aircraft, cloned from a uniform-random tier-1 donor
-  (`Bandit-10`/`Bandit-3`/`Bandit-6`).
+  (`Bandit-3`/`Bandit-6`).
 - **Tiered donor progression.** The donor pool is tiered by the next wave
   number (`waveNumber + 1`) in steps of `WAVE_TIER_EVERY=3`: waves 1–3 draw
-  from `Bandit-10`, `Bandit-3`, `Bandit-6` (MiG-21/MiG-29 radar-capable,
-  manageable); waves 4–6 from `Bandit-3`, `Bandit-6`, `Bandit-4`, `Bandit-5`
+  from `Bandit-3`, `Bandit-6` (MiG-29 radar-capable, manageable); waves 4–6
+  from `Bandit-3`, `Bandit-6`, `Bandit-4`, `Bandit-5`
   (MiG-29/F-16); waves 7+ from `Bandit-1`, `Bandit-2`, `Bandit-4`,
   `Bandit-5`, `Bandit-8`, `Bandit-9` (modern BVR). Only initialized
   spawners are eligible; if a tier has no initialized donor on this server
@@ -122,7 +123,7 @@ done and the poll retries.
    chosen donor and tier (`donor <X> tier <N>`). Draws are without replacement
    within a tier: refill the randomized bag only after every eligible donor
    has been used, or when advancing to a new tier. With all templates available,
-   waves 1–3 include the MiG-21 and waves 4–6 include at least one F-16.
+  waves 1–3 no longer include the MiG-21, and waves 4–6 include at least one F-16.
 - **Progressive difficulty.** The first three waves match the eligible live
   blue package. Every three waves already spawned adds one bandit to the next
   package: waves 4–6 get +1, waves 7–9 get +2, and so on. Package size is
@@ -143,41 +144,22 @@ done and the poll retries.
   remains available to the other players. If every blue slot becomes empty, a
   one-second delayed cleanup destroys the package and cancels pending wave work.
 - **Player aircraft is lost.** `playerDeathWatcher` deduplicates `Dead` and
-  `Crash` for each aircraft incarnation and removes one aircraft. Identity is
-  the non-empty player UCID when DCS supplies it, otherwise the slot group name
-  with a one-time warning. A missing allowance entry discovered on a verified
-  loss is initialized to the configured three-aircraft default before
-  decrementing. Rejoining with the same UCID, including in another slot,
-  retains the remaining aircraft.
-- **Players reach zero aircraft.** An identity with no aircraft remaining is
-  excluded from package sizing. The installed server hook queries the mission
+  `Crash` for each aircraft incarnation and removes one aircraft from the
+  shared pool. The pool starts at two times the number of joined players in
+  the first assembled package. UCID and slot identity affect telemetry
+  attribution only; they never create separate life allowances.
+- **Shared pool reaches zero.** The installed server hook queries the mission
   synchronously on every Blue slot request (same `dostring_in` transport as
   the telemetry handshake): `duel_can_enter_blue_slot(ucid, slotID)` rejects
-  an exhausted UCID even while other players still have aircraft; when the
-  UCID key is unknown it resolves the requested seat from the server slot ID
-  (numeric-part match against the runtime slot unit IDs) and checks that
-  seat's current identity. Unknown players/unknown slots fail open, and the
-  hook additionally blocks all Blue slot changes once the terminal
-  `gameplay.ended` event is drained. Pre-simulation entry events can lack the
-  UCID; the slot-fallback allowance is then merged into the UCID allowance on
-  the first UCID sighting (min of balances, live aircraft ownership migrated;
-  two distinct UCIDs are never merged), so one player can never accumulate
-  two allowances.
-- **Mission end.** If every tracked human identity reaches zero, the mission
-  announces `All aircraft lost — mission ending in 60 seconds.`, reports the
-  `gameplay.ended` telemetry event, and stops wave progression while the
-  current red wave stays alive for the 60-second missile grace period. The
-  grace timer then sets the `DUEL_SURVIVAL_END` user flag; the shipping
+  every new Blue slot request once the shared pool is empty. The mission sets
+  `DUEL_SURVIVAL_END` immediately on the final verified loss; the shipping
   archive's native ONCE trigger (`c_flag_is_true` →
-  `a_end_mission("blue", "", 0)`) ends the DCS mission with Blue as the
-  survival/high-score winner. This is not an SSE `trigger.action.endMission`
-  call. Development loaders need the same flag-trigger pair to exercise
-  mission ending. Player announcements say `Wave N — hostiles inbound` and
-  `Bandit down — team N`; enemy package size/remaining strength stays in logs
-  and telemetry, not in player messages.
+  `a_end_mission("blue", "MISSION ENDED", 10)`) displays the DCS mission-end
+  screen and ends the mission ten seconds later with Blue as the
+  survival/high-score winner.
 - **Bandit is killed.** The individual loss is counted, but no replacement
   spawns while any aircraft from that wave remains alive.
-- **Whole wave is killed.** The 30-second timer begins after the final red loss.
+- **Whole wave is killed.** The 20-second timer begins after the final red loss.
   The next wave is spawned as one package sized from the live blue aircraft at
   callback time.
 
@@ -236,13 +218,14 @@ menu. Available from MISSION START.
   aircraft plus the current escalation. It announces `New bandit wave inbound.`,
   `No players in the air.`, `Not ready yet — try again in a second.`, or
   `Mission over — no more waves.` as applicable.
-- **Show aircraft remaining** — displays `Aircraft remaining:` followed by each
-  tracked display name and remaining aircraft, or `No players yet.` before
-  anyone has been tracked.
+- **Show aircraft remaining** — displays the shared pool count as
+  `Aircraft remaining (shared pool): N`, or `No players yet.` before anyone
+  has been tracked.
 
 Wave and loss calls use the same concise briefing voice: `Wave N — N hostile(s)
-inbound`, `Bandit down — team N, N hostile(s) left`, `Aircraft lost — N aircraft
-remaining.`, and `Aircraft lost — out of aircraft.`
+inbound`, `Bandit down — team N, N hostile(s) left`, `Aircraft lost — N shared
+aircraft remaining.`, `Aircraft lost — shared pool depleted.`, and `All aircraft
+  lost — mission ending in 10 seconds.`
 
 ---
 
@@ -287,7 +270,7 @@ assembly callback creates one package from the resulting roster.
 `banditWatcher` listens on `EVENTS.Dead` and `EVENTS.Crash`. It filters by red
 coalition and the exact current wave group name. `countedBanditUnits` dedupes
 on `IniDCSUnitName`/`IniUnitName`, so separate aircraft in the same DCS group
-score separately while duplicate Dead/Crash reports do not. The 30-second
+score separately while duplicate Dead/Crash reports do not. The 20-second
 schedule is created only when `currentWaveAlive` reaches zero.
 
 ### 4.4 Wave scheduling and cancellation
@@ -401,17 +384,16 @@ provide sufficient evidence; it is not a mission-side score guarantee.
 
 The mission event handler alone cannot block a native DCS slot: it runs after
 DCS has granted the slot. The production GameGUI hook therefore performs a
-synchronous mission-side allowance query on every Blue slot request, also
-retaining the global `gameplay.ended` block. A zero-aircraft identity that
-enters during a propagation window is excluded from package sizing and receives
-`Out of aircraft — excluded from the package.`
+synchronous mission-side shared-pool query on every Blue slot request, also
+retaining the global `gameplay.ended` block. Once the shared pool reaches zero,
+all further Blue slot requests are rejected.
 
-Once every tracked human identity reaches zero, the mission announces the
-60-second grace period, leaves the current red group alive, and sets the
-`DUEL_SURVIVAL_END` user flag. The shipping archive contains a native ONCE
-trigger (`c_flag_is_true` → `a_end_mission("blue", "", 0)`) that ends the DCS
-mission while preserving Blue as the survival/high-score winner. The development
-loader needs the same trigger pair in its test archive.
+The final verified loss sets the `DUEL_SURVIVAL_END` user flag. The shipping
+archive contains a native ONCE trigger (`c_flag_is_true` →
+`a_end_mission("blue", "MISSION ENDED", 10)`) that displays the mission-end
+screen and ends the DCS mission ten seconds later while preserving Blue as the
+survival/high-score winner. The development loader needs the same trigger pair
+in its test archive.
 
 ---
 
@@ -442,8 +424,8 @@ start with a player in `Aerial-1`:
 Then after the kill:
 
 ```
-[duel-dynamic] wave 1 defeated — next package in 30s
--- 30 s later:
+[duel-dynamic] wave 1 defeated — next package in 20s
+-- 20 s later:
 [duel-dynamic] spawning 1-ship package 62.1 mi from blue centroid, heading ...
 [duel-dynamic] package spawned: Bandit-4#002 (donor Bandit-4) at …
 ```
@@ -451,7 +433,7 @@ Then after the kill:
 If a package does not appear within a few seconds after entering a slot, check
 for `init done`, `package wave scheduled`, and `spawning N-ship package` in
 `dcs.log`. Also check that all ten `Bandit-N` groups exist in the ME with Late Activation ✓
-(all ten stay in the archive even though `Bandit-7` never spawns).
+(all ten stay in the archive even though `Bandit-7` and `Bandit-10` never spawn).
 The first `SCRIPTING ERROR` line names the file and line.
 
 ---
@@ -459,7 +441,7 @@ The first `SCRIPTING ERROR` line names the file and line.
 ## 8. Testing the count-matching (1 / 2 / 3 / 4 / 5 players)
 
 - **1 live player:** waves 1–3 contain one bandit; wave 4 contains two.
-- **Donor tiers:** waves 1–3 draw only from `Bandit-10`/`Bandit-3`/`Bandit-6`;
+- **Donor tiers:** waves 1–3 draw only from `Bandit-3`/`Bandit-6`;
   waves 4–6 only from `Bandit-3`/`Bandit-6`/`Bandit-4`/`Bandit-5`; waves 7+
   only from `Bandit-1`/`Bandit-2`/`Bandit-4`/`Bandit-5`/`Bandit-8`/`Bandit-9`
   (fewer if a Su-33 spawner failed to initialize). `Bandit-7` never spawns;
@@ -476,13 +458,12 @@ The first `SCRIPTING ERROR` line names the file and line.
 - **Join during combat:** no immediate reset or second group; the next wave
   uses the new live-player count.
 - **First red loss in a multi-ship wave:** no respawn timer yet.
-- **Final red loss:** one 30-second timer, followed by one complete new group.
+- **Final red loss:** one 20-second timer, followed by one complete new group.
 - **Player loss:** one aircraft removed per aircraft incarnation despite a
-  Dead/Crash/Ejection pair; zero-aircraft identities do not contribute to the
-  next package size.
-- **All tracked identities at zero:** one terminal announcement, no further
-  package spawn, Blue slot requests vetoed by the server hook, the current red
-  wave retained for 60 seconds, then a DCS mission end with Blue as winner.
+  Dead/Crash/Ejection pair; all players draw from the shared pool.
+- **Shared pool at zero:** one terminal announcement, no further package
+  spawn, Blue slot requests vetoed by the server hook, and an immediate DCS
+  mission end with Blue as winner.
 - **All players leave:** the current group is destroyed after the one-second
   slot-switch grace period.
 

@@ -1,7 +1,7 @@
 -- Pure gameplay configuration checks, shared by development and the packager.
 local M = {}
 M.DEFAULT_DONOR_TIERS = {
-  { "Bandit-10", "Bandit-3", "Bandit-6" },
+  { "Bandit-3", "Bandit-6" },
   { "Bandit-3", "Bandit-6", "Bandit-4", "Bandit-5" },
   { "Bandit-1", "Bandit-2", "Bandit-4", "Bandit-5", "Bandit-8", "Bandit-9" },
 }
@@ -44,14 +44,14 @@ function M.validate(config)
       cap_alt_max_ft = 30000,
       cap_speed_min_kt = 350,
       cap_speed_max_kt = 550,
-      aircraft_per_player = 3,
+      aircraft_per_player = 2,
       -- Accepted for compatibility with older mission configs. New configs
       -- should use aircraft_per_player.
-      lives_per_player = 3,
+      lives_per_player = 2,
       wave_escalation_every = 3,
       wave_tier_every = 3,
       max_package_size = 8,
-      respawn_delay_s = 30,
+      respawn_delay_s = 20,
     }
     local integers =
       {

@@ -19,7 +19,7 @@ local scope = {
   end,
   a_end_mission = function(winner, text, delay)
     assert(winner == "blue", "wrong winner")
-    assert(text == "" and delay == 0)
+  assert(text == "MISSION ENDED" and delay == 10)
     calls = calls + 1
   end,
 }
@@ -37,5 +37,10 @@ assert(calls == 1 and scope.mission.trig.func[found] == nil, "end action not one
 local modern = mission.trigrules[#mission.trigrules]
 assert(modern.predicate == "triggerOnce")
 assert(modern.rules[1].flag == "DUEL_SURVIVAL_END")
-assert(modern.actions[1].predicate == "a_end_mission" and modern.actions[1].winner == "blue")
+assert(
+  modern.actions[1].predicate == "a_end_mission"
+    and modern.actions[1].winner == "blue"
+    and modern.actions[1].text == "MISSION ENDED"
+    and modern.actions[1].start_delay == 10
+)
 print("shipping terminal trigger: native Blue end action verified")

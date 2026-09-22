@@ -294,23 +294,24 @@ $newTrigAction = @"
     # Native END MISSION is a trigger-environment action, not an SSE
     # trigger.action.endMission API. Append valid mission Lua assignments so
     # existing editor tables and loadouts remain byte-for-byte untouched.
+    # DCS validates the mission file in a restricted pre-load environment where
+    # the Lua `pairs` global is unavailable. The packager above deterministically
+    # creates actions 1 and 2 and leaves the original startup trigrule at index
+    # 1, so use the next fixed indices here instead of runtime table iteration.
     $mission += @'
 
--- Shipping survival terminal action (SSE sets this flag after the grace period).
+-- Shipping survival terminal action (SSE sets this flag when the shared pool is depleted).
 do
-    local index = 1
-    for key in pairs(mission.trig.actions) do
-        if type(key) == "number" and key >= index then index = key + 1 end
-    end
+    local index = 3
     mission.trig.conditions[index] = 'return(c_flag_is_true("DUEL_SURVIVAL_END"))'
-    mission.trig.actions[index] = 'a_end_mission("blue", "", 0); mission.trig.func[' .. index .. ']=nil;'
+    mission.trig.actions[index] = 'a_end_mission("blue", "MISSION ENDED", 10); mission.trig.func[' .. index .. ']=nil;'
     mission.trig.func[index] = 'if mission.trig.conditions[' .. index .. ']() then mission.trig.actions[' .. index .. ']() end'
     mission.trig.flag[index] = true
-    mission.trigrules[#mission.trigrules + 1] = {
+    mission.trigrules[2] = {
         comment = "Survival complete - Blue winner",
         predicate = "triggerOnce", eventlist = "", colorItem = "0xff0000ff",
         rules = { { predicate = "c_flag_is_true", flag = "DUEL_SURVIVAL_END" } },
-        actions = { { predicate = "a_end_mission", winner = "blue", text = "", start_delay = 0 } },
+        actions = { { predicate = "a_end_mission", winner = "blue", text = "MISSION ENDED", start_delay = 10 } },
     }
 end
 '@

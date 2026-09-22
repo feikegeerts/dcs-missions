@@ -1,9 +1,9 @@
 -- Shared package-wave gameplay. Each mission entry supplies its own configuration.
 local MISSION_CONFIG = assert(..., "package-wave mission configuration required")
 -- Player slots: Aerial-1, Aerial-2, Aerial-3, Aerial-4, Aerial-5.
--- Red donors: Bandit-1 .. Bandit-6 plus Bandit-8 .. Bandit-10
--- (late-activated ME aircraft, one per donor group). Bandit-7 (F-5E-3)
--- remains in the ME template but is excluded from waves. Each wave picks
+-- Red donors: Bandit-1 .. Bandit-6 plus Bandit-8 .. Bandit-9
+-- (late-activated ME aircraft, one per donor group). Bandit-7 (F-5E-3) and
+-- Bandit-10 (MiG-21) remain in the ME template but are excluded from waves. Each wave picks
 -- one donor from a randomized, without-replacement difficulty-tier bag and clones it
 -- to wave size, so airframe, payload, skill, chaff/flare, and ME group
 -- options vary per wave.
@@ -50,8 +50,7 @@ local SETTINGS = MISSION_CONFIG.gameplay or {}
 
 -- Intentional difficulty tiers, keyed by the next wave number
 -- (waveNumber + 1). WAVE_TIER_EVERY = 3 steps the tier every three waves:
--- waves 1-3 (MiG-21/MiG-29 radar-capable, manageable), waves 4-6
--- (MiG-29/F-16), waves 7+ (modern BVR; Su-33 only when its SPAWN
+-- waves 1-3 (MiG-29), waves 4-6 (MiG-29/F-16), waves 7+ (modern BVR; Su-33 only when its SPAWN
 -- initializes — the module may be absent on the test server).
 local WAVE_TIER_EVERY = SETTINGS.wave_tier_every or 3
 local WAVE_DONOR_TIERS
@@ -147,13 +146,13 @@ local CAP_ALT_MAX_FT = SETTINGS.cap_alt_max_ft or 30000
 local CAP_SPEED_MIN_KT = SETTINGS.cap_speed_min_kt or 350
 local CAP_SPEED_MAX_KT = SETTINGS.cap_speed_max_kt or 550
 -- Keep the legacy configuration key compatible with existing mission configs.
-local AIRCRAFT_PER_PLAYER = SETTINGS.aircraft_per_player or SETTINGS.lives_per_player or 3
+local LIVES_PER_PLAYER = SETTINGS.lives_per_player or SETTINGS.aircraft_per_player or 2
 local WAVE_ESCALATION_EVERY = SETTINGS.wave_escalation_every or 3
 local MAX_PACKAGE_SIZE = SETTINGS.max_package_size or 8
-local RESPAWN_DELAY = SETTINGS.respawn_delay_s or 30
+local RESPAWN_DELAY = SETTINGS.respawn_delay_s or 20
 local WAVE_ASSEMBLY_DELAY = 3
 local EMPTY_SERVER_CLEANUP_DELAY = 1
-local TERMINAL_GRACE_PERIOD = 60
+local TERMINAL_END_DELAY = 10
 local FORMATION_LATERAL_M = 1.5 * 1852
 local FORMATION_TRAIL_M = 0.5 * 1852
 local INIT_DELAY = 1 -- first attempt delay (seconds) before the world-touching setup
@@ -268,20 +267,19 @@ local waveSpawnPending = false
 local waveScheduleToken = 0
 local occupiedPlayerSlots = {}
 local countedBanditUnits = {}
-local aircraftRemaining = {}
+local sharedAircraftRemaining = nil
+local sharedPlayerCount = nil
 local slotIdentity = {}
 local playerIdentityName = {}
 local playerAircraftByKey = {}
 local playerAircraftByObject = {}
 local missionTerminal = false
-local terminalEndScheduled = false
 local warnedMissingPlayerUCID = false
 local initDone = false
 -- Seat -> runtime DCS unit ID. The server hook passes the raw slot ID with
 -- every Blue slot request; resolving it lets the gate enforce the requested
 -- seat's allowance even when the hook-side UCID string differs from the
 -- mission event identity keys.
-local slotUnitIdToIndex = {}
 local slotGateLogged = false
 
 local spawnWave
@@ -338,28 +336,16 @@ local function setSlotIdentity(idx, identity)
         aircraft.identity = identity
       end
     end
-    local previousRemaining = aircraftRemaining[previous]
-    local currentRemaining = aircraftRemaining[identity]
-    if previousRemaining ~= nil then
-      if currentRemaining == nil then
-        currentRemaining = previousRemaining
-      else
-        currentRemaining = math.min(currentRemaining, previousRemaining)
-      end
-      aircraftRemaining[identity] = currentRemaining
-      aircraftRemaining[previous] = nil
-    end
     if not playerIdentityName[identity] and playerIdentityName[previous] then
       playerIdentityName[identity] = playerIdentityName[previous]
     end
     playerIdentityName[previous] = nil
     env.info(
       string.format(
-        "[duel-dynamic] reconciled slot identity %s from %s to %s remaining=%s",
+        "[duel-dynamic] reconciled slot identity %s from %s to %s",
         PLAYER_GROUP_NAMES[idx],
         tostring(previous),
-        tostring(identity),
-        tostring(aircraftRemaining[identity])
+        tostring(identity)
       )
     )
   end
@@ -367,71 +353,17 @@ local function setSlotIdentity(idx, identity)
   return identity
 end
 
-local function recordSlotUnitIds()
-  for idx, pname in ipairs(PLAYER_GROUP_NAMES) do
-    local pg = GROUP:FindByName(pname)
-    local dcsGroup = pg and pg:GetDCSObject()
-    if dcsGroup and type(dcsGroup.getUnits) == "function" then
-      local ok, units = pcall(dcsGroup.getUnits, dcsGroup)
-      if ok and type(units) == "table" then
-        for _, unit in pairs(units) do
-          if unit and type(unit.getID) == "function" then
-            local ok2, id = pcall(unit.getID, unit)
-            if ok2 and id then
-              slotUnitIdToIndex[tostring(id)] = idx
-            end
-          end
-        end
-      end
-    end
-  end
-end
-
-local function slotIndexForSlotId(slotID)
-  if type(slotID) ~= "string" or slotID == "" then
-    return nil
-  end
-  if next(slotUnitIdToIndex) == nil then
-    recordSlotUnitIds()
-  end
-  local idx = slotUnitIdToIndex[slotID]
-  if idx then
-    return idx
-  end
-  -- Server slot IDs may wrap the numeric unit ID (e.g. "101_9"); scan the
-  -- numeric parts against the known slot unit IDs.
-  for candidate in slotID:gmatch("%d+") do
-    idx = slotUnitIdToIndex[candidate]
-    if idx then
-      return idx
-    end
-  end
-  return nil
-end
-
 -- Read-only slot gate. The dedicated-server hook queries this synchronously
--- on every Blue slot request (net.dostring_in -> a_do_script). The UCID
--- identified on the mission side is authoritative; when that key is unknown
--- the requested seat's current identity is checked instead, so exhaustion is
--- enforced even if the hook-side UCID format differs from the event-side
--- identity. Unknown players and unknown slots fail open; the global terminal
--- block remains the last line of defense.
+-- on every Blue slot request (net.dostring_in -> a_do_script). All players
+-- draw from the same mission-wide aircraft pool, so UCID and seat identity do
+-- not affect the decision. Before the first package is assembled the gate
+-- fails open because the pool has not been sized yet.
 _G.duel_can_enter_blue_slot = function(ucid, slotID)
   local decision
-  local ucidKeyed = type(ucid) == "string" and ucid ~= "" and aircraftRemaining[ucid] ~= nil
   if missionTerminal then
     decision = false
-  elseif ucidKeyed then
-    decision = aircraftRemaining[ucid] > 0
-  else
-    decision = nil
-    local idx = slotIndexForSlotId(slotID)
-    if idx then
-      local remaining = aircraftRemaining[slotIdentity[idx] or PLAYER_GROUP_NAMES[idx]]
-      if remaining ~= nil then
-        decision = remaining > 0
-      end
-    end
+  elseif sharedAircraftRemaining ~= nil then
+    decision = sharedAircraftRemaining > 0
   end
   if decision == nil then
     decision = true
@@ -442,7 +374,7 @@ _G.duel_can_enter_blue_slot = function(ucid, slotID)
       string.format(
         "[duel-dynamic] slot gate: slotID=%s ucid_keyed=%s decision=%s",
         tostring(slotID),
-        tostring(ucidKeyed),
+        tostring(type(ucid) == "string" and ucid ~= ""),
         tostring(decision)
       )
     )
@@ -451,57 +383,70 @@ _G.duel_can_enter_blue_slot = function(ucid, slotID)
 end
 
 local function formatAircraftRemaining()
-  if next(aircraftRemaining) == nil then
+  if sharedAircraftRemaining == nil then
     return "No players yet."
   end
-  local identities = {}
-  for identity in pairs(aircraftRemaining) do
-    identities[#identities + 1] = identity
+  return string.format("Aircraft remaining (shared pool): %d", sharedAircraftRemaining)
+end
+
+local function initializeSharedAircraftPool(playerCount)
+  if sharedAircraftRemaining ~= nil then
+    return
   end
-  table.sort(identities)
-  local lines = { "Aircraft remaining:" }
-  for _, identity in ipairs(identities) do
-    lines[#lines + 1] = string.format("  %s: %d", playerIdentityName[identity] or "Player", aircraftRemaining[identity])
+  local count = playerCount or 0
+  if count < 1 then
+    for idx in pairs(occupiedPlayerSlots) do
+      if idx then
+        count = count + 1
+      end
+    end
   end
-  return table.concat(lines, "\n")
+  count = math.max(1, count)
+  sharedPlayerCount = count
+  sharedAircraftRemaining = count * LIVES_PER_PLAYER
+  env.info(
+    string.format(
+      "[duel-dynamic] initialized shared lives pool: %d joined players x %d = %d lives",
+      sharedPlayerCount,
+      LIVES_PER_PLAYER,
+      sharedAircraftRemaining
+    )
+  )
 end
 
 local function enterTerminalStateIfAllAircraftLost()
-  if missionTerminal or next(aircraftRemaining) == nil then
+  if missionTerminal or sharedAircraftRemaining == nil or sharedAircraftRemaining > 0 then
     return
   end
-  for _, remaining in pairs(aircraftRemaining) do
-    if remaining > 0 then
-      return
-    end
-  end
   missionTerminal = true
-  terminalEndScheduled = true
-  MESSAGE:New("All aircraft lost — mission ending in 60 seconds.", 8):ToCoalition(coalition.side.BLUE)
-  env.info("[duel-dynamic] all tracked player identities are out of aircraft — ending DCS mission in 60 seconds")
+  MESSAGE:New(
+    string.format(
+      "MISSION COMPLETE\nAir Superiority Survival\nAll aircraft lost.\nReturning to the mission screen in %d seconds.",
+      TERMINAL_END_DELAY
+    ),
+    TERMINAL_END_DELAY
+  ):ToCoalition(coalition.side.BLUE)
+  env.info(
+    string.format(
+      "[duel-dynamic] shared aircraft pool depleted — ending DCS mission in %d seconds",
+      TERMINAL_END_DELAY
+    )
+  )
   if telemetry then
     telemetry:report_gameplay_over({ reason = "all-aircraft-lost" })
   end
-  -- Stop wave progression immediately, but leave the current red group alive
-  -- for a short grace period so missiles already in flight can finish. A soft
-  -- flag alone is insufficient: the delayed hard end below is what prevents a
-  -- dedicated server from accepting a new slot after the grace period.
   -- Blue remains the mission winner: this is a high-score survival mission,
   -- not a red-versus-blue victory assessment.
-  SCHEDULER:New(nil, function()
-    if not terminalEndScheduled then
-      return
+  -- The native shipping trigger turns this flag into a_end_mission on the
+  -- next trigger evaluation; there is deliberately no missile grace period.
+  if trigger and trigger.action and type(trigger.action.setUserFlag) == "function" then
+    local ok, error_message = pcall(trigger.action.setUserFlag, "DUEL_SURVIVAL_END", 1)
+    if not ok then
+      env.error("[duel-dynamic] failed to end DCS mission: " .. tostring(error_message))
     end
-    env.info("[duel-dynamic] ending DCS mission with Blue as the survival winner")
-    if trigger and trigger.action and type(trigger.action.setUserFlag) == "function" then
-      local ok, error_message = pcall(trigger.action.setUserFlag, "DUEL_SURVIVAL_END", 1)
-      if not ok then
-        env.error("[duel-dynamic] failed to end DCS mission: " .. tostring(error_message))
-      end
-    else
-      env.error("[duel-dynamic] DCS mission-end flag action is unavailable")
-    end
-  end, {}, TERMINAL_GRACE_PERIOD)
+  else
+    env.error("[duel-dynamic] DCS mission-end flag action is unavailable")
+  end
 end
 
 local function livePlayerPackage()
@@ -509,7 +454,7 @@ local function livePlayerPackage()
   local sumX, sumY, sumZ = 0, 0, 0
   for idx, pname in ipairs(PLAYER_GROUP_NAMES) do
     local identity = occupiedPlayerSlots[idx] and identityForSlot(idx) or nil
-    if identity and aircraftRemaining[identity] ~= 0 then
+    if identity and (sharedAircraftRemaining == nil or sharedAircraftRemaining > 0) then
       local coord = getPlayerCoord(pname)
       if coord then
         players[#players + 1] = { name = pname, group = GROUP:FindByName(pname), coord = coord }
@@ -683,6 +628,7 @@ spawnWave = function(reason)
     env.info("[duel-dynamic] cannot spawn wave yet: no occupied player aircraft is alive")
     return nil
   end
+  initializeSharedAircraftPool(#players)
 
   local spawnAltFt = randInt(SPAWN_ALT_MIN_FT, SPAWN_ALT_MAX_FT)
   local capAltFt = randInt(CAP_ALT_MIN_FT, CAP_ALT_MAX_FT)
@@ -858,6 +804,10 @@ local function onPlayerEnter(EventData)
     MESSAGE:New("Mission ending — no aircraft remaining.", 8):ToCoalition(coalition.side.BLUE)
     return
   end
+  if sharedAircraftRemaining ~= nil and sharedAircraftRemaining <= 0 then
+    MESSAGE:New("No aircraft remaining in the shared pool.", 8):ToCoalition(coalition.side.BLUE)
+    return
+  end
   occupiedPlayerSlots[idx] = true
   local ucid = EventData.IniPlayerUCID
   local identity
@@ -872,11 +822,6 @@ local function onPlayerEnter(EventData)
   end
   setSlotIdentity(idx, identity)
   playerIdentityName[identity] = displayName
-  if aircraftRemaining[identity] == nil then
-    aircraftRemaining[identity] = AIRCRAFT_PER_PLAYER
-  elseif aircraftRemaining[identity] == 0 then
-    MESSAGE:New("Out of aircraft — excluded from the package.", 8):ToCoalition(coalition.side.BLUE)
-  end
   registerPlayerAircraft(EventData, false, identity)
   env.info(
     string.format("[duel-dynamic] player '%s' entered %s", EventData.IniPlayerName or "Player", PLAYER_GROUP_NAMES[idx])
@@ -960,8 +905,9 @@ local function eventUnitObjectId(EventData)
   return tostring(objectId)
 end
 
--- Player aircraft losses consume per-identity aircraft allowances. This watcher is separate
--- from the bandit watcher because both subscribe to Dead, Crash, and Ejection.
+-- Player aircraft losses consume the shared mission-wide aircraft pool. This
+-- watcher is separate from the bandit watcher because both subscribe to Dead,
+-- Crash, and Ejection.
 local playerDeathWatcher = BASE:New()
 playerDeathWatcher:HandleEvent(EVENTS.Dead)
 playerDeathWatcher:HandleEvent(EVENTS.Crash)
@@ -1060,21 +1006,16 @@ local function handlePlayerLoss(EventData)
   aircraft.counted = true
   playerAircraftByObject[EventData.IniDCSUnit] = aircraft
 
-  local identity = aircraft.identity or identityForSlot(idx)
-  if aircraftRemaining[identity] == nil then
-    aircraftRemaining[identity] = AIRCRAFT_PER_PLAYER
-    playerIdentityName[identity] = playerIdentityName[identity] or "Player"
-    env.info(string.format("[duel-dynamic] initialized missing aircraft allowance for %s on verified loss", PLAYER_GROUP_NAMES[idx]))
-  end
-  aircraftRemaining[identity] = math.max(0, aircraftRemaining[identity] - 1)
-  local remaining = aircraftRemaining[identity]
+  initializeSharedAircraftPool()
+  sharedAircraftRemaining = math.max(0, sharedAircraftRemaining - 1)
+  local remaining = sharedAircraftRemaining
   env.info(string.format("[duel-dynamic] aircraft loss slot=%s object=%s birth=%s remaining=%d",
     PLAYER_GROUP_NAMES[idx], objectId, tostring(aircraft.birthTime), remaining))
   local text
   if remaining == 0 then
-    text = "Aircraft lost — out of aircraft."
+    text = "Aircraft lost — shared pool depleted."
   else
-    text = string.format("Aircraft lost — %d aircraft remaining.", remaining)
+    text = string.format("Aircraft lost — %d shared aircraft remaining.", remaining)
   end
   MESSAGE:New(text, 8):ToCoalition(coalition.side.BLUE)
   enterTerminalStateIfAllAircraftLost()
@@ -1232,17 +1173,15 @@ local function doInit()
   for i, pname in ipairs(PLAYER_GROUP_NAMES) do
     if getPlayerCoord(pname) then
       occupiedPlayerSlots[i] = true
-      local identity = identityForSlot(i)
-      if aircraftRemaining[identity] == nil then
-        aircraftRemaining[identity] = AIRCRAFT_PER_PLAYER
-        playerIdentityName[identity] = "Player"
-      end
       registerPlayerAssets(GROUP:FindByName(pname))
       env.info(string.format("[duel-dynamic] %s already occupied at init — adding to first package roster", pname))
     end
   end
-
-  recordSlotUnitIds()
+  local initialPlayerCount = 0
+  for _ in pairs(occupiedPlayerSlots) do
+    initialPlayerCount = initialPlayerCount + 1
+  end
+  initializeSharedAircraftPool(initialPlayerCount)
 
   initDone = true
   scheduleWave(WAVE_ASSEMBLY_DELAY, "initial player package assembled")

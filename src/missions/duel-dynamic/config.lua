@@ -14,6 +14,5 @@ return {
     "Bandit-6",
     "Bandit-8",
     "Bandit-9",
-    "Bandit-10",
   },
 }

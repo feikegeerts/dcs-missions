@@ -12,7 +12,6 @@ return {
     "Bandit-6",
     "Bandit-8",
     "Bandit-9",
-    "Bandit-10",
   },
   -- Preserve current behavior until BVR-specific adjustments are agreed.
   gameplay = {},
