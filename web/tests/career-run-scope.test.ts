@@ -22,11 +22,7 @@ describe("career run scope", () => {
       );
       expect(result).toHaveLength(1001);
       expect(result[1000].runKey).toBe("run-1000");
-      if (classification === null) {
-        expect(where).toHaveBeenCalledWith(undefined);
-      } else {
-        expect(where.mock.calls[0][0]).toBeDefined();
-      }
+      expect(where.mock.calls[0][0]).toBeDefined();
     },
   );
 });

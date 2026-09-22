@@ -75,6 +75,89 @@ describe("NDJSON collector", () => {
     expect(context.spool.eventCount()).toBe(2);
   });
 
+  it("discards a complete lifecycle-only run before it can be delivered", () => {
+    const context = setup();
+    const started = fixture("01-mission-started.json");
+    const ended = cloneEvent(started);
+    ended.event_sequence = 2;
+    ended.event_id = `${ended.producer_id}:${ended.run_key}:2`;
+    ended.event_type = "mission.ended";
+    ended.initiator = null;
+    ended.target = null;
+    ended.participant = null;
+    ended.asset = null;
+    ended.weapon = null;
+    ended.coalition = null;
+    ended.location = null;
+    ended.payload = { reason: "mission-end-observed" };
+    writeRun(context.workspace.input, "empty-run.ndjson", [started, ended]);
+
+    expect(collect()).toMatchObject({
+      spooled: 2,
+      quarantined: 0,
+      discarded_runs: 1,
+      discarded_events: 2,
+    });
+    expect(context.spool.eventCount()).toBe(0);
+    expect(
+      context.spool.runHasParticipantEntry(
+        started.producer_id,
+        started.run_key,
+      ),
+    ).toBe(false);
+    expect(
+      context.spool.listDeliverable(started.producer_id, started.run_key, 100),
+    ).toEqual([]);
+  });
+
+  it("retains a player who enters and immediately leaves", () => {
+    const context = setup();
+    const started = fixture("01-mission-started.json");
+    const entered = cloneEvent(fixture("02-ordnance-fired.json"));
+    entered.event_type = "participant.entered";
+    entered.event_id = `${entered.producer_id}:${entered.run_key}:2`;
+    entered.event_sequence = 2;
+    entered.initiator = null;
+    entered.target = null;
+    entered.weapon = null;
+    entered.payload = {};
+    const left = cloneEvent(entered);
+    left.event_type = "participant.left";
+    left.event_id = `${left.producer_id}:${left.run_key}:3`;
+    left.event_sequence = 3;
+    const ended = cloneEvent(started);
+    ended.event_sequence = 4;
+    ended.event_id = `${ended.producer_id}:${ended.run_key}:4`;
+    ended.event_type = "mission.ended";
+    ended.initiator = null;
+    ended.target = null;
+    ended.participant = null;
+    ended.asset = null;
+    ended.weapon = null;
+    ended.coalition = null;
+    ended.location = null;
+    ended.payload = { reason: "mission-end-observed" };
+    writeRun(context.workspace.input, "join-leave.ndjson", [
+      started,
+      entered,
+      left,
+      ended,
+    ]);
+
+    expect(collect()).toMatchObject({
+      spooled: 4,
+      discarded_runs: 0,
+      discarded_events: 0,
+    });
+    expect(context.spool.eventCount()).toBe(4);
+    expect(
+      context.spool.runHasParticipantEntry(
+        started.producer_id,
+        started.run_key,
+      ),
+    ).toBe(true);
+  });
+
   it("collects seekless hook segments as one run across restart and partial append", () => {
     const context = setup();
     const started = fixture("01-mission-started.json");

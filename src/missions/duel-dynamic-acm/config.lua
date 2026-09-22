@@ -1,6 +1,6 @@
 return {
   mission_name = "duel-dynamic-acm",
-  mission_version = "1",
+  mission_version = "2",
   title = "Duel Dynamic ACM",
   player_group_names = { "Aerial-1", "Aerial-2", "Aerial-3", "Aerial-4", "Aerial-5" },
   bandit_group_names = {
@@ -13,6 +13,12 @@ return {
     "Bandit-8",
     "Bandit-9",
   },
-  -- Preserve current behavior until ACM-specific adjustments are agreed.
-  gameplay = {},
+  -- ACM uses the same package-wave lifecycle and Survival allowances, but
+  -- starts the opposing package at a fixed close-range distance.
+  gameplay = {
+    spawn_distance_min_sm = 20,
+    spawn_distance_max_sm = 20,
+    respawn_delay_s = 20,
+    lives_per_player = 2,
+  },
 }

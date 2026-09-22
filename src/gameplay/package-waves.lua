@@ -9,9 +9,10 @@ local MISSION_CONFIG = assert(..., "package-wave mission configuration required"
 -- options vary per wave.
 -- Event-driven package waves: one red aircraft per live blue player, cloned
 -- into a single DCS group so the AI fights as a package rather than as isolated
--- duels. A wave spawns in close formation 55–85 statute mi from the blue
--- centroid at a per-wave random altitude (15,000–25,000 ft). The package gets
--- a per-wave random CAP profile (15,000–30,000 ft, 350–550 kt). Losses
+-- duels. A wave spawns in close formation at the mission-configured distance
+-- from the blue centroid (55–85 statute mi by default) at a per-wave random
+-- altitude (15,000–25,000 ft). The package gets a per-wave random CAP profile
+-- (15,000–30,000 ft, 350–550 kt). Losses
 -- do not respawn individually; the next complete package launches only after
 -- every aircraft in the current wave is dead. Bandits are cleaned up when every
 -- player leaves.
@@ -132,7 +133,8 @@ end
 -- Distances are STATUTE miles (1609.344 m per mile). Each wave picks a
 -- uniform-random donor from its difficulty tier (see WAVE_DONOR_TIERS)
 -- plus a uniform-random profile:
---   spawn distance  55–85 statute mi from the blue centroid
+--   spawn distance  mission-configured (55–85 statute mi by default) from the
+--                   blue centroid
 --   spawn altitude  15,000–25,000 ft (15,000 ft floor)
 --   CAP altitude    15,000–30,000 ft (AUFTRAG:NewCAP altitude, feet)
 --   CAP speed       350–550 kt (AUFTRAG:NewCAP speed, knots)

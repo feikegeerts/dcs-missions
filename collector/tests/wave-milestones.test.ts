@@ -67,18 +67,37 @@ function capableStream(runKey: string, missionName: string): TelemetryEvent[] {
   const started = capableStarted(runKey, missionName);
   return [
     started,
-    milestone(started, "wave.spawned", 2, {
+    participantEntered(started, 2),
+    milestone(started, "wave.spawned", 3, {
       wave_number: 1,
       wave_size: 2,
       donor: "Bandit-1",
       tier: 1,
     }),
-    milestone(started, "wave.cleared", 3, { wave_number: 1, wave_size: 2 }),
-    milestone(started, "gameplay.ended", 4, { reason: "all-aircraft-lost" }),
-    milestone(started, "mission.ended", 5, {
+    milestone(started, "wave.cleared", 4, { wave_number: 1, wave_size: 2 }),
+    milestone(started, "gameplay.ended", 5, { reason: "all-aircraft-lost" }),
+    milestone(started, "mission.ended", 6, {
       reason: "mission-end-observed",
     }),
   ];
+}
+
+function participantEntered(
+  template: TelemetryEvent,
+  sequence: number,
+): TelemetryEvent {
+  const event = cloneEvent(fixture("02-ordnance-fired.json"));
+  event.producer_id = template.producer_id;
+  event.run_key = template.run_key;
+  event.event_sequence = sequence;
+  event.event_id = `${template.producer_id}:${template.run_key}:${sequence}`;
+  event.event_type = "participant.entered";
+  event.initiator = null;
+  event.target = null;
+  event.weapon = null;
+  event.coalition = "blue";
+  event.payload = {};
+  return event;
 }
 
 describe("explicit wave milestones and capabilities", () => {
@@ -197,11 +216,11 @@ describe("explicit wave milestones and capabilities", () => {
     writeRun(workspace.input, "run-switch-acm.ndjson", acm);
 
     expect(collect()).toMatchObject({
-      spooled: 10,
+      spooled: 12,
       duplicates: 0,
       quarantined: 0,
     });
-    expect(spool.eventCount()).toBe(10);
+    expect(spool.eventCount()).toBe(12);
     const runs = spool.listRuns();
     expect(runs).toHaveLength(2);
     expect(runs.map((run) => run.run_key).sort()).toEqual([
@@ -216,6 +235,6 @@ describe("explicit wave milestones and capabilities", () => {
       expect(spool.acknowledge(event.event_id)).toBe("acknowledged");
     }
     expect(collect()).toMatchObject({ spooled: 0, quarantined: 0 });
-    expect(spool.eventCount()).toBe(10);
+    expect(spool.eventCount()).toBe(12);
   });
 });

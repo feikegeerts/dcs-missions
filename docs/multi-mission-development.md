@@ -37,11 +37,14 @@ override. The build embeds the selected entry itself, including entry-specific
 code; it does not discard that script and merely substitute a mission name.
 
 The three new missions inherit the previous gameplay defaults until the owner
-specifies their desired differences. No ACM-specific distance or BVR-specific
-difficulty was invented. BVR has four player slots, while ACM and Survival each
-have five, matching read-only inspection of the supplied archives. All three
-use the same nine late-activated red donor names. ME loadouts and options remain
-in their respective archives and are preserved by packaging.
+specifies their desired differences. ACM now overrides only the spawn distance
+to a fixed 20 statute miles; its package lifecycle, two-aircraft-per-player
+shared pool, 20-second replacement delay, escalation, donor tiers, altitude,
+speed, and CAP tasking remain the shared defaults used by Survival. BVR has
+four player slots, while ACM and Survival each have five, matching read-only
+inspection of the supplied archives. All three use the same nine
+late-activated red donor names. ME loadouts and options remain in their
+respective archives and are preserved by packaging.
 
 Telemetry does not import any of this gameplay code. A future non-wave entry
 can use `lib/telemetry/integration.lua` without the wave implementation. The
@@ -96,6 +99,11 @@ The optional `gameplay` table accepts:
 - `spawn_alt_min_ft`, `spawn_alt_max_ft`, `cap_alt_min_ft`, `cap_alt_max_ft`;
 - `cap_speed_min_kt`, `cap_speed_max_kt`;
 - `bandit_task` (`CAP` or `INTERCEPT`), `wave_donor_tiers`.
+
+The ACM configuration currently sets `spawn_distance_min_sm` and
+`spawn_distance_max_sm` to `20`, plus the same explicit two-aircraft allowance
+and 20-second replacement delay as Survival. Other gameplay values continue to
+come from the shared defaults.
 
 Omitted values retain the existing defaults. Unknown keys, invalid numbers,
 reversed ranges, invalid cadences, and untracked tier donors reject before

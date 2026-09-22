@@ -94,6 +94,55 @@ describe("spool delivery", () => {
     } as const;
   }
 
+  it("does not deliver or retain a completed lifecycle-only run", async () => {
+    const events = makeRun(2, "run-no-participant");
+    const database = setup([events]);
+    const recorder = recordFetch(() => {
+      throw new Error("lifecycle-only run must not reach Neon");
+    });
+
+    const summary = await deliver(deliveryOptions(database, recorder));
+
+    expect(recorder.calls).toHaveLength(0);
+    expect(summary).toMatchObject({
+      had_failure: false,
+      runs: [],
+      totals: { batches_posted: 0, events_posted: 0 },
+    });
+    expect(database.eventCount()).toBe(0);
+  });
+
+  it("defers an active lifecycle-only run until a participant enters", async () => {
+    const events = makeRun(
+      2,
+      "run-waiting-for-participant",
+      "delivery-producer",
+      false,
+    );
+    const heartbeat = events[1]!;
+    heartbeat.event_type = "mission.heartbeat";
+    heartbeat.initiator = null;
+    heartbeat.target = null;
+    heartbeat.participant = null;
+    heartbeat.asset = null;
+    heartbeat.weapon = null;
+    heartbeat.coalition = null;
+    heartbeat.location = null;
+    heartbeat.payload = { heartbeat: 2 };
+    const database = setup([events]);
+    const recorder = recordFetch(() => {
+      throw new Error("lifecycle-only run must not reach Neon");
+    });
+
+    const summary = await deliver(deliveryOptions(database, recorder));
+
+    expect(recorder.calls).toHaveLength(0);
+    expect(summary.runs).toMatchObject([
+      { run_key: "run-waiting-for-participant", state: "deferred" },
+    ]);
+    expect(database.eventCount()).toBe(2);
+  });
+
   it("delivers a complete 16-event run with exact canonical event bytes", async () => {
     const events = makeRun(16, "run-happy", "delivery-producer", true, true);
     const database = setup([events]);
@@ -155,7 +204,7 @@ describe("spool delivery", () => {
   });
 
   it("allows the documented HTTP loopback test double and sets redirect manual", async () => {
-    const events = makeRun(2, "run-loopback");
+    const events = makeRun(2, "run-loopback", "delivery-producer", false);
     const database = setup([events]);
     const recorder = recordFetch((call) => acceptedResponse(bodyFrom(call)));
 
@@ -210,7 +259,7 @@ describe("spool delivery", () => {
   it.each([undefined, "https://not-approved.invalid/capture"])(
     "rejects an authenticated 302 without following it (Location %s)",
     async (location) => {
-      const events = makeRun(2, "run-redirect");
+      const events = makeRun(2, "run-redirect", "delivery-producer", false);
       const database = setup([events]);
       const recorder = recordFetch(
         () =>
@@ -234,7 +283,7 @@ describe("spool delivery", () => {
   );
 
   it("rejects a final response URL that drifts from the pinned request URL", async () => {
-    const events = makeRun(2, "run-url-drift");
+    const events = makeRun(2, "run-url-drift", "delivery-producer", false);
     const database = setup([events]);
     const recorder = recordFetch((call) => {
       const response = acceptedResponse(bodyFrom(call));
@@ -388,26 +437,18 @@ describe("spool delivery", () => {
       events[0]!.run_key,
       100,
     );
-    const fourEventSizes = [0, 4, 8, 12].map((start) =>
+    const maxBodyBytes = Buffer.byteLength(
+      bodyForCanonicals(
+        deliverable.slice(0, 4).map((item) => item.canonical_json),
+      ),
+    );
+    expect(maxBodyBytes).toBeLessThan(
       Buffer.byteLength(
         bodyForCanonicals(
-          deliverable
-            .slice(start, start + 4)
-            .map((item) => item.canonical_json),
+          deliverable.slice(0, 5).map((item) => item.canonical_json),
         ),
       ),
     );
-    const fiveEventSizes = [0, 4, 8].map((start) =>
-      Buffer.byteLength(
-        bodyForCanonicals(
-          deliverable
-            .slice(start, start + 5)
-            .map((item) => item.canonical_json),
-        ),
-      ),
-    );
-    const maxBodyBytes = Math.max(...fourEventSizes);
-    expect(maxBodyBytes).toBeLessThan(Math.min(...fiveEventSizes));
     const recorder = recordFetch((call) => acceptedResponse(bodyFrom(call)));
 
     let summary;
@@ -1070,7 +1111,38 @@ function makeRun(
     let event: TelemetryEvent;
     if (sequence === 1) {
       event = forRun(fixture("01-mission-started.json"), runKey, producerId);
-    } else if (sequence === 2 && includeOrdnance) {
+    } else if (sequence === 2 && (count > 2 || !complete)) {
+      event = forRun(
+        cloneEvent(fixture("02-ordnance-fired.json")),
+        runKey,
+        producerId,
+      );
+      event.event_type = "participant.entered";
+      event.initiator = null;
+      event.target = null;
+      event.participant = {
+        status: "unknown",
+        kind: "participant",
+        reason: "stable-identity-unavailable",
+        participant_id: null,
+        display_name: null,
+        callsign: null,
+        coalition: "blue",
+      };
+      event.asset = {
+        status: "unknown",
+        kind: "aircraft",
+        reason: "instance-identity-unavailable",
+        asset_key: null,
+        dcs_name: null,
+        dcs_type: null,
+        coalition: "blue",
+      };
+      event.weapon = null;
+      event.coalition = "blue";
+      event.location = { status: "unknown", reason: "unavailable" };
+      event.payload = {};
+    } else if (sequence === 3 && includeOrdnance) {
       event = forRun(fixture("02-ordnance-fired.json"), runKey, producerId);
     } else {
       event = forRun(

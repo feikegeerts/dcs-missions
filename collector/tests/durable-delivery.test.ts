@@ -75,7 +75,9 @@ describe("fair durable delivery and lifecycle outbox", () => {
 
   it("survives restart with attempt count and deadline and does not retry early", async () => {
     let database = open();
-    database.insertEvent(event(1, "run-restart", false));
+    events(2, "run-restart", false).forEach((item) =>
+      database.insertEvent(item),
+    );
     let now = "2026-09-07T00:00:00.000Z";
     let calls = 0;
     const fetchImpl: typeof fetch = async () => {
@@ -121,7 +123,7 @@ describe("fair durable delivery and lifecycle outbox", () => {
     events(3, "run-a-blocked", false).forEach((item) =>
       database.insertEvent(item),
     );
-    events(2, "run-b-ok", true).forEach((item) => database.insertEvent(item));
+    events(3, "run-b-ok", true).forEach((item) => database.insertEvent(item));
     let calls = 0;
     const summary = await deliver(
       deliveryOptions(database, async (_input, init) => {
@@ -159,8 +161,8 @@ describe("fair durable delivery and lifecycle outbox", () => {
 
   it("persists an auth circuit and permits one half-open probe", async () => {
     let database = open();
-    database.insertEvent(event(1, "run-a", false));
-    database.insertEvent(event(1, "run-b", false));
+    events(2, "run-a", false).forEach((item) => database.insertEvent(item));
+    events(2, "run-b", false).forEach((item) => database.insertEvent(item));
     let now = "2026-09-07T00:00:00.000Z";
     let calls = 0;
     const unauthorized: typeof fetch = async () => {
@@ -450,14 +452,28 @@ function event(
   value.run_key = runKey;
   value.event_sequence = sequence;
   value.event_id = `producer:${runKey}:${sequence}`;
-  value.event_type =
-    sequence === 1
-      ? "mission.started"
-      : ended
-        ? "mission.ended"
-        : "mission.heartbeat";
+  value.event_type = sequence === 1 ? "mission.started" : "mission.heartbeat";
+  if (sequence === 2) {
+    value.event_type = "participant.entered";
+    value.initiator = null;
+    value.target = null;
+    value.participant = cloneEvent(
+      fixture("02-ordnance-fired.json"),
+    ).participant;
+    value.asset = cloneEvent(fixture("02-ordnance-fired.json")).asset;
+    value.weapon = null;
+    value.coalition = "blue";
+    value.location = cloneEvent(fixture("02-ordnance-fired.json")).location;
+  } else if (ended && sequence > 2) {
+    value.event_type = "mission.ended";
+  }
   value.sim_time = sequence;
-  value.payload = ended ? { reason: "mission-end-observed" } : { sequence };
+  value.payload =
+    value.event_type === "mission.ended"
+      ? { reason: "mission-end-observed" }
+      : value.event_type === "participant.entered"
+        ? {}
+        : { sequence };
   return value;
 }
 

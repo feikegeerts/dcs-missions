@@ -57,6 +57,12 @@ interface PrunableRunRow {
   event_count: number;
 }
 
+interface DiscardableRunRow {
+  producer_id: string;
+  run_key: string;
+  event_count: number;
+}
+
 interface RunRetryRow {
   producer_id: string;
   run_key: string;
@@ -129,6 +135,17 @@ export interface PrunedRun {
 export interface PruneResult {
   prunedRuns: PrunedRun[];
   totalEventsPruned: number;
+}
+
+export interface DiscardedRun {
+  producerId: string;
+  runKey: string;
+  eventCount: number;
+}
+
+export interface DiscardNonParticipatingResult {
+  discardedRuns: DiscardedRun[];
+  totalEventsDiscarded: number;
 }
 
 export interface RunSpoolSummary {
@@ -629,6 +646,106 @@ export class DurableSpool {
       )
       .get(producerId, runKey) as { one: number } | undefined;
     return row !== undefined;
+  }
+
+  runHasParticipantEntry(producerId: string, runKey: string): boolean {
+    const row = this.database
+      .prepare(
+        `SELECT 1 AS one FROM spool_events
+         WHERE producer_id = ? AND run_key = ? AND event_type = 'participant.entered'
+         LIMIT 1`,
+      )
+      .get(producerId, runKey) as { one: number } | undefined;
+    return row !== undefined;
+  }
+
+  /**
+   * Remove complete, lifecycle-only runs after the mission has ended. These
+   * runs are retained locally until the final sequence is present so a late
+   * source segment cannot make us discard a real participant event. They are
+   * never eligible for delivery to Neon.
+   */
+  discardNonParticipatingRuns(dryRun: boolean): DiscardNonParticipatingResult {
+    const discard = this.database.transaction(() => {
+      const rows = this.database
+        .prepare(
+          `SELECT
+            events.producer_id,
+            events.run_key,
+            COUNT(*) AS event_count
+          FROM spool_events AS events
+          WHERE EXISTS (
+              SELECT 1 FROM spool_events AS ended
+              WHERE ended.producer_id = events.producer_id
+                AND ended.run_key = events.run_key
+                AND ended.event_type = 'mission.ended'
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM spool_events AS participant
+              WHERE participant.producer_id = events.producer_id
+                AND participant.run_key = events.run_key
+                AND participant.event_type = 'participant.entered'
+            )
+          GROUP BY events.producer_id, events.run_key
+          HAVING MIN(events.event_sequence) = 1
+             AND MAX(CASE WHEN events.event_sequence = 1
+                          AND events.event_type = 'mission.started'
+                          THEN 1 ELSE 0 END) = 1
+             AND COUNT(*) = MAX(events.event_sequence)
+          ORDER BY events.producer_id, events.run_key`,
+        )
+        .all() as DiscardableRunRow[];
+
+      if (!dryRun) {
+        const deleteLifecycleAttempts = this.database.prepare(
+          `DELETE FROM lifecycle_attempts
+           WHERE observation_key IN (
+             SELECT observation_key FROM lifecycle_outbox
+             WHERE producer_id = ? AND run_key = ?
+           )`,
+        );
+        const deleteLifecycleOutbox = this.database.prepare(
+          `DELETE FROM lifecycle_outbox WHERE producer_id = ? AND run_key = ?`,
+        );
+        const deleteAcknowledgements = this.database.prepare(
+          `DELETE FROM acknowledgements WHERE producer_id = ? AND run_key = ?`,
+        );
+        const deleteDeliveryState = this.database.prepare(
+          `DELETE FROM run_delivery_state WHERE producer_id = ? AND run_key = ?`,
+        );
+        const deleteDeliveryHealth = this.database.prepare(
+          `DELETE FROM delivery_health WHERE producer_id = ? AND run_key = ?`,
+        );
+        const deleteRetryState = this.database.prepare(
+          `DELETE FROM run_retry_state WHERE producer_id = ? AND run_key = ?`,
+        );
+        const deleteEvents = this.database.prepare(
+          `DELETE FROM spool_events WHERE producer_id = ? AND run_key = ?`,
+        );
+        for (const run of rows) {
+          deleteLifecycleAttempts.run(run.producer_id, run.run_key);
+          deleteLifecycleOutbox.run(run.producer_id, run.run_key);
+          deleteAcknowledgements.run(run.producer_id, run.run_key);
+          deleteDeliveryState.run(run.producer_id, run.run_key);
+          deleteDeliveryHealth.run(run.producer_id, run.run_key);
+          deleteRetryState.run(run.producer_id, run.run_key);
+          deleteEvents.run(run.producer_id, run.run_key);
+        }
+      }
+
+      return {
+        discardedRuns: rows.map((row) => ({
+          producerId: row.producer_id,
+          runKey: row.run_key,
+          eventCount: row.event_count,
+        })),
+        totalEventsDiscarded: rows.reduce(
+          (total, run) => total + run.event_count,
+          0,
+        ),
+      };
+    });
+    return discard();
   }
 
   recordDeliveryAttempt(record: {

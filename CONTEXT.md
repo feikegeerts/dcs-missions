@@ -5,10 +5,19 @@ activity. It deliberately separates combat results from economic estimates.
 
 ## Runs And Participants
 
+**Mission Execution**:
+A single loaded execution of a DCS mission, including an execution in which
+the server starts and ends without a human entering a slot. It is an
+operational observation and is not necessarily a dashboard run.
+_Avoid_: Mission Run
+
 **Mission Run**:
-A single loaded execution of a DCS mission, from mission start until the
-mission ends or is restarted. A restart creates a new run with no inherited
-state, and the run is the initial historical boundary for captured statistics.
+A participation-bearing mission execution, from mission start until the
+mission ends or is restarted. The first `participant.entered` event makes the
+execution eligible for historical tracking; lifecycle-only executions remain
+local operational telemetry and are excluded from dashboard history.
+A restart creates a new run with no inherited state, and the run is the
+initial historical boundary for captured statistics.
 _Avoid_: Match, campaign, session
 
 **Participant**:

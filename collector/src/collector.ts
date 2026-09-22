@@ -39,6 +39,8 @@ export interface CollectionSummary {
   duplicate_quarantines: number;
   cursor_advances: number;
   bytes_read: number;
+  discarded_runs: number;
+  discarded_events: number;
   incidents: CollectionIncident[];
   runs: RunSpoolSummary[];
 }
@@ -114,6 +116,8 @@ export class Collector {
       duplicate_quarantines: 0,
       cursor_advances: 0,
       bytes_read: 0,
+      discarded_runs: 0,
+      discarded_events: 0,
       incidents: [],
       runs: [],
     };
@@ -131,6 +135,11 @@ export class Collector {
       this.collectFile(path, summary);
     }
 
+    if (!this.dryRun) {
+      const discarded = this.spool.discardNonParticipatingRuns(false);
+      summary.discarded_runs = discarded.discardedRuns.length;
+      summary.discarded_events = discarded.totalEventsDiscarded;
+    }
     summary.runs = this.spool.listRuns();
     return summary;
   }

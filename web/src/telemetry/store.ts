@@ -140,6 +140,15 @@ export interface TelemetryStore {
   ): Promise<RunParticipantRow[]>;
 }
 
+function participantEntryExists() {
+  return sql`EXISTS (
+    SELECT 1 FROM ${telemetryEvents}
+    WHERE ${telemetryEvents.producerId} = ${missionRuns.producerId}
+      AND ${telemetryEvents.runKey} = ${missionRuns.runKey}
+      AND ${telemetryEvents.eventType} = 'participant.entered'
+  )`;
+}
+
 function nullableObjectField(
   value: Record<string, unknown> | null,
   key: string,
@@ -296,13 +305,15 @@ export class NeonTelemetryStore implements TelemetryStore {
     producerId: string,
     runKey: string,
   ): Promise<RunRow | null> {
-    const rows = await getDb()
+    const db = getDb();
+    const rows = await db
       .select()
       .from(missionRuns)
       .where(
         and(
           eq(missionRuns.producerId, producerId),
           eq(missionRuns.runKey, runKey),
+          participantEntryExists(),
         ),
       )
       .limit(1);
@@ -530,13 +541,17 @@ export class NeonTelemetryStore implements TelemetryStore {
   async listCareerRuns(
     classification: "test" | "historical" | null = null,
   ): Promise<RunRow[]> {
-    return getDb()
+    const db = getDb();
+    return db
       .select()
       .from(missionRuns)
       .where(
         classification === null
-          ? undefined
-          : eq(missionRuns.runClassification, classification),
+          ? participantEntryExists()
+          : and(
+              participantEntryExists(),
+              eq(missionRuns.runClassification, classification),
+            ),
       )
       .orderBy(desc(missionRuns.updatedAt));
   }
@@ -546,13 +561,17 @@ export class NeonTelemetryStore implements TelemetryStore {
     offset = 0,
     classification: "test" | "historical" | null = null,
   ): Promise<RunRow[]> {
-    return getDb()
+    const db = getDb();
+    return db
       .select()
       .from(missionRuns)
       .where(
         classification === null
-          ? undefined
-          : eq(missionRuns.runClassification, classification),
+          ? participantEntryExists()
+          : and(
+              participantEntryExists(),
+              eq(missionRuns.runClassification, classification),
+            ),
       )
       .orderBy(desc(missionRuns.updatedAt))
       .limit(limit)
@@ -565,20 +584,22 @@ export class NeonTelemetryStore implements TelemetryStore {
     offset = 0,
     classification: "test" | "historical" | null = null,
   ): Promise<RunRow[]> {
+    const db = getDb();
     const missionCondition =
       missionName === null
-        ? or(
-            isNull(missionRuns.missionName),
-            eq(missionRuns.missionName, ""),
-          )
+        ? or(isNull(missionRuns.missionName), eq(missionRuns.missionName, ""))
         : eq(missionRuns.missionName, missionName);
-    return getDb()
+    return db
       .select()
       .from(missionRuns)
       .where(
         classification === null
-          ? missionCondition
-          : and(missionCondition, eq(missionRuns.runClassification, classification)),
+          ? and(missionCondition, participantEntryExists())
+          : and(
+              missionCondition,
+              participantEntryExists(),
+              eq(missionRuns.runClassification, classification),
+            ),
       )
       .orderBy(desc(missionRuns.updatedAt))
       .limit(limit)
@@ -586,10 +607,11 @@ export class NeonTelemetryStore implements TelemetryStore {
   }
 
   async getRunByRunKey(runKey: string): Promise<RunRow | null> {
-    const rows = await getDb()
+    const db = getDb();
+    const rows = await db
       .select()
       .from(missionRuns)
-      .where(eq(missionRuns.runKey, runKey))
+      .where(and(eq(missionRuns.runKey, runKey), participantEntryExists()))
       .limit(1);
     return rows[0] ?? null;
   }

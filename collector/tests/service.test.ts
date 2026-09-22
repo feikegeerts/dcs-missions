@@ -5,6 +5,7 @@ import { acquireOwnership, releaseOwnership } from "../src/ownership.js";
 import { ServiceController } from "../src/service.js";
 import type { ServiceOptions } from "../src/service.js";
 import {
+  cloneEvent,
   createWorkspace,
   fixture,
   ndjson,
@@ -56,6 +57,7 @@ describe("persistent service scheduler", () => {
     const configuration = options("service-test-token");
     const source = writeRun(workspace!.input, "run.ndjson", [
       fixture("01-mission-started.json"),
+      participantEntered(),
     ]);
     const logs: string[] = [];
     let releaseFirst: (() => void) | undefined;
@@ -83,7 +85,19 @@ describe("persistent service scheduler", () => {
       deliveryOptions: { maxAttempts: 1 },
     });
     controller.start();
-    appendFileSync(source, ndjson([fixture("02-ordnance-fired.json")]));
+    const heartbeat = cloneEvent(fixture("01-mission-started.json"));
+    heartbeat.event_sequence = 3;
+    heartbeat.event_id = `${heartbeat.producer_id}:${heartbeat.run_key}:3`;
+    heartbeat.event_type = "mission.heartbeat";
+    heartbeat.initiator = null;
+    heartbeat.target = null;
+    heartbeat.participant = null;
+    heartbeat.asset = null;
+    heartbeat.weapon = null;
+    heartbeat.coalition = null;
+    heartbeat.location = null;
+    heartbeat.payload = {};
+    appendFileSync(source, ndjson([heartbeat]));
     await vi.advanceTimersByTimeAsync(100);
     expect(collectionLogs(logs, "scheduled")).toHaveLength(2);
     expect(calls).toBe(1);
@@ -117,6 +131,7 @@ describe("persistent service scheduler", () => {
     const configuration = options(token);
     writeRun(workspace!.input, "run.ndjson", [
       fixture("01-mission-started.json"),
+      participantEntered(),
     ]);
     const logs: string[] = [];
     const fetchImpl = vi
@@ -220,6 +235,7 @@ describe("persistent service scheduler", () => {
     const configuration = options("bad-token");
     writeRun(workspace!.input, "run.ndjson", [
       fixture("01-mission-started.json"),
+      participantEntered(),
     ]);
     const logs: string[] = [];
     const fetchImpl = vi
@@ -261,6 +277,19 @@ describe("persistent service scheduler", () => {
     await releaseOwnership(next);
   });
 });
+
+function participantEntered(): ReturnType<typeof fixture> {
+  const event = cloneEvent(fixture("02-ordnance-fired.json"));
+  event.event_type = "participant.entered";
+  event.event_sequence = 2;
+  event.event_id = `${event.producer_id}:${event.run_key}:2`;
+  event.initiator = null;
+  event.target = null;
+  event.weapon = null;
+  event.coalition = "blue";
+  event.payload = {};
+  return event;
+}
 
 function collectionLogs(logs: string[], phase: string): object[] {
   return logs

@@ -166,8 +166,8 @@ export async function deliver(
   options: DeliveryOptions,
 ): Promise<DeliverySummary> {
   const resolved = resolveOptions(options);
-  const initialRuns = options.spool.listRuns();
   if (options.dryRun === true) {
+    const initialRuns = options.spool.listRuns();
     return {
       dry_run: true,
       url: options.baseUrl,
@@ -177,6 +177,12 @@ export async function deliver(
       abort_signals: [],
     };
   }
+
+  // Lifecycle-only server boots are held in the local spool until a human
+  // participant enters. Once a complete mission ends without participation,
+  // discard it before any delivery or lifecycle-abort decision can occur.
+  options.spool.discardNonParticipatingRuns(false);
+  const initialRuns = options.spool.listRuns();
 
   persistLifecycleObservations(initialRuns, resolved);
   const circuitAtStart = options.spool.getDeliveryCircuit();
@@ -265,6 +271,13 @@ async function deliverOneBatch(
   context: AttemptContext,
 ): Promise<RunDeliveryResult> {
   const result = baseResult(initial);
+  if (
+    !options.spool.runHasParticipantEntry(initial.producer_id, initial.run_key)
+  ) {
+    result.state = "deferred";
+    result.error = "waiting for participant.entered before delivery";
+    return result;
+  }
   const retry = options.spool.getRunRetryState(
     initial.producer_id,
     initial.run_key,
@@ -482,6 +495,7 @@ function persistLifecycleObservations(
   for (const run of runs) {
     if (
       run.producer_id !== producerId ||
+      !options.spool.runHasParticipantEntry(producerId, run.run_key) ||
       options.spool.hasMissionEnded(producerId, run.run_key)
     ) {
       continue;
@@ -566,6 +580,10 @@ async function deliverLifecycleOutbox(
       );
     if (run === undefined) continue;
     if (
+      !options.spool.runHasParticipantEntry(
+        observation.producerId,
+        observation.runKey,
+      ) ||
       options.spool.hasMissionEnded(observation.producerId, observation.runKey)
     ) {
       options.spool.resolveLifecycleWithoutRequest(
@@ -710,6 +728,9 @@ function smallestEligibleRun(
 ): RunSpoolSummary | undefined {
   return runs
     .map((run) => {
+      if (!options.spool.runHasParticipantEntry(run.producer_id, run.run_key)) {
+        return null;
+      }
       const retry = options.spool.getRunRetryState(
         run.producer_id,
         run.run_key,
