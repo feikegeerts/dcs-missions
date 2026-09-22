@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { MissionRecord } from "../src/components/mission-record";
 import {
+  publicPlayerIdFor,
   summarizeRunCombat,
   type HighScoreRun,
 } from "../src/telemetry/dashboard";
@@ -45,7 +46,7 @@ describe("mission record card", () => {
     ]) {
       expect(html).toContain(text);
     }
-    expect(html).toContain('href="/players/pilot%2Fone"');
+    expect(html).toContain(`href="/players/${publicPlayerIdFor("pilot/one")}"`);
     expect(html).toContain('href="/runs/record-run"');
   });
 
@@ -64,6 +65,21 @@ describe("mission record card", () => {
     expect(html).toContain("No participants recorded");
     expect(html).toContain("Run start time unavailable");
     expect(html).not.toContain("for less than");
+  });
+
+  it("recovers the run start time from generated run keys", () => {
+    const html = renderToStaticMarkup(
+      createElement(MissionRecord, {
+        record: {
+          ...record,
+          runKey: "run-20260907T174608Z-39c240d0",
+          startedAt: null,
+        },
+        participants: [],
+      }),
+    );
+    expect(html).toContain("Run started");
+    expect(html).not.toContain("Run start time unavailable");
   });
 
   it("renders an honest empty state and retains eligibility details", () => {
