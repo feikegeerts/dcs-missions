@@ -3,9 +3,10 @@ import Link from "next/link";
 import {
   DASHBOARD_RUN_SCOPE_LIMIT,
   formatPartialCost,
+  publicPlayerIdFor,
   type HighScoreRun,
 } from "@/telemetry/dashboard";
-import { formatDashboardDateTime } from "@/telemetry/dates";
+import { formatDashboardDateTime, runKeyTimestamp } from "@/telemetry/dates";
 
 type RecordParticipant = {
   participantId: string;
@@ -21,6 +22,9 @@ export function MissionRecord({
 }) {
   const cost = record
     ? formatPartialCost(record.summary.blueTotalCents, 0)
+    : null;
+  const startedAt = record
+    ? (record.startedAt ?? runKeyTimestamp(record.runKey))
     : null;
   return (
     <section
@@ -47,7 +51,7 @@ export function MissionRecord({
                   {participants.map((participant) => (
                     <li key={participant.participantId}>
                       <Link
-                        href={`/players/${encodeURIComponent(participant.participantId)}`}
+                        href={`/players/${encodeURIComponent(publicPlayerIdFor(participant.participantId))}`}
                       >
                         {participant.displayName?.trim() ||
                           "Unnamed participant"}
@@ -77,8 +81,8 @@ export function MissionRecord({
           </div>
           <div className="mission-record-footer">
             <span>
-              {record.startedAt
-                ? `Run started ${formatDashboardDateTime(record.startedAt)}`
+              {startedAt
+                ? `Run started ${formatDashboardDateTime(startedAt)}`
                 : "Run start time unavailable"}
             </span>
             <Link

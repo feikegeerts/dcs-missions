@@ -19,11 +19,7 @@ import {
   resolveRunWaves,
   type ScoreboardRow,
 } from "@/telemetry/dashboard";
-import {
-  formatDashboardDateTime,
-  runKeyTimestamp,
-  shortRunKey,
-} from "@/telemetry/dates";
+import { formatDashboardDateTime, runKeyTimestamp } from "@/telemetry/dates";
 import { timelinePage, type RunReportData } from "@/telemetry/run-report";
 
 function CoalitionPanel({
@@ -33,7 +29,6 @@ function CoalitionPanel({
   losses,
   assists,
   cost,
-  costNote,
 }: {
   side: "blue" | "red";
   kills: number;
@@ -41,7 +36,6 @@ function CoalitionPanel({
   losses: number;
   assists: number;
   cost: string;
-  costNote: string;
 }) {
   return (
     <section className={`hud-panel coalition-${side}`}>
@@ -66,12 +60,12 @@ function CoalitionPanel({
           <dd>{cost}</dd>
         </div>
       </dl>
-      <p className="score-note">
-        {friendlyKills > 0
-          ? `Includes ${friendlyKills} friendly-fire kill${friendlyKills === 1 ? "" : "s"}. `
-          : ""}
-        {costNote}
-      </p>
+      {friendlyKills > 0 && (
+        <p className="score-note">
+          Includes {friendlyKills} friendly-fire kill
+          {friendlyKills === 1 ? "" : "s"}.
+        </p>
+      )}
     </section>
   );
 }
@@ -304,9 +298,6 @@ export function RunReport({
   const sortedAssists = [...assists].sort(
     (a, b) => a.representativeHitSimTime - b.representativeHitSimTime,
   );
-  const costNote = priced
-    ? "Ordnance expenditure + aircraft replacement, whole dollars."
-    : "This run predates catalogue assignment and is unpriced.";
   const blueCost = priced
     ? formatPartialCost(
         scoreboard.blue.totalCents,
@@ -325,9 +316,7 @@ export function RunReport({
   const waves = resolveRunWaves(runEvents, run.missionName);
   const gameplay = extractGameplayOutcome(runEvents);
   const showMilestones =
-    waves.mode === "explicit" ||
-    waves.mode === "missing" ||
-    gameplay.ended;
+    waves.mode === "explicit" || waves.mode === "missing" || gameplay.ended;
 
   return (
     <main>
@@ -340,17 +329,11 @@ export function RunReport({
       </p>
       <h1 className="hud-title">{entry.title}</h1>
       <p className="hud-subtitle">
-        <span className="hud-mono" title={`Full run key: ${run.runKey}`}>
-          RUN {shortRunKey(run.runKey)}
-        </span>{" "}
-        ·{" "}
         {displayStartedAt
           ? formatDashboardDateTime(displayStartedAt)
           : "start time unavailable"}{" "}
         · {run.mapName ?? "unknown map"} ·{" "}
-        <span className={`status-${run.status}`}>{run.status}</span> ·{" "}
-        {run.eventCount} events · last #{run.lastSequence} · updated{" "}
-        {formatDashboardDateTime(run.updatedAt)}
+        <span className={`status-${run.status}`}>{run.status}</span>
       </p>
 
       <div className="hud-grid" style={{ marginTop: "1rem" }}>
@@ -363,7 +346,6 @@ export function RunReport({
               losses={scoreboard.blue.losses}
               assists={scoreboard.blue.assists}
               cost={blueCost}
-              costNote={costNote}
             />
             <CoalitionPanel
               side="red"
@@ -372,7 +354,6 @@ export function RunReport({
               losses={scoreboard.red.losses}
               assists={scoreboard.red.assists}
               cost={redCost}
-              costNote={costNote}
             />
           </div>
           {(scoreboard.unattributedKills > 0 ||
@@ -393,9 +374,9 @@ export function RunReport({
             <h2>Scenario milestones</h2>
             {gameplay.ended && (
               <p className="hud-subtitle">
-                Gameplay over — {gameplay.reason ?? "reason not reported"}.
-                This is the scenario outcome, distinct from the DCS session
-                status above.
+                Gameplay over — {gameplay.reason ?? "reason not reported"}. This
+                is the scenario outcome, distinct from the DCS session status
+                above.
               </p>
             )}
             {waves.mode === "explicit" && (

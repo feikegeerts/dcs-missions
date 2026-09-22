@@ -21,15 +21,15 @@ describe("home refresh query cost", () => {
     storeMocks.getCollectorHealth.mockResolvedValue([]);
   });
 
-  it("performs one runs and one collector-health query per render", async () => {
+  it("keeps collector-health queries off the home render", async () => {
     const props = { searchParams: Promise.resolve({}) };
 
     await MissionsPage(props);
     expect(storeMocks.listRuns).toHaveBeenCalledTimes(1);
-    expect(storeMocks.getCollectorHealth).toHaveBeenCalledTimes(1);
+    expect(storeMocks.getCollectorHealth).not.toHaveBeenCalled();
 
     await MissionsPage(props);
     expect(storeMocks.listRuns).toHaveBeenCalledTimes(2);
-    expect(storeMocks.getCollectorHealth).toHaveBeenCalledTimes(2);
+    expect(storeMocks.getCollectorHealth).not.toHaveBeenCalled();
   });
 });

@@ -39,6 +39,7 @@ export default function RootLayout({
             <nav className="hud-nav" aria-label="Primary">
               <Link href="/">Missions</Link>
               <Link href="/players">Players</Link>
+              <Link href="/collector-health">Collector health</Link>
             </nav>
           </header>
           {children}
