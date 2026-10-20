@@ -7,6 +7,7 @@
     "globals": [
       "env", "timer", "trigger", "world", "coalition", "country", "land",
       "missionCommands", "lfs", "mist",
+      "Object", "Unit", "Group", "StaticObject", "Controller", "AI",
       "SPAWN", "SPAWNSTATIC", "ZONE", "ZONE_AIRBASE", "ZONE_GROUP", "SET_GROUP",
       "SET_UNIT", "SET_CLIENT", "MESSAGE", "MENU_COALITION", "MENU_COALITION_COMMAND",
       "TIMER", "EVENTS", "BASE", "AUFTRAG", "FLIGHTGROUP", "ARMYGROUP", "SCORING",

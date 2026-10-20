@@ -21,6 +21,14 @@ read_globals = {
   "lfs",
   "mist",
 
+  -- DCS object API (used directly by the training range)
+  "Object",
+  "Unit",
+  "Group",
+  "StaticObject",
+  "Controller",
+  "AI",
+
   -- MOOSE (class names used as globals)
   "SPAWN",
   "SPAWNSTATIC",
