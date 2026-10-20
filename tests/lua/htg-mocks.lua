@@ -57,6 +57,10 @@ function Mocks.install()
     units = {},
     groups = {},
     statics = {},
+    smokes = {},
+    marks = {},
+    commands = {},
+    menus = {},
     statics_created = 0,
     groups_created = 0,
     player_groups = {},
@@ -126,11 +130,14 @@ function Mocks.install()
       outTextForCoalition = function() end,
       outTextForUnit = function() end,
       outTextForGroup = function() end,
-      markToAll = function()
+      markToAll = function(id, text, point)
+        ctx.marks[#ctx.marks + 1] = { id = id, text = text, point = point }
         return true
       end,
       removeMark = function() end,
-      smoke = function() end,
+      smoke = function(point, color)
+        ctx.smokes[#ctx.smokes + 1] = { point = point, color = color }
+      end,
       setUnitInternalCargo = function(name, mass)
         local unit = ctx.units[name]
         if unit then
@@ -246,10 +253,14 @@ function Mocks.install()
   }
 
   missionCommands = {
-    addSubMenuForGroup = function()
-      return {}
+    addSubMenuForGroup = function(group_id, name, parent)
+      local menu = { group_id = group_id, name = name, parent = parent }
+      ctx.menus[#ctx.menus + 1] = menu
+      return menu
     end,
-    addCommandForGroup = function() end,
+    addCommandForGroup = function(group_id, name, parent, action)
+      ctx.commands[#ctx.commands + 1] = { group_id = group_id, name = name, parent = parent, action = action }
+    end,
   }
 
   coalition = {
@@ -314,6 +325,16 @@ function Mocks.install()
   ctx.log_contains = function(fragment)
     for _, line in ipairs(ctx.logs) do
       if line:find(fragment, 1, true) then
+        return true
+      end
+    end
+    return false
+  end
+
+  ctx.run_command = function(name)
+    for _, command in ipairs(ctx.commands) do
+      if command.name == name then
+        command.action()
         return true
       end
     end

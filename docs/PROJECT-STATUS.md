@@ -1,5 +1,15 @@
 # Project status
 
+**Helicopter Training Grounds flight-test follow-up — 2026-10-20:** The first
+flight found that startup smoke columns caused lag and the CH-47F cargo picker
+was hard to use. `helicopter-training` now starts with map labels but no smoke;
+F10 can activate smoke for an individually selected site or cargo load, and
+cargo object names include a visible index/type/class. DCS does not expose a
+stop call for these colored plumes, so they fade naturally. Source/simulation
+and shipping-build checks pass. The rebuilt `.miz` is in
+`out/helicopter-training.miz` but has not been installed or live-retested. See
+`docs/helicopter-training.md`.
+
 **Hidden Passage approved operational port + retained Testing mission — 2026-10-20:**
 The owner declared short testing complete and approved porting. `transport-1`
 shares the accepted dual-helicopter extraction, aircraft-specific audio and

@@ -44,6 +44,39 @@ test("setup spawns the configured cargo, squad and targets", function()
   assert(ctx.log_contains("range ready"), "no 'range ready' log line")
 end)
 
+test("range sites start with map marks but no active smoke columns", function()
+  assert(#ctx.marks > 0, "site map markers were not created")
+  assert(#ctx.smokes == 0, "smoke should be player-activated, not spawned at startup")
+end)
+
+test("a site smoke command marks only its selected site", function()
+  local before = #ctx.smokes
+  assert(ctx.run_command("Site: PAD ALPHA (open)"), "site smoke menu item missing")
+  assert(#ctx.smokes == before + 1, "one menu selection should create one smoke column")
+  local smoke = ctx.smokes[#ctx.smokes]
+  assert(smoke.point.x == sites.pad_alpha.x and smoke.point.z == sites.pad_alpha.y)
+  assert(smoke.color == trigger.smokeColor.Green)
+end)
+
+test("cargo names and individual smoke commands identify each load", function()
+  local names = {}
+  for _, load in ipairs(htg.exercises.cargo) do
+    assert(load.name:find("HTG_LOAD_", 1, true), "cargo object name lacks readable load prefix")
+    assert(load.name:find(load.entry.class:upper(), 1, true), "cargo object name lacks its weight class")
+    assert(not names[load.name], "duplicate cargo object name: " .. load.name)
+    names[load.name] = true
+
+    assert(ctx.run_command("Load: " .. load.menu_label), "missing smoke command for " .. load.menu_label)
+    local smoke = ctx.smokes[#ctx.smokes]
+    local spawned = ctx.statics[load.name]
+    assert(
+      smoke.point.x == spawned.pos.x and smoke.point.z == spawned.pos.z,
+      "smoke did not identify the selected load"
+    )
+    assert(smoke.color == trigger.smokeColor.White)
+  end
+end)
+
 test("sites resolve to the configured coordinates on flat ground", function()
   assert(ctx.log_contains("site cargo_yard") and ctx.log_contains("h=10.0"), "site resolution line missing")
 end)
@@ -119,7 +152,7 @@ test("a sling load scores only when the load reaches a pad", function()
   -- Find a spawned load and lift it clear of the ground.
   local load_name, load
   for name, spawned in pairs(ctx.statics) do
-    if name:find("HTG_CARGO", 1, true) then
+    if name:find("HTG_LOAD_", 1, true) then
       load_name, load = name, spawned
       break
     end
@@ -141,7 +174,7 @@ test("a destroyed load is reported instead of scored", function()
   local record = ctx.make_player("Rotary-1-1", "CH-47Fbl1")
   local load
   for name, spawned in pairs(ctx.statics) do
-    if name:find("HTG_CARGO", 1, true) and not spawned.destroyed then
+    if name:find("HTG_LOAD_", 1, true) and not spawned.destroyed then
       load = spawned
       break
     end

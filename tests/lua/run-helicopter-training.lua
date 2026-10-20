@@ -235,6 +235,7 @@ test("every cargo entry has a verified type and shape name", function()
   for _, entry in ipairs(config.cargo) do
     assert(type(entry.type) == "string" and #entry.type > 0)
     assert(type(entry.shape_name) == "string" and #entry.shape_name > 0)
+    assert(type(entry.label) == "string" and #entry.label > 0)
     assert(config.cargo_points[entry.class], "missing points for class " .. tostring(entry.class))
     classes[entry.class] = true
   end

@@ -95,7 +95,18 @@ with its final position, height, local relief and how far it moved:
 
 Scoreboard and controls live in the F10 menu under `RANGE`: `Status`,
 `Briefing`, `Reset range` (respawn loads/squad/targets), `Clear scores`,
-`Terrain scan`. The menu is per group, so each pilot gets their own.
+`Terrain scan`, and `Smoke one location`. Site map labels are always present,
+but startup no longer creates smoke at every site. Under `Smoke one location`,
+select a training site or one cargo load to mark it visually. Cargo smoke is
+placed at the load's current position, so it also identifies a moved load. DCS's
+colored `trigger.action.smoke` plume has no matching stop call; it fades on its
+own. To keep only one plume active, wait for it to fade before selecting another.
+The menu is per group, so each pilot gets their own.
+
+CH-47F cargo-picker entries are named with a load number, the cargo type, and
+its weight class (for example `HTG_LOAD_01_UH_1H_CARGO_CRATE_LIGHT_001`). The
+matching `Smoke one location -> Cargo loads` item uses the same number and type,
+so you can mark the selected object before choosing it in the cargo panel.
 
 ## Scoring
 
@@ -103,8 +114,9 @@ Scoreboard and controls live in the F10 menu under `RANGE`: `Status`,
 per exercise: external load and troop lift are scored on time from hook-up to
 set-down, hover on maximum drift in metres (lower is better), landings on
 repetitions, gunnery on hits. External loads are credited to the pilot nearest
-the load at hook-up; loads are also marked with a map marker and coloured smoke
-so they can be found without the F10 map.
+the load at hook-up. The cargo yard has a permanent map label; request smoke
+for one numbered load under `RANGE -> Smoke one location -> Cargo loads` when you
+need to identify that object visually.
 
 ## The coordinate problem (read this before trusting a site)
 
@@ -218,7 +230,8 @@ missing declaration.
 
 Nothing in the offline suite proves the range runs inside DCS. The first in-game
 check is: load the mission, confirm the `[helicopter-training] site ...` lines
-and `range ready` in `dcs.log`, and confirm the smoke and F10 marks appear.
+and `range ready` in `dcs.log`, verify map labels appear without startup smoke,
+then activate one site and one cargo smoke command from F10.
 
 ## Inspecting a live range
 
@@ -231,4 +244,3 @@ _G.helicopter_training.progress:report(function(s) return tostring(s) end)
 _G.helicopter_training.terrain:scan(_G.helicopter_training.config.base, _G.helicopter_training.config.probe)
 _G.helicopter_training.exercises:reset_world()
 ```
-

@@ -73,8 +73,14 @@ function Range:spawn_static(spec)
 end
 
 --- Spawn one entry from config.cargo at the cargo yard.
-function Range:spawn_cargo(entry, x, y, heading)
-  local name = self:unique("CARGO")
+function Range:spawn_cargo(entry, x, y, heading, index)
+  local unique_name = self:unique("CARGO")
+  local sequence = unique_name:match("(%d+)$")
+  index = index or 0
+  local label =
+    tostring(entry.label or entry.key or "LOAD"):upper():gsub("[^A-Z0-9]+", "_"):gsub("^_", ""):gsub("_$", "")
+  local class = tostring(entry.class or "LOAD"):upper():gsub("[^A-Z0-9]+", "_"):gsub("^_", ""):gsub("_$", "")
+  local name = string.format("HTG_LOAD_%02d_%s_%s_%s", index, label, class, sequence)
   local ok = self:spawn_static({
     name = name,
     type = entry.type,
@@ -311,8 +317,7 @@ end
 
 -- ------------------------------------------------------------------ markers
 
---- Persistent smoke plus an F10 map marker, so a site is findable both out of
---- the window and from the map.
+--- Add a persistent F10 map marker. Smoke is emitted only when explicitly asked.
 function Range:mark_site(site, color, text, smoke)
   self.mark_id = self.mark_id + 1
   local height = site.height or 0
@@ -321,8 +326,8 @@ function Range:mark_site(site, color, text, smoke)
   if not ok then
     self.log:warn("markToAll failed for " .. tostring(text))
   end
-  if smoke ~= false then
-    pcall(trigger.action.smoke, point, color or trigger.smokeColor.Green)
+  if smoke == true then
+    self:smoke_at(site.x, site.y, height, color or trigger.smokeColor.Green)
   end
   return self.mark_id
 end
@@ -330,7 +335,11 @@ end
 --- Drop a single smoke grenade at a world position.
 function Range:smoke_at(x, y, height, color)
   local point = { x = x, y = (height or 0) + 1, z = y }
-  pcall(trigger.action.smoke, point, color or trigger.smokeColor.White)
+  local ok, err = pcall(trigger.action.smoke, point, color or trigger.smokeColor.White)
+  if not ok then
+    self.log:warn("smoke failed: " .. tostring(err))
+  end
+  return ok
 end
 
 function Range:remove_mark(mark_id)

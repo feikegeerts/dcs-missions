@@ -58,6 +58,7 @@ function Exercises.new(ctx)
   self.sites = ctx.sites
   self.states = {} -- [unit_name] = per-aircraft attempt state
   self.cargo = {} -- ordered list of spawned load records
+  self.smoke_sites = {} -- map-marker sites; smoke is available only on demand
   self.targets = { group = nil, respawn_at = nil }
   return self
 end
@@ -82,30 +83,30 @@ function Exercises:setup()
 
   if self.cfg.enable.sling then
     self:spawn_cargo()
-    self.range:mark_site(sites.cargo_yard, trigger.smokeColor.White, "CARGO YARD")
-    self.range:mark_site(sites.pad_alpha, trigger.smokeColor.Green, "PAD ALPHA (open)")
+    self:mark_site("cargo_yard", trigger.smokeColor.White, "CARGO YARD")
+    self:mark_site("pad_alpha", trigger.smokeColor.Green, "PAD ALPHA (open)")
     self.range:spawn_obstacle_ring(sites.pad_bravo, self.cfg.obstacle_ring)
-    self.range:mark_site(sites.pad_bravo, trigger.smokeColor.Orange, "PAD BRAVO (confined)")
-    self.range:mark_site(sites.pad_charlie, trigger.smokeColor.Green, "PAD CHARLIE (field)")
+    self:mark_site("pad_bravo", trigger.smokeColor.Orange, "PAD BRAVO (confined)")
+    self:mark_site("pad_charlie", trigger.smokeColor.Green, "PAD CHARLIE (field)")
   end
 
   if self.cfg.enable.hover then
-    self.range:mark_site(sites.hover_pad, trigger.smokeColor.Blue, "HOVER PAD")
+    self:mark_site("hover_pad", trigger.smokeColor.Blue, "HOVER PAD")
   end
 
   if self.cfg.enable.troops then
     self.troops:spawn_squad(sites.troop_pickup)
-    self.range:mark_site(sites.troop_pickup, trigger.smokeColor.Red, "SQUAD STAGING")
-    self.range:mark_site(sites.troop_lz, trigger.smokeColor.Red, "SQUAD LZ")
+    self:mark_site("troop_pickup", trigger.smokeColor.Red, "SQUAD STAGING")
+    self:mark_site("troop_lz", trigger.smokeColor.Red, "SQUAD LZ")
   end
 
   if self.cfg.enable.autorotation then
-    self.range:mark_site(sites.auto_gate, trigger.smokeColor.White, "AUTOROTATION GATE", false)
-    self.range:mark_site(sites.auto_pad, trigger.smokeColor.Orange, "AUTOROTATION PAD")
+    self:mark_site("auto_gate", trigger.smokeColor.White, "AUTOROTATION GATE")
+    self:mark_site("auto_pad", trigger.smokeColor.Orange, "AUTOROTATION PAD")
   end
 
   if self.cfg.enable.gunnery then
-    self.range:mark_site(sites.gun_line, trigger.smokeColor.White, "GUN LINE", false)
+    self:mark_site("gun_line", trigger.smokeColor.White, "GUN LINE")
     self:spawn_targets()
   end
 
@@ -113,12 +114,27 @@ function Exercises:setup()
     for _, spec in ipairs(LANDING_SITES) do
       local site = sites[spec.site]
       if site then
-        self.range:mark_site(site, trigger.smokeColor.Green, site.label or spec.label, false)
+        self:mark_site(spec.site, trigger.smokeColor.Green, site.label or spec.label)
       end
     end
   end
 
   notify:log(string.format("range ready: %d loads, %d targets", #self.cargo, self.targets.count or 0))
+end
+
+--- Keep the persistent map label, but defer its smoke until a pilot asks for it.
+function Exercises:mark_site(site_key, color, text)
+  local site = self.sites[site_key]
+  if not site then
+    return
+  end
+  local label = text or site.label or site_key
+  self.range:mark_site(site, color, label, false)
+  self.smoke_sites[#self.smoke_sites + 1] = {
+    key = site_key,
+    label = label,
+    color = color,
+  }
 end
 
 function Exercises:spawn_cargo()
@@ -131,11 +147,32 @@ function Exercises:spawn_cargo()
     local column = (index - 1) % per_row
     local x = site.x - ((per_row - 1) * spacing) / 2 + column * spacing
     local y = site.y + (row - (rows - 1) / 2) * 22
-    local name = self.range:spawn_cargo(entry, x, y, 0)
+    local name = self.range:spawn_cargo(entry, x, y, 0, index)
     if name then
-      self.cargo[#self.cargo + 1] = { name = name, entry = entry, home_x = x, home_y = y }
+      self.cargo[#self.cargo + 1] = {
+        index = index,
+        name = name,
+        entry = entry,
+        home_x = x,
+        home_y = y,
+        menu_label = string.format("%02d - %s (%s)", index, entry.label, string.upper(entry.class)),
+      }
     end
   end
+end
+
+--- Smoke the live position of one selected load, if it still exists.
+function Exercises:smoke_cargo(index)
+  for _, load in ipairs(self.cargo) do
+    if load.index == index then
+      local x, y, altitude = self.range:static_position(load.name)
+      if not x then
+        return false
+      end
+      return self.range:smoke_at(x, y, altitude, trigger.smokeColor.White)
+    end
+  end
+  return false
 end
 
 function Exercises:spawn_targets()
@@ -534,7 +571,7 @@ function Exercises:brief_text()
     "5. AUTOROTATION: cross the gate above 300 m AGL at 100+ km/h, then land on the orange pad.",
     "6. DOOR GUNNER: engage the target field from the gun line.",
     "",
-    "F10 menu: RANGE -> status, reset, terrain scan.",
+    "F10 menu: RANGE -> status, smoke one location, reset, terrain scan.",
   }
   return table.concat(lines, "\n")
 end

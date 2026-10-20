@@ -220,6 +220,33 @@ local function build_menu(group_id)
       return nil
     end, nil, timer.getTime() + 1)
   end)
+
+  local smoke_root = missionCommands.addSubMenuForGroup(group_id, "Smoke one location", root)
+  if #exercises.smoke_sites > 0 then
+    local site_menu = missionCommands.addSubMenuForGroup(group_id, "Training sites", smoke_root)
+    for _, option in ipairs(exercises.smoke_sites) do
+      local site_key, label, color = option.key, option.label, option.color
+      missionCommands.addCommandForGroup(group_id, "Site: " .. label, site_menu, function()
+        local site = sites[site_key]
+        local ok = site and range:smoke_at(site.x, site.y, site.height, color)
+        local message = ok and ("Smoke marks " .. label .. ".") or ("Could not mark " .. label .. ".")
+        trigger.action.outTextForGroup(group_id, message, 8, false)
+      end)
+    end
+  end
+
+  if #exercises.cargo > 0 then
+    local cargo_menu = missionCommands.addSubMenuForGroup(group_id, "Cargo loads", smoke_root)
+    for _, load in ipairs(exercises.cargo) do
+      local index, label = load.index, load.menu_label
+      missionCommands.addCommandForGroup(group_id, "Load: " .. label, cargo_menu, function()
+        local ok = exercises:smoke_cargo(index)
+        local message = ok and ("White smoke marks load " .. label .. ".")
+          or ("Load " .. label .. " is no longer available.")
+        trigger.action.outTextForGroup(group_id, message, 8, false)
+      end)
+    end
+  end
 end
 
 local function build_menus_for_players()

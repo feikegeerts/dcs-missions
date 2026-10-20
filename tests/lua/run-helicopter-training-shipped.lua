@@ -52,6 +52,10 @@ test("the payload brought the range up with no source tree", function()
   assert(ctx.log_contains("range ready"), "no 'range ready' log line")
   assert(ctx.statics_created >= #config.cargo, "statics: " .. ctx.statics_created)
   assert(ctx.groups_created >= 2, "groups: " .. ctx.groups_created)
+  assert(#ctx.smokes == 0, "the shipped payload should not create smoke columns at startup")
+  for _, load in ipairs(htg.exercises.cargo) do
+    assert(load.name:find("HTG_LOAD_", 1, true), "cargo picker name is not descriptive")
+  end
 end)
 
 test("sites resolved from the shipped config", function()

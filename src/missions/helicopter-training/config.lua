@@ -94,18 +94,24 @@ return {
   -- in installed missions. Weights are what DCS reports in the CH-47F cargo
   -- menu; they are classed here rather than quoted exactly.
   cargo = {
-    { key = "crate_a", type = "uh1h_cargo", shape_name = "ab-212_cargo", class = "light", label = "CRATE 1" },
-    { key = "crate_b", type = "ammo_cargo", shape_name = "ammo_box_cargo", class = "light", label = "CRATE 2" },
-    { key = "pallet", type = "M92_MRE_Pallet", shape_name = "M92_Cargo01", class = "medium", label = "PALLET" },
-    { key = "barrels", type = "barrels_cargo", shape_name = "barrels_cargo", class = "medium", label = "BARRELS" },
+    {
+      key = "crate_a",
+      type = "uh1h_cargo",
+      shape_name = "ab-212_cargo",
+      class = "light",
+      label = "UH-1H cargo crate",
+    },
+    { key = "crate_b", type = "ammo_cargo", shape_name = "ammo_box_cargo", class = "light", label = "Ammo box" },
+    { key = "pallet", type = "M92_MRE_Pallet", shape_name = "M92_Cargo01", class = "medium", label = "MRE pallet" },
+    { key = "barrels", type = "barrels_cargo", shape_name = "barrels_cargo", class = "medium", label = "Barrels" },
     {
       key = "container",
       type = "iso_container_small",
       shape_name = "iso_container_small_cargo",
       class = "heavy",
-      label = "CONTAINER",
+      label = "ISO container",
     },
-    { key = "fueltank", type = "fueltank_cargo", shape_name = "fueltank_cargo", class = "heavy", label = "FUEL TANK" },
+    { key = "fueltank", type = "fueltank_cargo", shape_name = "fueltank_cargo", class = "heavy", label = "Fuel tank" },
   },
 
   -- Scoring weight per load class.
