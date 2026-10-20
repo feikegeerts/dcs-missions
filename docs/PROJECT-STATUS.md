@@ -1,5 +1,102 @@
 # Project status
 
+**Hidden Passage approved operational port + retained Testing mission — 2026-10-20:**
+The owner declared short testing complete and approved porting. `transport-1`
+shares the accepted dual-helicopter extraction, aircraft-specific audio and
+halfway/success calls across the 33.06 NM operational archive and the 3.06 NM
+**Operation Hidden Passage - Testing** archive. Pickup is automatic; unloading
+explicitly remains manual. The operational editor layout is preserved, and the
+short mission is retained/renamed for future changes. Updates use
+`build/update-hidden-passage.py` with explicit layout guards, backups/concurrent-save
+protection and opt-in audio replacement. Eight packaging safety tests, 11 objective
+tests and 68 source/each-layout adapter checks pass. The complete long-range
+flight, remote multicrew and dedicated-server operation remain separate live gates.
+No adaptive combat or voice-recognition service is implemented.
+Current commands and behaviour: `docs/hidden-passage.md`.
+
+**Hidden Passage short-only dual-helicopter extraction — 2026-10-20:**
+`transport-test-6` gives both Mule/Chinook and Raven/UH-60L independent smoke,
+status, extraction and unloading menus. Safe landed/stopped pickup starts
+automatically after two seconds; no door/ramp interlock. The carrier is claimed
+only when boarding starts, so switching slots beforehand does not fail the
+objective. A claimed carrier still cannot be replaced; no reset/handover added.
+Both native CTLD loops, per-aircraft crew calls, shared HVT aboard and success
+audio are mocked; Raven's Overlord recording is replaced with the corrected
+Downloads version. 68 source/shipping checks pass. Both-aircraft live acceptance
+is pending; the long-range archive remains unchanged until an approved port.
+Details: `docs/hidden-passage-transport-test.md`.
+
+**Hidden Passage short-only success audio — 2026-10-20:** `voice-test-4` plays the
+supplied Hidden Passage Success recording once, Blue-wide, after confirmed Hatay
+delivery. Existing voice calls finish first; invalid or duplicate deliveries do
+not trigger another success call. 48 source/shipping mocks pass; live acceptance
+remains pending. Only the short mission is updated; no long-range port or forced
+mission end. Details: `docs/hidden-passage-transport-test.md`.
+
+**Hidden Passage short-only halfway radio call — 2026-10-20:** `voice-test-3`
+adds the supplied HVT-under-fire recording as a one-time Blue-wide broadcast when
+either named helicopter crosses halfway outbound to the LZ. Distance is measured
+to the actual editor LZ, not accumulated flight distance. Raven can trigger it
+without Chinook occupancy; return/ground movement, consumed/lost objectives and
+dead/replaced aircraft are guarded. 45 source/shipping mocks pass. This is audio
+only, not enemy/fire logic; live acceptance remains pending. The long-range
+mission remains protected and unchanged. See `docs/hidden-passage-transport-test.md`.
+
+**Hidden Passage short-only departure voice test — 2026-10-20:** `voice-test-2`
+routes independent, once-per-mission takeoff calls to named Mule/Raven aircraft:
+Chinook pickup clearance and UH-60L support clearance. Audio/subtitles now target
+the relevant aircraft; shared boarding helpers reuse HVT aboard for either type.
+UH-60 objective integration and automatic boarding remain unimplemented. The
+short-only updater preserves all editor tables/existing audio and rejects the
+long-range layout. 37 source/shipping mocks pass; live takeoff/multicrew acceptance
+is pending. The long-range mission must remain unchanged until the owner approves
+porting after short-mission testing. See `docs/hidden-passage-transport-test.md`.
+
+**Hidden Passage relocated Chinook extraction — 2026-10-20:** The owner completed
+the revision-3 hosted pickup/return successfully (also confirmed in the client
+log), then moved the LZ approximately 33.06 NM south of Hatay. `extraction-1`
+uses `OHP-Pickup` / `OHP-HVTs`, accepts their 83.1 m spacing within the unchanged
+105 m extraction range, marks the editor LZ with smoke, and updates navigation,
+briefing and visible labels. A checked `--update-existing` build preserves the
+owner's editor layout and the added UH-60L slot; UH-60L objective integration
+is explicitly deferred. Source/shipping checks pass; new-site terrain/flight
+acceptance is pending. No enemies, SAMs or reset mechanism are added. Details:
+`docs/hidden-passage-transport-test.md`.
+
+**Hidden Passage boarding synchronization — 2026-10-20:** Revision 2's hosted
+test exposed CTLD removing troops before its boarding receipt, causing an
+early-takeoff failure after visual disappearance. Revision 3 defers only the
+extraction removal to the native boarding receipt: visibility, objective boarding
+and clearance now change together. The pinned MOOSE library is unchanged; true
+early departure/loss still fails and no reset is added. Time-aware source and
+shipping regressions pass; post-fix hosted acceptance remains pending. Details:
+`docs/hidden-passage-transport-test.md`.
+Deployment preserved the user's editor re-save and moved ground support: only
+the embedded mission script and boarding instructions were updated, with a new
+backup. Future original-seed rebuilds must reconcile those editor changes.
+
+**Hidden Passage first hosted test + revision 2 — 2026-10-20:** The normal
+client-hosted run loaded the transport scripts/party, but a pre-pickup
+Chinook/soldier hit and helicopter crash prevented acceptance. Generic CTLD
+smoke/menu confusion and unclear post-respawn failure feedback were also exposed.
+Revision 2 separates the green landing mark from the party by 60 m, exposes only
+four mission-specific F10 controls, blocks too-close/airborne/failed transport
+requests, and makes mission restart explicit after failure. **No reset command
+or reset logic is added**, per owner direction. Post-fix hosted validation is
+pending; scope/evidence: `docs/hidden-passage-transport-test.md`.
+
+**New mission prototype — 2026-10-20:** Operation Hidden Passage now has an
+independent non-wave Chinook transport entry and an explicit self-contained build
+recipe. The user-authored Syria/Hatay Chinook is preserved; additions are Blue
+ground support, a three-person pickup approximately 3.05 NM northeast, CTLD
+extraction/return, and F10 instructions. Offline objective, adapter, archive and
+preservation checks pass; live terrain/transport/multiplayer acceptance is still
+pending. No existing selector, wave gameplay/build, installed hooks/services or
+DCS sanitization was changed. Scope and flight/build instructions:
+`docs/hidden-passage-transport-test.md`; full-mission draft:
+`docs/plan-adaptive-extraction.md`. Friends' A-10 variant is confirmed as A-10C II
+Tank Killer, but no additional flyable aircraft are added to this probe.
+
 **Current summary — 2026-09-20:** The multi-mission telemetry refactor and
 explicit wave-milestone work are merged to `main` and pushed. The repository is
 clean at `90f913c` (`main...origin/main`). BVR, ACM, and Survival each have an

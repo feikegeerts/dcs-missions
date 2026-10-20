@@ -1,0 +1,5 @@
+local ROOT = assert(_G.MY_SCRIPTS_ROOT, "bootstrap must supply the source root")
+local config = dofile(ROOT .. "missions/operation-hidden-passage/config.lua")
+local Operation = dofile(ROOT .. "missions/operation-hidden-passage/operation.lua")
+local Voice = dofile(ROOT .. "missions/operation-hidden-passage/voice.lua")
+assert(loadfile(ROOT .. "missions/operation-hidden-passage/transport-test.lua"))(config, Operation, Voice)
