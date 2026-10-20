@@ -3,7 +3,9 @@
 Mission/editor tables are preserved, except the known boarding instruction in
 the briefing. Existing recordings require explicit --replace-audio permission.
 Default layout is testing; --layout operational explicitly enables the approved
-long-range port. --deploy replaces --input; --deploy-to writes a new named copy.
+long-range port. --enable-firefight adds the staged enemy template to either
+layout; --enable-test-firefight remains a Testing-only compatibility alias.
+--deploy replaces --input; --deploy-to writes a new named copy.
 """
 
 import argparse
@@ -22,13 +24,25 @@ ROOT = Path(__file__).resolve().parents[1]
 PACK = runpy.run_path(str(ROOT / "build/pack-hidden-passage.py"))
 
 
-def update(source, deploy=False, replace_audio=(), layout="testing", deploy_to=None, retire_source=False):
+def update(
+    source,
+    deploy=False,
+    replace_audio=(),
+    layout="testing",
+    deploy_to=None,
+    retire_source=False,
+    enable_test_firefight=False,
+    enable_firefight=False,
+):
     if layout not in {"testing", "operational"}:
         raise ValueError("Unknown Hidden Passage layout")
     if deploy and deploy_to:
         raise ValueError("Choose --deploy or --deploy-to, not both")
     if retire_source and not deploy_to:
         raise ValueError("--retire-source requires --deploy-to")
+    if enable_test_firefight and layout != "testing":
+        raise ValueError("The firefight prototype can only be added to the Testing layout")
+    enable_firefight = enable_firefight or enable_test_firefight
     source = source.resolve()
     target = source if deploy else Path(deploy_to).resolve() if deploy_to else None
     if deploy_to and (target == source or target.exists()):
@@ -58,20 +72,52 @@ def update(source, deploy=False, replace_audio=(), layout="testing", deploy_to=N
         candidate[dictionary] = candidate[dictionary].replace(old_instruction, new_instruction)
     elif candidate[dictionary].count(new_instruction) != 2:
         raise ValueError("Unknown boarding briefing; review before modifying editor-authored text")
+    no_firefight_briefing = b"The other helicopter remains in support. No adaptive enemies or SAMs are scripted yet."
+    testing_firefight_briefing = (
+        b"Testing only: six killable riflemen stage about 400 m from the HVTs. They move in at outbound halfway and open fire inside 300 m. "
+        b"The HVTs return fire for 5 seconds, then hold while remaining protected until the exchange ends. The exchange ends when the HVTs are aboard, "
+        b"the enemy force is eliminated, or after 10 minutes; the operational mission is unchanged."
+    )
+    operational_firefight_briefing = (
+        b"About 3 NM before pickup, six killable riflemen move in on the HVTs and open fire inside 300 m. "
+        b"The HVTs return fire for 5 seconds, then hold while remaining protected until the exchange ends. "
+        b"Engage the enemy, but avoid the HVT party; your aircraft remain vulnerable."
+    )
+    legacy_test_firefight = (
+        b"Testing only: killable hostile riflemen open fire inside 1.5 NM. The exchange stops when they are eliminated, "
+        b"the party is aboard, or after 10 minutes; the operational mission is unchanged."
+    )
     # Update only the known aircraft instructions in the two standard briefings.
     briefing_changes = [
         (b"Blue CH-47F Mule-1 starts hot at Hatay. Fly to PICKUP (waypoint 4), collect",
          b"Mule One (CH-47F) and Raven One (UH-60L) are available at Hatay. Fly to PICKUP (waypoint 4), collect"),
         (b"The added UH-60L Client slot is preserved but NOT connected to this objective.",
          b"Both helicopters can extract the package; the first to start boarding becomes its carrier."),
-        (b"Use the Chinook for extraction. No adaptive enemies or SAMs are scripted yet.",
-         b"The other helicopter remains in support. No adaptive enemies or SAMs are scripted yet."),
+        (b"Use the Chinook for extraction. No adaptive enemies or SAMs are scripted yet.", no_firefight_briefing),
     ]
     for old, new in briefing_changes:
         if candidate[dictionary].count(old) == 2:
             candidate[dictionary] = candidate[dictionary].replace(old, new)
         elif candidate[dictionary].count(new) != 2:
-            raise ValueError("Unknown aircraft briefing; review before modifying editor-authored text")
+            already_has_firefight = old == briefing_changes[2][0] and any(
+                candidate[dictionary].count(briefing) == 2
+                for briefing in (testing_firefight_briefing, operational_firefight_briefing, legacy_test_firefight)
+            )
+            if not already_has_firefight:
+                raise ValueError("Unknown aircraft briefing; review before modifying editor-authored text")
+    if enable_firefight:
+        target_briefing = testing_firefight_briefing if layout == "testing" else operational_firefight_briefing
+        if candidate[dictionary].count(target_briefing) != 2:
+            known = (
+                no_firefight_briefing,
+                testing_firefight_briefing,
+                operational_firefight_briefing,
+                legacy_test_firefight,
+            )
+            matches = [briefing for briefing in known if candidate[dictionary].count(briefing) == 2]
+            if len(matches) != 1:
+                raise ValueError("Unknown firefight briefing; review before modifying editor-authored text")
+            candidate[dictionary] = candidate[dictionary].replace(matches[0], target_briefing)
     if layout == "testing":
         title = b'"Operation Hidden Passage - Testing"'
         if candidate[dictionary].count(title) != 1:
@@ -104,6 +150,14 @@ def update(source, deploy=False, replace_audio=(), layout="testing", deploy_to=N
         temp = Path(temp)
         mission = temp / "mission"
         mission.write_bytes(members["mission"])
+        if enable_firefight:
+            firefight_mission = temp / "mission-with-firefight-template"
+            PACK["lua"](ROOT / "build/prepare-hidden-passage-firefight.lua", mission, firefight_mission, layout)
+            PACK["lua"](
+                ROOT / "tests/lua/run-hidden-passage-firefight-artifact.lua", mission, firefight_mission, layout
+            )
+            candidate["mission"] = firefight_mission.read_bytes()
+            mission.write_bytes(candidate["mission"])
         briefing = temp / "dictionary"
         briefing.write_bytes(candidate[dictionary])
         PACK["lua"](ROOT / "tests/lua/run-hidden-passage-layout-artifact.lua", mission, briefing, layout)
@@ -119,6 +173,8 @@ def update(source, deploy=False, replace_audio=(), layout="testing", deploy_to=N
             assert set(archive.namelist()) == set(candidate)
             changed = {name for name in members if archive.read(name) != members[name]}
             permitted = {main, dictionary} | {"Sounds/OHP/" + name for name in replace_audio}
+            if enable_firefight:
+                permitted.add("mission")
             assert changed <= permitted, f"Unapproved archive changes: {changed}"
             for name, data in candidate.items():
                 assert archive.read(name) == data
@@ -131,7 +187,7 @@ def update(source, deploy=False, replace_audio=(), layout="testing", deploy_to=N
         "output": str(artifact), "outputSha256": sha(data),
         "changedMembers": sorted(changed), "addedMembers": sorted(candidate.keys() - members.keys()),
         "replacedAudio": sorted(name for name in changed if name.startswith("Sounds/OHP/")),
-        "verified": "explicit layout, tested MOOSE pin, targeted briefing/audio edits, editor preservation, adapter mocks, ZIP CRC; NOT long-route live acceptance",
+        "verified": "explicit layout, tested MOOSE pin, targeted briefing/audio edits, editor preservation, optional constrained killable-infantry template, adapter mocks, ZIP CRC; NOT live DCS acceptance",
     }
     if source.read_bytes() != original:
         raise RuntimeError("Input changed during build; refusing deployment")
@@ -178,7 +234,26 @@ if __name__ == "__main__":
     deployment.add_argument("--deploy", action="store_true")
     deployment.add_argument("--deploy-to", type=Path, help="Create a separate, non-existing named mission")
     parser.add_argument("--retire-source", action="store_true", help="With --deploy-to, retire the old filename after verified backup/deployment")
+    parser.add_argument(
+        "--enable-firefight",
+        action="store_true",
+        help="Add the approved late-activated killable-infantry template to the selected layout",
+    )
+    parser.add_argument(
+        "--enable-test-firefight",
+        action="store_true",
+        help="Testing-only compatibility alias for --enable-firefight",
+    )
     parser.add_argument("--replace-audio", action="append", default=[], metavar="NAME.ogg",
                         help="Explicitly allow replacing this source recording; all others remain protected")
     args = parser.parse_args()
-    update(args.input, args.deploy, args.replace_audio, args.layout, args.deploy_to, args.retire_source)
+    update(
+        args.input,
+        args.deploy,
+        args.replace_audio,
+        args.layout,
+        args.deploy_to,
+        args.retire_source,
+        enable_test_firefight=args.enable_test_firefight,
+        enable_firefight=args.enable_firefight,
+    )

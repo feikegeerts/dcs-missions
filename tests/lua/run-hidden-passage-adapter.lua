@@ -238,6 +238,9 @@ local function harness(options)
         end
         return units
       end,
+      GetUnit = function(self, index)
+        return self:GetUnits()[index]
+      end,
       IsAlive = function(self)
         return self.size > 0
       end,
@@ -250,7 +253,38 @@ local function harness(options)
       GetHeading = function()
         return 0
       end,
-      RouteToVec2 = function() end,
+      RouteToVec2 = function(self, point, speed)
+        self.route_target = point
+        self.route_speed = speed
+      end,
+      OptionROEHoldFire = function(self)
+        self.roe = "hold"
+      end,
+      OptionROEOpenFire = function(self)
+        self.roe = "open"
+      end,
+      SetCommand = function(self, command)
+        h.group_commands = h.group_commands or {}
+        h.group_commands[#h.group_commands + 1] = { group = self, command = command }
+      end,
+      SetCommandImmortal = function(self, value)
+        h.group_commands = h.group_commands or {}
+        h.group_commands[#h.group_commands + 1] = {
+          group = self,
+          command = { id = "SetImmortal", params = { value = value } },
+        }
+      end,
+      TaskFireAtPoint = function(_, point, radius, ammunition)
+        return { id = "FireAtPoint", point = point, radius = radius, ammunition = ammunition }
+      end,
+      TaskHold = function()
+        return { id = "Hold", params = {} }
+      end,
+      SetTask = function(self, task)
+        self.assigned_task = task
+        h.group_tasks = h.group_tasks or {}
+        h.group_tasks[#h.group_tasks + 1] = { group = self, task = task }
+      end,
       Destroy = function(self, generate_event, delay)
         assert(generate_event == false)
         if delay and delay > 0 then
@@ -332,6 +366,9 @@ local function harness(options)
   }
   env.GROUP = {
     FindByName = function(_, name)
+      if options.firefight and name == config.firefight.template then
+        return h.opposition_template
+      end
       return h.groups[name]
     end,
   }
@@ -374,6 +411,30 @@ local function harness(options)
       }
     end,
   }
+  if options.firefight then
+    local point = {
+      x = config.personnel.x + config.firefight.staging_offset_m,
+      y = config.personnel.y - config.firefight.staging_offset_m,
+    }
+    h.opposition_template = group(config.firefight.template, point, config.firefight.enemy_unit_count)
+    h.opposition_spawns = 0
+    env.SPAWN = {
+      New = function(_, template)
+        assert(template == config.firefight.template)
+        local spawner = {}
+        function spawner:InitLimit(maximum_units, maximum_groups)
+          assert(maximum_units == config.firefight.enemy_unit_count and maximum_groups == 1)
+          return self
+        end
+        function spawner:Spawn()
+          h.opposition_spawns = h.opposition_spawns + 1
+          h.opposition = group(template .. "#001", point, config.firefight.enemy_unit_count)
+          return h.opposition
+        end
+        return spawner
+      end,
+    }
+  end
   env.CTLD_CARGO = {
     Enum = { TROOPS = "Troops", ENGINEERS = "Engineers" },
     New = function(_, id, name, templates, kind, moved, direct, size, pos, dropped, mass, stock, sub, hidden)
@@ -488,6 +549,7 @@ local function harness(options)
       end,
     }
     env.SPAWN = {
+      New = env.SPAWN and env.SPAWN.New,
       NewWithAlias = function(_, template, alias)
         assert(template == config.party_template)
         local spawn = {}
@@ -754,6 +816,11 @@ local function outbound_position(unit, fraction, sideways)
     y = config.receiving.y + fraction * (config.pickup.y - config.receiving.y),
   }
 end
+local route_length_m =
+  math.sqrt((config.pickup.x - config.receiving.x) ^ 2 + (config.pickup.y - config.receiving.y) ^ 2)
+local function outbound_position_remaining(unit, remaining_m)
+  outbound_position(unit, (route_length_m - remaining_m) / route_length_m)
+end
 local function depart(h, unit)
   outbound_position(unit, 0)
   unit.airborne = true
@@ -768,7 +835,25 @@ local function warning_count(h)
   end
   return count
 end
-test("either helicopter crossing halfway broadcasts once to all Blue aircraft", function()
+local function approach_firefight(h)
+  depart(h, h.player)
+  outbound_position_remaining(h.player, h.runtime.hvt_under_fire_trigger_distance_nm * 1852 + 1)
+  h.runtime.hvt_under_fire_observer.run()
+  assert(h.runtime.firefight.state == "staged")
+  outbound_position_remaining(h.player, h.runtime.hvt_under_fire_trigger_distance_nm * 1852 - 1)
+  h.runtime.hvt_under_fire_observer.run()
+  assert(h.runtime.firefight.state == "approaching")
+end
+local function start_firefight(h, distance_m)
+  distance_m = distance_m or config.firefight.fire_start_distance_m - 1
+  local scale = distance_m / math.sqrt(2)
+  h.opposition.point = {
+    x = config.personnel.x + scale,
+    y = config.personnel.y - scale,
+  }
+  h:tick()
+end
+test("either helicopter crossing the configured pre-pickup point broadcasts once to Blue", function()
   for _, raven_first in ipairs({ true, false }) do
     local h = harness()
     depart(h, h.player)
@@ -777,74 +862,161 @@ test("either helicopter crossing halfway broadcasts once to all Blue aircraft", 
     if raven_first then
       first, second = second, first
     end
-    outbound_position(first, 0.49)
-    h.runtime.midpoint_observer.run()
-    assert(not h.runtime.midpoint_announced)
-    outbound_position(first, 0.501)
-    h.runtime.midpoint_observer.run()
-    assert(h.runtime.midpoint_announced == first.name)
-    outbound_position(second, 0.7)
-    h.runtime.midpoint_observer.run()
-    outbound_position(first, 0.2)
-    h.runtime.midpoint_observer.run()
-    outbound_position(first, 0.8)
-    h.runtime.midpoint_observer.run()
+    outbound_position_remaining(first, h.runtime.hvt_under_fire_trigger_distance_nm * 1852 + 1)
+    h.runtime.hvt_under_fire_observer.run()
+    assert(not h.runtime.hvt_under_fire_announced)
+    outbound_position_remaining(first, h.runtime.hvt_under_fire_trigger_distance_nm * 1852 - 1)
+    h.runtime.hvt_under_fire_observer.run()
+    assert(h.runtime.hvt_under_fire_announced == first.name)
+    outbound_position_remaining(second, h.runtime.hvt_under_fire_trigger_distance_nm * 1852 - 1)
+    h.runtime.hvt_under_fire_observer.run()
+    outbound_position_remaining(first, h.runtime.hvt_under_fire_trigger_distance_nm * 1852 + 1000)
+    h.runtime.hvt_under_fire_observer.run()
     h:flush()
     assert(warning_count(h) == 1 and #h.errors == 0)
     assert(h.sound_targets[#h.sounds] == "coalition" and h.notice_targets[#h.notices] == "coalition")
   end
 end)
-test("Raven alone can trigger midpoint without Chinook occupancy or objective ownership", function()
+test("long routes use 3 NM while the short Testing route retains its halfway trigger", function()
+  local h = harness()
+  local route_nm = route_length_m / 1852
+  local expected_nm = route_nm > config.firefight.start_distance_from_pickup_nm * 2
+      and config.firefight.start_distance_from_pickup_nm
+    or route_nm / 2
+  assert(math.abs(h.runtime.hvt_under_fire_trigger_distance_nm - expected_nm) < 0.001)
+end)
+test("Enemies stage at mission start, move at the pre-pickup trigger, then enter firing range", function()
+  local h = harness({ firefight = true })
+  local party = h.groups[h.runtime.objective.party_key]
+  local fight = h.runtime.firefight
+  assert(fight.state == "staged" and h.opposition_spawns == 1)
+  assert(
+    party.roe == "hold" and party.assigned_task.id == "Hold",
+    "HVTs must not fire before the configured contact trigger"
+  )
+  assert(h.opposition.roe == "hold")
+  assert(h.opposition:IsAlive() and h.opposition.assigned_task.id == "Hold")
+  local staged_distance =
+    math.sqrt((h.opposition:GetVec2().x - party:GetVec2().x) ^ 2 + (h.opposition:GetVec2().y - party:GetVec2().y) ^ 2)
+  assert(staged_distance > config.firefight.fire_start_distance_m)
+
+  approach_firefight(h)
+  assert(h.opposition.route_target.x == fight.fire_position.x and h.opposition.route_target.y == fight.fire_position.y)
+  assert(h.opposition.route_speed == config.firefight.approach_speed_mps)
+  assert(h.opposition.roe == "hold", "Enemies must not fire before reaching the exchange range")
+  start_firefight(h, config.firefight.fire_start_distance_m + 1)
+  assert(fight.state == "approaching", "The exchange must wait until the enemy reaches firing range")
+  start_firefight(h)
+  h:tick()
+  assert(fight.state == "active")
+  assert(h.opposition:IsAlive() and h.opposition.assigned_task.id == "FireAtPoint")
+  assert(h.opposition.roe == "open")
+  assert(party.assigned_task.id == "FireAtPoint")
+  assert(party.roe == "open")
+  assert(party.assigned_task.point.x == h.opposition:GetVec2().x)
+  assert(h.group_commands[1].group == party)
+  assert(h.group_commands[1].command.id == "SetImmortal" and h.group_commands[1].command.params.value)
+  for _, command in ipairs(h.group_commands) do
+    assert(command.group ~= h.opposition, "Enemy must not be made immortal")
+  end
+  assert(h.opposition.assigned_task.radius == config.firefight.fire_radius_m)
+  assert(h.runtime.firefight.started_at == h.now)
+
+  h.now = h.runtime.firefight.started_at + config.firefight.hvt_return_fire_duration_s
+  h:tick()
+  assert(party.assigned_task.id == "Hold", "HVT return fire must end after its brief opening burst")
+  assert(party.roe == "hold")
+  assert(h.runtime.firefight.state == "active" and h.opposition:IsAlive())
+  assert(h.group_commands[#h.group_commands].group == party)
+  assert(h.group_commands[#h.group_commands].command.params.value, "HVTs must remain protected after they stop firing")
+end)
+test("Testing firefight stops when the party is confirmed aboard", function()
+  local h = harness({ firefight = true })
+  local party = h.groups[h.runtime.objective.party_key]
+  approach_firefight(h)
+  start_firefight(h)
+  h.player.point = config.pickup
+  h.player.airborne = false
+  assert(h.runtime.firefight.state == "active")
+  h:extract()
+  assert(h.runtime.objective.phase == "aboard")
+  assert(h.runtime.firefight.state == "stopped")
+  assert(h.opposition.assigned_task.id == "Hold")
+  assert(h.opposition.roe == "hold")
+  assert(party.roe == "hold")
+  assert(h.group_commands[#h.group_commands].group == party)
+  assert(h.group_commands[#h.group_commands].command.params.value == false, "HVT protection must end with the exchange")
+end)
+test("Testing firefight has a ten-minute hard cap and stops if the enemies are killed", function()
+  local timed = harness({ firefight = true })
+  approach_firefight(timed)
+  start_firefight(timed)
+  timed.player.point = config.pickup
+  timed.now = timed.runtime.firefight.started_at + config.firefight.maximum_duration_s
+  timed:tick()
+  assert(timed.runtime.firefight.state == "stopped")
+  assert(timed.opposition.assigned_task.id == "Hold")
+
+  local killed = harness({ firefight = true })
+  approach_firefight(killed)
+  start_firefight(killed)
+  killed.player.point = config.pickup
+  killed.opposition.size = 0 -- Simulate the helicopter gunner killing the entire group.
+  killed:tick()
+  assert(killed.runtime.firefight.state == "stopped")
+  assert(killed.groups[killed.runtime.objective.party_key].assigned_task.id == "Hold")
+end)
+test("Raven alone can trigger contact without Chinook occupancy or objective ownership", function()
   local h = harness({ only_uh60 = true })
   depart(h, h.raven)
-  outbound_position(h.raven, 0.6)
-  h.runtime.midpoint_observer.run()
+  outbound_position_remaining(h.raven, h.runtime.hvt_under_fire_trigger_distance_nm * 1852 - 1)
+  h.runtime.hvt_under_fire_observer.run()
   h:flush()
   assert(warning_count(h) == 1 and h.runtime.objective.carrier_id == nil)
 end)
-test("halfway requires a recognized departure, not merely appearing near the LZ", function()
+test("contact requires a recognized departure, not merely appearing near the LZ", function()
   local h = harness()
   h.player.airborne = true
-  outbound_position(h.player, 0.7)
-  h.runtime.midpoint_observer.run()
-  assert(not h.runtime.midpoint_announced and warning_count(h) == 0)
+  outbound_position_remaining(h.player, h.runtime.hvt_under_fire_trigger_distance_nm * 1852 - 1)
+  h.runtime.hvt_under_fire_observer.run()
+  assert(not h.runtime.hvt_under_fire_announced and warning_count(h) == 0)
 end)
-test("detours and flying away cannot count as halfway progress", function()
+test("detours and flying away cannot count as contact progress", function()
   local h = harness()
   depart(h, h.player)
   outbound_position(h.player, -0.8)
-  h.runtime.midpoint_observer.run()
+  h.runtime.hvt_under_fire_observer.run()
   outbound_position(h.player, 0.5, 100000)
-  h.runtime.midpoint_observer.run()
-  assert(not h.runtime.midpoint_announced)
-  outbound_position(h.player, 0.6)
-  h.runtime.midpoint_observer.run()
+  h.runtime.hvt_under_fire_observer.run()
+  assert(not h.runtime.hvt_under_fire_announced)
+  outbound_position_remaining(h.player, h.runtime.hvt_under_fire_trigger_distance_nm * 1852 - 1)
+  h.runtime.hvt_under_fire_observer.run()
   h:flush()
   assert(warning_count(h) == 1)
 end)
-test("ground movement across halfway does not trigger a radio call", function()
+test("ground movement across contact does not trigger a radio call", function()
   local h = harness()
   depart(h, h.player)
   h.player.airborne = false
-  outbound_position(h.player, 0.6)
-  h.runtime.midpoint_observer.run()
+  outbound_position_remaining(h.player, h.runtime.hvt_under_fire_trigger_distance_nm * 1852 - 1)
+  h.runtime.hvt_under_fire_observer.run()
   h.player.airborne = true
-  outbound_position(h.player, 0.7)
-  h.runtime.midpoint_observer.run()
-  assert(not h.runtime.midpoint_announced)
+  outbound_position_remaining(h.player, h.runtime.hvt_under_fire_trigger_distance_nm * 1852 - 100)
+  h.runtime.hvt_under_fire_observer.run()
+  assert(not h.runtime.hvt_under_fire_announced)
 end)
-test("pickup/return takeoffs beyond halfway cannot arm the warning", function()
+test("pickup/return takeoffs cannot arm the contact warning", function()
   local h = harness()
   h.player.airborne = true
   outbound_position(h.player, 1)
   h.event_handlers[1]:onEvent({ id = 3, initiator = h.player })
-  outbound_position(h.player, 0.4)
-  h.runtime.midpoint_observer.run()
-  outbound_position(h.player, 0.7)
-  h.runtime.midpoint_observer.run()
-  assert(not h.runtime.midpoint_announced)
+  outbound_position(h.player, 0.9)
+  h.runtime.hvt_under_fire_observer.run()
+  outbound_position(h.player, 0.8)
+  h.runtime.hvt_under_fire_observer.run()
+  assert(not h.runtime.hvt_under_fire_announced)
 end)
-test("failed/completed/boarded/recovered parties suppress the halfway warning", function()
+test("failed/completed/boarded/recovered parties suppress the contact warning", function()
   for _, phase in ipairs({ "failed", "complete", "boarding", "aboard", "recovered", "reserved", "lost" }) do
     local h = harness()
     depart(h, h.raven)
@@ -857,12 +1029,12 @@ test("failed/completed/boarded/recovered parties suppress the halfway warning", 
     else
       h.runtime.objective.phase = phase
     end
-    outbound_position(h.raven, 0.6)
-    h.runtime.midpoint_observer.run()
-    assert(not h.runtime.midpoint_announced, phase)
+    outbound_position_remaining(h.raven, h.runtime.hvt_under_fire_trigger_distance_nm * 1852 - 1)
+    h.runtime.hvt_under_fire_observer.run()
+    assert(not h.runtime.hvt_under_fire_announced, phase)
   end
 end)
-test("dead or replaced departures cannot trigger the halfway warning", function()
+test("dead or replaced departures cannot trigger the contact warning", function()
   for _, replaced in ipairs({ true, false }) do
     local h = harness()
     depart(h, h.raven)
@@ -871,9 +1043,9 @@ test("dead or replaced departures cannot trigger the halfway warning", function(
     else
       h.raven.alive = false
     end
-    outbound_position(h.raven, 0.6)
-    h.runtime.midpoint_observer.run()
-    assert(not h.runtime.midpoint_announced and next(h.runtime.midpoint_departures) == nil)
+    outbound_position_remaining(h.raven, h.runtime.hvt_under_fire_trigger_distance_nm * 1852 - 1)
+    h.runtime.hvt_under_fire_observer.run()
+    assert(not h.runtime.hvt_under_fire_announced and next(h.runtime.hvt_under_fire_departures) == nil)
   end
 end)
 test("wrong-location delivery and recovery", function()
@@ -1295,13 +1467,13 @@ test("both helicopters have independent smoke/status/transport menus", function(
   end
   assert(not h.runtime.objective.carrier_id and not h.runtime.carrier_name)
 end)
-test("UH-60-only flight triggers departure, halfway, automatic boarding and mission success", function()
+test("UH-60-only flight triggers departure, pre-pickup contact, boarding and mission success", function()
   local h = harness({ pinned = true, only_uh60 = true })
   depart(h, h.raven)
   h:observe_for(2)
   assert(not h.runtime.objective.carrier_id)
-  outbound_position(h.raven, 0.6)
-  h.runtime.midpoint_observer.run()
+  outbound_position_remaining(h.raven, h.runtime.hvt_under_fire_trigger_distance_nm * 1852 - 1)
+  h.runtime.hvt_under_fire_observer.run()
   h:flush()
   assert(h.sounds[1] == "Sounds/OHP/raven-one-cleared-for-support.ogg" and h.sound_targets[1] == h.raven.id)
   assert(h.sounds[2] == "Sounds/OHP/mule-one-hvt-under-fire.ogg" and h.sound_targets[2] == "coalition")

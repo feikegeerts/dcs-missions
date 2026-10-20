@@ -1,5 +1,21 @@
 # Project status
 
+**Hidden Passage operational firefight deployment — 2026-10-20:** The approved
+staged firefight is deployed to the real 33.06 NM operational archive. The
+Blue-wide warning and enemy advance trigger at 3 NM from pickup; the exchange
+starts when the killable six-person rifle group reaches 300 m. HVTs are held at
+setup, return fire for five seconds, then hold while protected only during the
+exchange. The retained 3.06 NM Testing archive was rebuilt candidate-only and
+verified to retain its halfway trigger; its deployed file is unchanged. The
+operational archive SHA-256 is
+`57e60cdb26aa48e5a5f568f35655be95237cea4beee15269c0274cd6f639fd05`; its verified
+pre-deployment backup is
+`C:\Users\g_for\Saved Games\DCS\Backups\Operation-Hidden-Passage\Operation Hidden Passage-before-voice-20261020T210540132207Z.miz`
+(original SHA-256 `770524081e0a4ac432ec54228bcd0d10c2c662d088a858de7b92e1b844ddabdf`).
+Thirteen packaging/deployment tests, 11 objective tests, 72 adapter checks,
+StyLua and archive guards pass. The new operational firefight still needs live
+flight verification. Details: `docs/hidden-passage.md`.
+
 **Helicopter Training Grounds flight-test follow-up — 2026-10-20:** The first
 flight found that startup smoke columns caused lag and the CH-47F cargo picker
 was hard to use. `helicopter-training` now starts with map labels but no smoke;
@@ -9,6 +25,20 @@ stop call for these colored plumes, so they fade naturally. Source/simulation
 and shipping-build checks pass. The rebuilt `.miz` is in
 `out/helicopter-training.miz` but has not been installed or live-retested. See
 `docs/helicopter-training.md`.
+
+**Hidden Passage Testing firefight follow-up — 2026-10-20:** The earlier live
+exchange lasted about 27 seconds, with five enemies killed by HVT rifle fire and
+no helicopter-gunner kills. The next run's log showed Blue HVT Soldier M4s firing
+at mission time 23.5 s, before any departure event: their default ROE was not
+held. The latest Testing-only build now holds the HVTs' weapons at setup, opens
+fire only when the staged exchange starts, and returns them to hold after 5 s.
+The 396 m staging distance stays unchanged because a much longer 5 m/s infantry
+approach risks moving the fight past pickup/boarding. Testing archive SHA-256:
+`86ebe8673b54ff1715c8716a808b3ff0c97fce8af3875c8e5895ddc0acda609b`; immediate
+backup: `C:\Users\g_for\Saved Games\DCS\Backups\Operation-Hidden-Passage\Operation Hidden Passage - Testing-before-voice-20261020T202253179417Z.miz`.
+The operational archive hash remains unchanged (`770524081e0a4ac432ec54228bcd0d10c2c662d088a858de7b92e1b844ddabdf`).
+12 packaging/deployment tests, 11 objective tests, 71 adapter checks, and Lua
+format checks pass; a live retest is pending. Details: `docs/hidden-passage.md`.
 
 **Hidden Passage approved operational port + retained Testing mission — 2026-10-20:**
 The owner declared short testing complete and approved porting. `transport-1`
@@ -200,7 +230,7 @@ on offline-only evidence but is not complete stock mission/combat or near-live
 acceptance. Collector automation and browser refresh are still not implemented.
 Older snapshots below are historical and do not override this addendum.
 
-**Last updated:** 2026-09-13 (Slice 18.5 complete and S18.5-e integrated
+**Telemetry snapshot last reviewed:** 2026-09-13 (Slice 18.5 complete and S18.5-e integrated
 acceptance passed; section 6.4 gameplay + S18.5-c collector-health dashboard
 merged to `main` as `47277e2` / `bb299d7`; migrations 0003+0004 applied in
 Neon, `0005_wakeful_redwing` committed and **not applied** — owner-gated;

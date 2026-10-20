@@ -1,6 +1,6 @@
 return {
   mission_name = "operation-hidden-passage",
-  mission_version = "transport-1",
+  mission_version = "transport-firefight-1",
   title = "Operation Hidden Passage",
   player_group = "Mule-1",
   player_unit = "Mule-1-1",
@@ -19,4 +19,19 @@ return {
   extraction_distance_m = 105,
   automatic_pickup_settle_s = 2,
   receiving = { x = 147592.73464201999, y = 38819.890889082999, radius = 180 },
+  -- The mission-table builder places the late-activated enemy template relative
+  -- to the actual archive HVT zone. Long routes trigger at a fixed range from
+  -- pickup; the short Testing route retains its midpoint trigger.
+  firefight = {
+    template = "OHP-TestOpposition",
+    maximum_duration_s = 10 * 60,
+    fire_radius_m = 45,
+    start_distance_from_pickup_nm = 3,
+    staging_offset_m = 280,
+    fire_position_offset_m = 180,
+    fire_start_distance_m = 300,
+    approach_speed_mps = 5,
+    hvt_return_fire_duration_s = 5,
+    enemy_unit_count = 6,
+  },
 }

@@ -73,8 +73,13 @@ local function report_failure()
   end
 end
 
+local stop_firefight
+
 local function fail(reason)
   runtime.objective:fail(reason)
+  if stop_firefight then
+    stop_firefight("objective failed")
+  end
   report_failure()
 end
 
@@ -202,6 +207,195 @@ local function setup()
   local party = assert(ctld.DroppedTroops[ctld.TroopCounter], "CTLD did not spawn the extraction party")
   runtime.objective = Operation.new(party:GetName(), config.party_size)
   local initial_party_key = party:GetName()
+
+  -- Archives with the late-activated Red template spawn killable enemies at
+  -- mission setup, held beyond firing range. They begin their approach when a
+  -- Blue helicopter reaches the configured outbound contact point.
+  local opposition_template = GROUP:FindByName(config.firefight.template)
+  if opposition_template then
+    -- CTLD's injected HVTs otherwise retain autonomous/default ROE and can
+    -- engage a visible enemy immediately, before any aircraft departs.
+    party:OptionROEHoldFire()
+    party:SetTask(party:TaskHold())
+    runtime.firefight = {
+      state = "unavailable",
+      started_at = nil,
+      enemy_group = nil,
+    }
+    local ok, spawned = pcall(function()
+      local spawner = SPAWN:New(config.firefight.template):InitLimit(config.firefight.enemy_unit_count, 1)
+      local group = spawner:Spawn()
+      return { spawner = spawner, group = group }
+    end)
+    if ok and spawned and spawned.group and spawned.group:IsAlive() then
+      runtime.firefight.state = "staged"
+      runtime.firefight.spawner = spawned.spawner
+      runtime.firefight.enemy_group = spawned.group
+      spawned.group:OptionROEHoldFire()
+      spawned.group:SetTask(spawned.group:TaskHold())
+      log(
+        string.format(
+          "FIREFIGHT enemies staged %.0f m from the HVT site, held until the outbound contact point",
+          math.sqrt(2) * config.firefight.staging_offset_m
+        )
+      )
+    else
+      log("FIREFIGHT unavailable: could not spawn the opposition template")
+      if not ok then
+        env.error("[hidden-passage] firefight spawn: " .. tostring(spawned))
+      end
+    end
+  end
+
+  local function hold_group(group)
+    if group and group:IsAlive() then
+      group:SetTask(group:TaskHold())
+    end
+  end
+
+  stop_firefight = function(reason)
+    local fight = runtime.firefight
+    if not fight or (fight.state ~= "staged" and fight.state ~= "approaching" and fight.state ~= "active") then
+      return
+    end
+    fight.state = "stopped"
+    hold_group(fight.enemy_group)
+    if fight.enemy_group and fight.enemy_group:IsAlive() then
+      fight.enemy_group:OptionROEHoldFire()
+    end
+    hold_group(party)
+    if party:IsAlive() then
+      party:OptionROEHoldFire()
+    end
+    if fight.protected_party then
+      party:SetCommandImmortal(false)
+      fight.protected_party = false
+    end
+    log("FIREFIGHT stopped: " .. reason)
+  end
+
+  local function position_from_hvt(center, offset)
+    return { x = center.x + offset, y = center.y - offset }
+  end
+
+  local function start_firefight()
+    local fight = runtime.firefight
+    if not fight or fight.state ~= "approaching" then
+      return
+    end
+    local enemy = fight.enemy_group
+    if not enemy or not enemy:IsAlive() then
+      stop_firefight("enemy force eliminated while advancing")
+      return
+    end
+    -- SetImmortal applies only to the Blue HVT party. The Red group receives no
+    -- protection and remains a valid target for either helicopter's door guns.
+    fight.state = "active"
+    fight.started_at = timer.getTime()
+    local ok, err = pcall(function()
+      party:SetCommandImmortal(true)
+      fight.protected_party = true
+      enemy:SetTask(enemy:TaskFireAtPoint(party:GetVec2(), config.firefight.fire_radius_m))
+      enemy:OptionROEOpenFire()
+      party:SetTask(party:TaskFireAtPoint(enemy:GetVec2(), config.firefight.fire_radius_m))
+      party:OptionROEOpenFire()
+    end)
+    if not ok then
+      stop_firefight("task setup error")
+      env.error("[hidden-passage] firefight setup: " .. tostring(err))
+      return
+    end
+    fight.hvt_fire_stopped = false
+    say(
+      "Enemy contact: hostile infantry are firing. The HVT is returning fire; engage the enemies and complete pickup."
+    )
+    log("FIREFIGHT started enemy=" .. enemy:GetName() .. " HVT=" .. party:GetName())
+  end
+
+  local function advance_firefight(name)
+    local fight = runtime.firefight
+    if not fight or fight.state ~= "staged" then
+      return
+    end
+    local enemy = fight.enemy_group
+    if not enemy or not enemy:IsAlive() then
+      fight.state = "unavailable"
+      log("FIREFIGHT unavailable: staged enemy force was lost before the outbound trigger")
+      return
+    end
+    local destination = position_from_hvt(party:GetVec2(), config.firefight.fire_position_offset_m)
+    local ok, err = pcall(function()
+      enemy:RouteToVec2(destination, config.firefight.approach_speed_mps)
+    end)
+    if not ok then
+      fight.state = "unavailable"
+      env.error("[hidden-passage] firefight approach: " .. tostring(err))
+      return
+    end
+    fight.fire_position = destination
+    fight.state = "approaching"
+    log("FIREFIGHT opposition moving in after " .. name .. " reached the outbound contact point")
+  end
+
+  local function update_firefight()
+    local fight = runtime.firefight
+    if not fight then
+      return
+    end
+    local objective = runtime.objective
+    if fight.state == "active" then
+      if objective.phase == "aboard" or objective.phase == "complete" then
+        stop_firefight("HVT confirmed aboard")
+      elseif objective.phase == "failed" then
+        stop_firefight("objective failed")
+      elseif timer.getTime() - fight.started_at >= config.firefight.maximum_duration_s then
+        stop_firefight("10-minute limit")
+      elseif not fight.enemy_group:IsAlive() then
+        stop_firefight("enemy force eliminated")
+      elseif
+        not fight.hvt_fire_stopped
+        and timer.getTime() - fight.started_at >= config.firefight.hvt_return_fire_duration_s
+      then
+        hold_group(party)
+        party:OptionROEHoldFire()
+        fight.hvt_fire_stopped = true
+        log("FIREFIGHT HVT return fire ended; party remains protected")
+      end
+      return
+    end
+    if fight.state == "staged" then
+      if objective.phase == "aboard" or objective.phase == "complete" then
+        stop_firefight("HVT confirmed aboard")
+      elseif objective.phase == "failed" then
+        stop_firefight("objective failed")
+      elseif not fight.enemy_group:IsAlive() then
+        fight.state = "unavailable"
+        log("FIREFIGHT unavailable: staged enemy force was eliminated")
+      end
+      return
+    end
+    if fight.state == "approaching" then
+      if objective.phase == "aboard" or objective.phase == "complete" then
+        stop_firefight("HVT confirmed aboard")
+      elseif objective.phase == "failed" then
+        stop_firefight("objective failed")
+      elseif not fight.enemy_group:IsAlive() then
+        stop_firefight("enemy force eliminated while advancing")
+      else
+        local enemy_position = fight.enemy_group:GetVec2()
+        local hvt_position = party:GetVec2()
+        local distance = math.sqrt((enemy_position.x - hvt_position.x) ^ 2 + (enemy_position.y - hvt_position.y) ^ 2)
+        if distance <= config.firefight.fire_start_distance_m then
+          start_firefight()
+        end
+      end
+      return
+    end
+    if objective.party_key ~= initial_party_key then
+      return
+    end
+  end
+
   -- Boarding begins once. The crew chief calls the package in at that moment.
   local function claim_carrier(unit)
     local name = unit:GetName()
@@ -262,6 +456,9 @@ local function setup()
     if not objective:boarded(id, group_name, loaded_count(ctld, unit:GetName())) then
       report_failure()
       return
+    end
+    if stop_firefight then
+      stop_firefight("HVT confirmed aboard")
     end
     -- The receipt, disappearance, and clearance happen in this one callback.
     -- CTLD's separate 10-20 s removal was suppressed only during extraction.
@@ -467,6 +664,7 @@ local function setup()
 
   runtime.observer = TIMER:New(safe("observer", function()
     local objective = runtime.objective
+    update_firefight()
     -- Independent menus and settling clocks; merely occupying a slot claims nothing.
     for _, spec in ipairs(transports) do
       local name = spec.name
@@ -579,8 +777,15 @@ local function setup()
     [config.support_unit] = { type = "UH-60L", line = "raven_one_cleared_for_support" },
   }
   runtime.takeoff_announced = {}
-  runtime.midpoint_departures = {}
   local leg_length = runtime.distance_nm * 1852
+  local absolute_contact_distance_m = config.firefight.start_distance_from_pickup_nm * 1852
+  -- The operational leg is long enough to use a fixed 3 NM contact point. On
+  -- the ~3.06 NM Testing leg, that would trigger almost immediately after takeoff,
+  -- so keep the already-tested halfway timing there.
+  local contact_distance_m = leg_length > absolute_contact_distance_m * 2 and absolute_contact_distance_m
+    or leg_length / 2
+  runtime.hvt_under_fire_trigger_distance_nm = contact_distance_m / 1852
+  runtime.hvt_under_fire_departures = {}
   local function distance_to_pickup(unit)
     local point = unit:GetVec2()
     return math.sqrt((point.x - landing_point.x) ^ 2 + (point.y - landing_point.y) ^ 2)
@@ -610,11 +815,12 @@ local function setup()
       end
       runtime.takeoff_announced[name] = true
       log("DEPARTURE " .. name .. " - " .. call.line)
-      -- Arm only before halfway on the initial outbound leg, never a takeoff
-      -- already at the LZ. Distance remaining, not distance flown, ignores detours.
+      -- Arm only before the contact point on the initial outbound leg, never a
+      -- takeoff already at the LZ. Distance remaining, not distance flown,
+      -- ignores detours.
       local distance = distance_to_pickup(recipient)
-      if distance > leg_length / 2 then
-        runtime.midpoint_departures[name] = { id = id, previous_distance = distance }
+      if distance > contact_distance_m then
+        runtime.hvt_under_fire_departures[name] = { id = id, previous_distance = distance }
       end
       voice:play(call.line, nil, recipient)
     end,
@@ -623,24 +829,29 @@ local function setup()
 
   -- Separate from transport ownership: Raven can trigger this while Mule is
   -- still on the ground, or even before anyone occupies the Chinook slot.
-  runtime.midpoint_observer = TIMER:New(safe("midpoint", function()
+  runtime.hvt_under_fire_observer = TIMER:New(safe("hvt-under-fire", function()
     local objective = runtime.objective
-    if runtime.midpoint_announced or objective.phase ~= "waiting" or objective.party_key ~= initial_party_key then
+    if runtime.hvt_under_fire_announced or objective.phase ~= "waiting" or objective.party_key ~= initial_party_key then
       return
     end
     local current = GROUP:FindByName(initial_party_key)
     if not current or not current:IsAlive() or current:GetSize() ~= config.party_size or loaded_count(ctld) > 0 then
       return
     end
-    for name, departure in pairs(runtime.midpoint_departures) do
+    for name, departure in pairs(runtime.hvt_under_fire_departures) do
       local aircraft = UNIT:FindByName(name)
       if not aircraft or not aircraft:IsAlive() or aircraft:GetID() ~= departure.id then
-        runtime.midpoint_departures[name] = nil
+        runtime.hvt_under_fire_departures[name] = nil
       else
         local distance = distance_to_pickup(aircraft)
-        if aircraft:InAir(true) and departure.previous_distance > leg_length / 2 and distance <= leg_length / 2 then
-          runtime.midpoint_announced = name
-          log("MIDPOINT " .. name .. " - broadcasting HVT under fire")
+        if
+          aircraft:InAir(true)
+          and departure.previous_distance > contact_distance_m
+          and distance <= contact_distance_m
+        then
+          runtime.hvt_under_fire_announced = name
+          advance_firefight(name)
+          log(string.format("HVT under fire trigger %s at %.2f NM from pickup", name, contact_distance_m / 1852))
           voice:play("hvt_under_fire") -- Explicit Blue-wide radio call, not crew-only.
           return
         end
@@ -648,7 +859,7 @@ local function setup()
       end
     end
   end))
-  runtime.midpoint_observer:Start(1, 1)
+  runtime.hvt_under_fire_observer:Start(1, 1)
 
   log("READY " .. config.mission_version .. " party=" .. party:GetName())
 end
