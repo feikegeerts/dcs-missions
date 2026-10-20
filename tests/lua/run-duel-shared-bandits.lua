@@ -1295,13 +1295,15 @@ local livesScenario = nil
 succeeds("16b. a late UCID is reconciled with the prior fallback allowance", function()
   loadInitializedMission({ { slot = "Aerial-1", name = "LateIdentity", ucid = nil } })
   firePlayerLoss("OnEventDead", "Aerial-1", "Aerial-1-1", nil, 201)
-  firePlayerEvent(findWatcher(EVENTS.PlayerEnterAircraft), "OnEventPlayerEnterAircraft", "Aerial-1", "LateIdentity", "late-ucid")
-  menuCommands["Show aircraft remaining"].callback()
-  equal(
-    messages[#messages].text,
-    "Aircraft remaining (shared pool): 1",
-    "late UCID changed the shared aircraft pool"
+  firePlayerEvent(
+    findWatcher(EVENTS.PlayerEnterAircraft),
+    "OnEventPlayerEnterAircraft",
+    "Aerial-1",
+    "LateIdentity",
+    "late-ucid"
   )
+  menuCommands["Show aircraft remaining"].callback()
+  equal(messages[#messages].text, "Aircraft remaining (shared pool): 1", "late UCID changed the shared aircraft pool")
 end)
 
 succeeds("17. player lives decrement once and follow a UCID across slots", function()
@@ -1310,7 +1312,11 @@ succeeds("17. player lives decrement once and follow a UCID across slots", funct
   })
   local messagesBefore = #messages
   firePlayerLoss("OnEventDead", "Aerial-1", "Aerial-1-1", nil, 101)
-  equal(messages[#messages].text, "Aircraft lost — 1 shared aircraft remaining.", "first player loss message is wrong")
+  equal(
+    messages[#messages].text,
+    "Aircraft lost — 1 shared aircraft remaining.",
+    "first player loss message is wrong"
+  )
   firePlayerLoss("OnEventCrash", "Aerial-1", "Aerial-1-1", nil, 101)
   equal(#messages, messagesBefore + 1, "duplicate player crash posted another loss message")
 
@@ -1336,14 +1342,37 @@ succeeds("17. player lives decrement once and follow a UCID across slots", funct
 
   firePlayerEvent(livesScenario.retained.player, "OnEventPlayerEnterAircraft", "Aerial-1", "Colt", "ucid-colt")
   menuCommands["Show aircraft remaining"].callback()
-  equal(messages[#messages].text, "Aircraft remaining (shared pool): 1", "new UCID changed shared pool")
+  equal(messages[#messages].text, "Aircraft remaining (shared pool): 3", "new player did not add two shared lives")
+end)
+
+succeeds("17a. players joining after initial assembly each add two shared lives once", function()
+  local context = loadInitializedMission({
+    { slot = "Aerial-1", name = "First", ucid = "late-pool-first" },
+  })
+  firePlayerEvent(context.retained.player, "OnEventPlayerEnterAircraft", "Aerial-2", "Second", "late-pool-second")
+  firePlayerEvent(context.retained.player, "OnEventPlayerEnterAircraft", "Aerial-3", "Third", "late-pool-third")
+  menuCommands["Show aircraft remaining"].callback()
+  equal(messages[#messages].text, "Aircraft remaining (shared pool): 6", "late joiners did not expand the shared pool")
+
+  firePlayerEvent(context.retained.player, "OnEventPlayerLeaveUnit", "Aerial-2", "Second", "late-pool-second")
+  firePlayerEvent(context.retained.player, "OnEventPlayerEnterAircraft", "Aerial-4", "Second", "late-pool-second")
+  menuCommands["Show aircraft remaining"].callback()
+  equal(messages[#messages].text, "Aircraft remaining (shared pool): 6", "rejoining player added lives twice")
 end)
 
 succeeds("17b. a reused unit name with a new DCS object consumes another life", function()
-  firePlayerEvent(livesScenario.retained.player, "OnEventPlayerLeaveUnit", "Aerial-1", "Colt", "ucid-colt")
-  firePlayerEvent(livesScenario.retained.player, "OnEventPlayerEnterAircraft", "Aerial-1", "Colt", "ucid-colt")
+  local context = loadInitializedMission({
+    { slot = "Aerial-1", name = "Colt", ucid = "reuse-colt" },
+  })
+  firePlayerLoss("OnEventDead", "Aerial-1", "Aerial-1-1", nil, 101)
+  firePlayerEvent(context.retained.player, "OnEventPlayerLeaveUnit", "Aerial-1", "Colt", "reuse-colt")
+  firePlayerEvent(context.retained.player, "OnEventPlayerEnterAircraft", "Aerial-1", "Colt", "reuse-colt")
   firePlayerLoss("OnEventDead", "Aerial-1", "Aerial-1-1", nil, 102)
-  equal(messages[#messages - 1].text, "Aircraft lost — shared pool depleted.", "reused-name aircraft loss was not counted")
+  equal(
+    messages[#messages - 1].text,
+    "Aircraft lost — shared pool depleted.",
+    "reused-name aircraft loss was not counted"
+  )
   equal(
     messages[#messages].text,
     "MISSION COMPLETE\nAir Superiority Survival\nAll aircraft lost.\nReturning to the mission screen in 10 seconds.",
@@ -1381,13 +1410,7 @@ succeeds("18. the shared pool is two lives per joined player", function()
   menuCommands["Respawn bandit wave"].callback()
   equal(#spawnRecords, spawnsBefore, "forced spawn continued after shared pool depletion")
 
-  firePlayerEvent(
-    context.retained.player,
-    "OnEventPlayerEnterAircraft",
-    "Aerial-3",
-    "Springfield",
-    "ucid-springfield"
-  )
+  firePlayerEvent(context.retained.player, "OnEventPlayerEnterAircraft", "Aerial-3", "Springfield", "ucid-springfield")
   equal(messages[#messages].text, "Mission ending — no aircraft remaining.", "terminal re-entry message is wrong")
 end)
 
@@ -1465,7 +1488,11 @@ local function aircraftEvent(raw, time, ucid)
 end
 
 local function reusedIdUnit()
-  return { getID = function() return 101 end }
+  return {
+    getID = function()
+      return 101
+    end,
+  }
 end
 
 succeeds("startup fallback balances merge before two-player exhaustion and native policy", function()
@@ -1480,9 +1507,15 @@ succeeds("startup fallback balances merge before two-player exhaustion and nativ
   }
   local function event(player, time, withIdentity)
     return {
-      IniCoalition = BLUE, IniGroupName = player.slot,
-      IniDCSUnitName = player.slot .. "-1", time = time,
-      IniDCSUnit = { getID = function() return player.id end },
+      IniCoalition = BLUE,
+      IniGroupName = player.slot,
+      IniDCSUnitName = player.slot .. "-1",
+      time = time,
+      IniDCSUnit = {
+        getID = function()
+          return player.id
+        end,
+      },
       IniPlayerUCID = withIdentity and player.ucid or nil,
       IniPlayerName = player.ucid,
     }
@@ -1533,8 +1566,11 @@ succeeds("19b. two same-slot aircraft losses exhaust the shared pool even when D
     end
     dispatchCurrentGameplayEvent("OnEventPilotDead", aircraftEvent(raw, incarnation * 100 + 5))
     menuCommands["Show aircraft remaining"].callback()
-    equal(messages[#messages].text, "Aircraft remaining (shared pool): " .. (3 - incarnation),
-      "birth, pilot death or stale loss consumed a shared aircraft")
+    equal(
+      messages[#messages].text,
+      "Aircraft remaining (shared pool): " .. (3 - incarnation),
+      "birth, pilot death or stale loss consumed a shared aircraft"
+    )
     dispatchCurrentGameplayEvent("OnEventDead", aircraftEvent(raw, incarnation * 100 + 10))
     local afterLoss = #messages
     dispatchCurrentGameplayEvent("OnEventCrash", aircraftEvent(reusedIdUnit(), incarnation * 100 + 10))
@@ -1544,7 +1580,11 @@ succeeds("19b. two same-slot aircraft losses exhaust the shared pool even when D
     -- Re-entry at zero posts a refusal, not another loss.
     equal(#messages, afterLoss + (incarnation == 2 and 1 or 0), "duplicate callbacks counted another loss")
     menuCommands["Show aircraft remaining"].callback()
-    equal(messages[#messages].text, "Aircraft remaining (shared pool): " .. (2 - incarnation), "shared pool did not decrement")
+    equal(
+      messages[#messages].text,
+      "Aircraft remaining (shared pool): " .. (2 - incarnation),
+      "shared pool did not decrement"
+    )
     oldRaw = raw
   end
   local spawnsBefore = #spawnRecords
@@ -1562,11 +1602,11 @@ succeeds("19c. delayed old-aircraft loss is charged to its pilot, not the new sl
   dispatchCurrentGameplayEvent("OnEventPlayerEnterAircraft", aircraftEvent(newRaw, 201, "new-player"))
   dispatchCurrentGameplayEvent("OnEventDead", aircraftEvent(oldRaw, 202))
   menuCommands["Show aircraft remaining"].callback()
-  equal(messages[#messages].text, "Aircraft remaining (shared pool): 1", "loss did not charge the shared pool")
+  equal(messages[#messages].text, "Aircraft remaining (shared pool): 3", "loss did not charge the expanded shared pool")
   dispatchCurrentGameplayEvent("OnEventCrash", aircraftEvent(oldRaw, 203))
   dispatchCurrentGameplayEvent("OnEventDead", aircraftEvent(newRaw, 210, "new-player"))
   menuCommands["Show aircraft remaining"].callback()
-  equal(messages[#messages].text, "Aircraft remaining (shared pool): 0", "new aircraft loss was not counted separately")
+  equal(messages[#messages].text, "Aircraft remaining (shared pool): 2", "new aircraft loss was not counted separately")
 end)
 
 succeeds("19d. a raw object reused across Births still gets a fresh aircraft allowance charge", function()
@@ -1578,7 +1618,11 @@ succeeds("19d. a raw object reused across Births still gets a fresh aircraft all
     dispatchCurrentGameplayEvent("OnEventCrash", aircraftEvent(raw, incarnation * 100 + 10))
   end
   menuCommands["Show aircraft remaining"].callback()
-  equal(messages[#messages].text, "Aircraft remaining (shared pool): 0", "reused raw object suppressed replacement loss")
+  equal(
+    messages[#messages].text,
+    "Aircraft remaining (shared pool): 0",
+    "reused raw object suppressed replacement loss"
+  )
 end)
 
 succeeds("20. two-player package escalation follows 2,2,2,3", function()
@@ -1801,10 +1845,18 @@ succeeds("donor bags prevent repeated draws until the tier is exhausted", functi
     local donor = latestSpawn().template
     check(
       not seen[donor],
-      string.format("donor repeated before bag exhaustion in tier %d at wave %d: %s (seen=%d)", tier, wave, donor, seenCount)
+      string.format(
+        "donor repeated before bag exhaustion in tier %d at wave %d: %s (seen=%d)",
+        tier,
+        wave,
+        donor,
+        seenCount
+      )
     )
     seen[donor], seenCount = true, seenCount + 1
-    if wave < 15 then menuCommands["Respawn bandit wave"].callback() end
+    if wave < 15 then
+      menuCommands["Respawn bandit wave"].callback()
+    end
   end
 end)
 

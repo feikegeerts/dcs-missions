@@ -549,11 +549,12 @@ how to verify, and `docs/dev-setup.md §8` for the build/QA loop.
       losses are held; the 30-second timer starts after the final red loss.
 - [x] Give each human player a finite, configurable aircraft allowance. Track
       aircraft across losses/rejoins and end the mission once no human player
-      has any aircraft remaining. Implemented with three aircraft per player by
-      default, UCID/slot-fallback reconciliation, reconnect retention,
-      zero-aircraft exclusion, synchronous Blue slot veto, and native mission
-      end after the grace period. The latest pre-simulation race fix is
-      offline-verified; post-fix human-in-seat validation remains pending.
+      has any aircraft remaining. Implemented with two aircraft per player by
+      default, including players who first join after initial assembly,
+      UCID/slot-fallback reconciliation, reconnect retention, zero-aircraft
+      exclusion, synchronous Blue slot veto, and native mission end after the
+      grace period. The late-join pool fix is offline-verified; post-fix
+      human-in-seat validation remains pending.
 - [x] Make bandit waves progressively harder. Decide whether escalation adds one
       bandit every 3 or every 5 completed waves (or use another cadence), then
       define the maximum package size and difficulty knobs. Implemented

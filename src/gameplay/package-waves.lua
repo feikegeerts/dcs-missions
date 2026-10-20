@@ -271,6 +271,7 @@ local occupiedPlayerSlots = {}
 local countedBanditUnits = {}
 local sharedAircraftRemaining = nil
 local sharedPlayerCount = nil
+local contributedPlayerIdentities = {}
 local slotIdentity = {}
 local playerIdentityName = {}
 local playerAircraftByKey = {}
@@ -342,6 +343,10 @@ local function setSlotIdentity(idx, identity)
       playerIdentityName[identity] = playerIdentityName[previous]
     end
     playerIdentityName[previous] = nil
+    if contributedPlayerIdentities[previous] then
+      contributedPlayerIdentities[previous] = nil
+      contributedPlayerIdentities[identity] = true
+    end
     env.info(
       string.format(
         "[duel-dynamic] reconciled slot identity %s from %s to %s",
@@ -353,6 +358,24 @@ local function setSlotIdentity(idx, identity)
   end
   slotIdentity[idx] = identity
   return identity
+end
+
+local function addPlayerContribution(identity)
+  if not identity or contributedPlayerIdentities[identity] then
+    return false
+  end
+  contributedPlayerIdentities[identity] = true
+  sharedPlayerCount = (sharedPlayerCount or 0) + 1
+  sharedAircraftRemaining = (sharedAircraftRemaining or 0) + LIVES_PER_PLAYER
+  env.info(
+    string.format(
+      "[duel-dynamic] added shared lives for joining player: %d joined players x %d = %d lives remaining",
+      sharedPlayerCount,
+      LIVES_PER_PLAYER,
+      sharedAircraftRemaining
+    )
+  )
+  return true
 end
 
 -- Read-only slot gate. The dedicated-server hook queries this synchronously
@@ -406,6 +429,9 @@ local function initializeSharedAircraftPool(playerCount)
   count = math.max(1, count)
   sharedPlayerCount = count
   sharedAircraftRemaining = count * LIVES_PER_PLAYER
+  for idx in pairs(occupiedPlayerSlots) do
+    contributedPlayerIdentities[identityForSlot(idx)] = true
+  end
   env.info(
     string.format(
       "[duel-dynamic] initialized shared lives pool: %d joined players x %d = %d lives",
@@ -421,13 +447,15 @@ local function enterTerminalStateIfAllAircraftLost()
     return
   end
   missionTerminal = true
-  MESSAGE:New(
-    string.format(
-      "MISSION COMPLETE\nAir Superiority Survival\nAll aircraft lost.\nReturning to the mission screen in %d seconds.",
+  MESSAGE
+    :New(
+      string.format(
+        "MISSION COMPLETE\nAir Superiority Survival\nAll aircraft lost.\nReturning to the mission screen in %d seconds.",
+        TERMINAL_END_DELAY
+      ),
       TERMINAL_END_DELAY
-    ),
-    TERMINAL_END_DELAY
-  ):ToCoalition(coalition.side.BLUE)
+    )
+    :ToCoalition(coalition.side.BLUE)
   env.info(
     string.format(
       "[duel-dynamic] shared aircraft pool depleted — ending DCS mission in %d seconds",
@@ -672,8 +700,7 @@ spawnWave = function(reason)
   currentWaveAlive = size
   currentWaveSize = size
   taskBanditPackage(grp, players, playerCentroid, capAltFt, capSpeedKt)
-  MESSAGE:New(string.format("Wave %d — hostiles inbound", waveNumber), 8)
-    :ToCoalition(coalition.side.BLUE)
+  MESSAGE:New(string.format("Wave %d — hostiles inbound", waveNumber), 8):ToCoalition(coalition.side.BLUE)
   -- Explicit wave milestone; intentional despawns (F10 reset, empty-server
   -- cleanup) never emit a cleared fact. Reporting never blocks gameplay.
   if telemetry then
@@ -824,6 +851,9 @@ local function onPlayerEnter(EventData)
   end
   setSlotIdentity(idx, identity)
   playerIdentityName[identity] = displayName
+  if sharedAircraftRemaining ~= nil then
+    addPlayerContribution(identity)
+  end
   registerPlayerAircraft(EventData, false, identity)
   env.info(
     string.format("[duel-dynamic] player '%s' entered %s", EventData.IniPlayerName or "Player", PLAYER_GROUP_NAMES[idx])
@@ -1011,8 +1041,15 @@ local function handlePlayerLoss(EventData)
   initializeSharedAircraftPool()
   sharedAircraftRemaining = math.max(0, sharedAircraftRemaining - 1)
   local remaining = sharedAircraftRemaining
-  env.info(string.format("[duel-dynamic] aircraft loss slot=%s object=%s birth=%s remaining=%d",
-    PLAYER_GROUP_NAMES[idx], objectId, tostring(aircraft.birthTime), remaining))
+  env.info(
+    string.format(
+      "[duel-dynamic] aircraft loss slot=%s object=%s birth=%s remaining=%d",
+      PLAYER_GROUP_NAMES[idx],
+      objectId,
+      tostring(aircraft.birthTime),
+      remaining
+    )
+  )
   local text
   if remaining == 0 then
     text = "Aircraft lost — shared pool depleted."
@@ -1053,13 +1090,7 @@ local function handleBanditKill(EventData)
 
   currentWaveAlive = math.max(0, currentWaveAlive - 1)
   Tracker:record("Team")
-  MESSAGE:New(
-    string.format(
-      "Bandit down — team %d",
-      Tracker.total
-    ),
-    8
-  ):ToCoalition(coalition.side.BLUE)
+  MESSAGE:New(string.format("Bandit down — team %d", Tracker.total), 8):ToCoalition(coalition.side.BLUE)
 
   if currentWaveAlive > 0 then
     env.info(

@@ -71,8 +71,9 @@ auto-suffixes the spawned group name with `#NNN`.
 
 `PLAYER_GROUP_NAMES` defines the available blue roster. The first assembled
 blue package creates one shared mission-wide pool of two lives per joined
-player. Every player draws from that pool; joining another slot contributes
-two lives to the initial pool rather than creating a separate allowance.
+player. Every player draws from that pool. A distinct player who joins later
+adds two lives when first tracked; leaving, reconnecting, or changing slots does
+not add them again.
 `BANDIT_GROUP_NAMES` (the eight active
 names, ascending, with `Bandit-7` and `Bandit-10` excluded) is both the donor
 list and the telemetry allow-list; the actual chosen donor name is passed as
@@ -146,8 +147,10 @@ done and the poll retries.
 - **Player aircraft is lost.** `playerDeathWatcher` deduplicates `Dead` and
   `Crash` for each aircraft incarnation and removes one aircraft from the
   shared pool. The pool starts at two times the number of joined players in
-  the first assembled package. UCID and slot identity affect telemetry
-  attribution only; they never create separate life allowances.
+  the first assembled package and grows by two when each distinct late player
+  first joins. UCID identity prevents reconnects and slot changes from adding
+  the same contribution again; when UCID is unavailable, the slot-name fallback
+  can only deduplicate re-entry into that same slot.
 - **Shared pool reaches zero.** The installed server hook queries the mission
   synchronously on every Blue slot request (same `dostring_in` transport as
   the telemetry handshake): `duel_can_enter_blue_slot(ucid, slotID)` rejects
