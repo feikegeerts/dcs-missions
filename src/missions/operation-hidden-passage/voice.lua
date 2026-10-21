@@ -12,6 +12,7 @@ local LINES = {
     file = "Sounds/OHP/uh60-boarding-start.ogg",
     duration = 4.6,
     text = "Package, move to the helicopter! You're clear to board - go, go, go!",
+    caption = "Boarding. Remain landed until all three are aboard.",
   },
   uh60_boarding_complete = {
     file = "Sounds/OHP/uh60-boarding-complete.ogg",
@@ -22,12 +23,14 @@ local LINES = {
     file = "Sounds/OHP/boarding-start.ogg",
     duration = 5.4,
     text = "Personnel boarding. Remain landed until the party disappears and 'Three personnel aboard' appears.",
+    caption = "Boarding. Remain landed until all three are aboard.",
   },
   boarding_hvt_aboard = {
     -- Shared package confirmation: valid for either transport aircraft.
     file = "Sounds/OHP/boarding-hvt-aboard.ogg",
     duration = 3.2,
     text = "All three aboard.",
+    caption = "Three personnel aboard.",
   },
   boarding_confirm = {
     file = "Sounds/OHP/boarding-confirm.ogg",
@@ -48,11 +51,33 @@ local LINES = {
     file = "Sounds/OHP/mule-one-hvt-under-fire.ogg",
     duration = 12.6,
     text = "Mule One, HVT under fire.",
+    caption = "HVT under fire.",
+  },
+  mule_one_smoke_request = {
+    file = "Sounds/OHP/mule1-smoke-request.ogg",
+    duration = 5.3,
+    text = "Ground, Mule One on final. Requesting green smoke at the pickup.",
+  },
+  raven_one_smoke_request = {
+    file = "Sounds/OHP/raven-smoke-request.ogg",
+    duration = 4.6,
+    text = "Ground, Raven One on final. Requesting green smoke at the pickup.",
+  },
+  popping_green_smoke_normal = {
+    file = "Sounds/OHP/popping-green-smoke-normal.ogg",
+    duration = 2.6,
+    text = "Copy. Popping green smoke now.",
+  },
+  popping_green_smoke_under_fire = {
+    file = "Sounds/OHP/popping-green-smoke-under-fire.ogg",
+    duration = 3.7,
+    text = "Copy. Popping green smoke now.",
   },
   mission_success = {
     file = "Sounds/OHP/hidden-passage-success.ogg",
     duration = 10.6,
     text = "Operation Hidden Passage complete. All three personnel delivered safely to Hatay.",
+    caption = "Operation complete.",
   },
 }
 
@@ -71,14 +96,19 @@ function M.new(config)
       return
     end
     local now = timer.getTime()
-    local message = MESSAGE:New(line.text, math.max(20, line.duration + 2), config.title)
     if recipient then
       USERSOUND:New(line.file):ToUnit(recipient.unit)
-      message:ToUnit(recipient.unit)
     else
       -- Retained for explicit mission-wide calls; crew calls always pass a unit.
       trigger.action.outSoundForCoalition(coalition.side.BLUE, line.file)
-      message:ToCoalition(coalition.side.BLUE)
+    end
+    if line.caption then
+      local message = MESSAGE:New(line.caption, 10, config.title)
+      if recipient then
+        message:ToUnit(recipient.unit)
+      else
+        message:ToCoalition(coalition.side.BLUE)
+      end
     end
     self.busy_until = now + line.duration + 0.35
     env.info(string.format("[hidden-passage] voice %s (%.1fs)", line.file, line.duration))
@@ -90,7 +120,8 @@ function M.new(config)
       self.pumping = false
       return nil
     end
-    local next_at = math.max(self.busy_until, self.queue[1].at)
+    local next_item = self.queue[1]
+    local next_at = math.max(self.busy_until + (next_item.gap_after_previous or 0), next_item.at)
     if now < next_at then
       return next_at
     end
@@ -104,24 +135,41 @@ function M.new(config)
       self.pumping = false
       return nil
     end
-    return math.max(timer.getTime() + 0.05, self.busy_until)
+    next_item = self.queue[1]
+    return math.max(timer.getTime() + 0.05, self.busy_until + (next_item.gap_after_previous or 0), next_item.at)
   end
 
-  function self:play(id, delay, unit)
+  function self:play(id, delay, unit, gap_after_previous)
     local line = line_for(id)
     local recipient = unit and { unit = unit, id = unit:GetID() } or nil
     local now = timer.getTime()
-    if (not delay or delay <= 0) and not self.pumping and #self.queue == 0 and now >= self.busy_until then
+    if
+      (not delay or delay <= 0)
+      and (not gap_after_previous or gap_after_previous <= 0)
+      and not self.pumping
+      and #self.queue == 0
+      and now >= self.busy_until
+    then
       local ok, err = pcall(play_line, line, recipient)
       if not ok then
         env.error("[hidden-passage] voice: " .. tostring(err))
       end
       return
     end
-    self.queue[#self.queue + 1] = { line = line, at = now + (delay or 0), recipient = recipient }
+    self.queue[#self.queue + 1] = {
+      line = line,
+      at = now + (delay or 0),
+      recipient = recipient,
+      gap_after_previous = gap_after_previous,
+    }
     if not self.pumping then
       self.pumping = true
-      timer.scheduleFunction(pump, nil, math.max(now + 0.05, self.busy_until, self.queue[1].at))
+      local first = self.queue[1]
+      timer.scheduleFunction(
+        pump,
+        nil,
+        math.max(now + 0.05, self.busy_until + (first.gap_after_previous or 0), first.at)
+      )
     end
   end
 
@@ -134,6 +182,12 @@ function M.new(config)
     self:play("boarding_hvt_aboard", nil, unit)
     local id = unit:GetTypeName() == "UH-60L" and "uh60_boarding_complete" or "boarding_confirm"
     self:play(id, nil, unit)
+  end
+
+  function self:request_smoke(unit, under_fire)
+    local request = unit:GetTypeName() == "UH-60L" and "raven_one_smoke_request" or "mule_one_smoke_request"
+    self:play(request, nil, unit)
+    self:play(under_fire and "popping_green_smoke_under_fire" or "popping_green_smoke_normal", nil, unit, 5)
   end
 
   function self:stop()

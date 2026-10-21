@@ -1,6 +1,7 @@
 """Archive/deployment safety tests; gameplay is covered by the Lua adapter suite."""
 
 import contextlib
+import hashlib
 import io
 import json
 from pathlib import Path
@@ -41,6 +42,20 @@ class PackagingTests(unittest.TestCase):
         self.payload = b'local file = "Sounds/OHP/example.ogg"\nreturn true\n'
         module = runpy.run_path(str(ROOT / "build/update-hidden-passage.py"))
         self.update = module["update"]
+        self.story_briefing = module["OPERATIONAL_STORY_BRIEFING"]
+        self.previous_operational_description = "\n\n".join(
+            (
+                "OPERATION HIDDEN PASSAGE",
+                "Mule One (CH-47F) and Raven One (UH-60L) are available at Hatay.",
+                "The pickup is approximately 33.1 NM south of Hatay, straight line.",
+                "OHP-Pickup is the LANDING area.",
+                "1. F10 > Operation Hidden Passage > Mark landing area (green smoke).",
+                "There is no automatic mission end.",
+            )
+        )
+        self.update.__globals__["OPERATIONAL_LEGACY_BRIEFING_SHA256S"] = set(
+            module["OPERATIONAL_LEGACY_BRIEFING_SHA256S"]
+        ) | {hashlib.sha256(self.previous_operational_description.encode("utf-8")).hexdigest()}
         self.update.__globals__["ROOT"] = self.root
         self.update.__globals__["PACK"] = {"shipping_payload": lambda: self.payload, "lua": self.check_lua}
 
@@ -57,7 +72,14 @@ class PackagingTests(unittest.TestCase):
             self.assertEqual(path.name, "run-hidden-passage-adapter.lua")
             self.assertEqual(Path(args[0]).read_bytes(), self.payload)
 
-    def fixture(self, layout="testing", audio=None, firefight_offset=None):
+    def fixture(
+        self,
+        layout="testing",
+        audio=None,
+        firefight_offset=None,
+        operational_firefight=False,
+        mission_description=None,
+    ):
         pickup = (151595.453125, 42823.1015625) if layout == "testing" else (86422.487668525, 41545.335676019)
         hvt = (pickup[0] - 42, pickup[1] - 72)
         mission = {
@@ -84,8 +106,19 @@ class PackagingTests(unittest.TestCase):
                 "Testing only: killable hostile riflemen open fire inside 1.5 NM. The exchange stops when they are eliminated, "
                 "the party is aboard, or after 10 minutes; the operational mission is unchanged.",
             )
+        if operational_firefight:
+            briefing = briefing.replace(
+                "Use the Chinook for extraction. No adaptive enemies or SAMs are scripted yet.",
+                "About 3 NM before pickup, six killable riflemen move in on the HVTs and open fire inside 300 m. "
+                "The HVTs return fire for 5 seconds, then hold while remaining protected until the exchange ends. "
+                "Engage the enemy, but avoid the HVT party; your aircraft remain vulnerable.",
+            )
         title = "Operation Hidden Passage - Voice Test" if layout == "testing" else "Operation Hidden Passage"
         dictionary = {"DictKey_sortie_5": title, "general": briefing, "blue": briefing, "custom": "Keep this."}
+        if layout == "operational":
+            mission_description = mission_description or self.previous_operational_description
+            dictionary["DictKey_descriptionText_1"] = mission_description
+            dictionary["DictKey_descriptionBlueTask_3"] = mission_description
         members = {
             "mission": ("mission=" + lua_table(mission)).encode(),
             "l10n/DEFAULT/dictionary": ("dictionary=" + lua_table(dictionary)).encode(),
@@ -193,11 +226,63 @@ class PackagingTests(unittest.TestCase):
                 if name not in {"mission", "l10n/DEFAULT/dictionary", "l10n/DEFAULT/OHP-main.lua"}:
                     self.assertEqual(archive.read(name), data)
 
+    def test_operational_firefight_briefing_adds_pickup_reinforcement(self):
+        source, before = self.fixture("operational", operational_firefight=True)
+        self.run_update(source, layout="operational")
+        with ZipFile(self.root / "out/operation-hidden-passage.miz") as archive:
+            briefing = archive.read("l10n/DEFAULT/dictionary")
+            self.assertEqual(briefing.count(b"A second concealed infantry group moves toward the HVTs when boarding begins."), 2)
+            for name, data in before.items():
+                if name not in {"l10n/DEFAULT/dictionary", "l10n/DEFAULT/OHP-main.lua"}:
+                    self.assertEqual(archive.read(name), data)
+
+    def test_operational_briefing_is_shortened_in_both_description_fields(self):
+        source, _ = self.fixture("operational")
+        self.run_update(source, layout="operational")
+        with ZipFile(self.root / "out/operation-hidden-passage.miz") as archive:
+            dictionary = archive.read("l10n/DEFAULT/dictionary")
+            self.assertEqual(dictionary.count(b"Three local sources have been compromised"), 2)
+            self.assertEqual(dictionary.count(b"On final, use F10 to request green smoke."), 2)
+            self.assertNotIn(b"The pickup is approximately 33.1 NM south", dictionary)
+            self.assertNotIn(b"Mark landing area (green smoke)", dictionary)
+
+    def test_operational_story_briefing_deployment_is_idempotent(self):
+        source, _ = self.fixture("operational")
+        self.run_update(source, deploy=True, layout="operational")
+        first = source.read_bytes()
+        self.run_update(source, deploy=True, layout="operational")
+        self.assertEqual(source.read_bytes(), first)
+
+    def test_unknown_operational_briefing_is_not_overwritten(self):
+        source, _ = self.fixture("operational", mission_description="An edited editor-owned briefing.")
+        with self.assertRaisesRegex(ValueError, "Unknown operational briefing"):
+            self.run_update(source, layout="operational")
+
     def test_audio_replacement_requires_opt_in(self):
         source, _ = self.fixture(audio=b"OggSold-recording")
         with self.assertRaisesRegex(ValueError, "Existing recording differs"):
             self.run_update(source)
         self.run_update(source, replace_audio=["example.ogg"])
+
+    def test_new_smoke_voice_assets_are_packaged_when_referenced(self):
+        smoke_files = (
+            "mule1-smoke-request.ogg",
+            "raven-smoke-request.ogg",
+            "popping-green-smoke-normal.ogg",
+            "popping-green-smoke-under-fire.ogg",
+        )
+        sounds = self.root / "src/missions/operation-hidden-passage/sounds"
+        for name in smoke_files:
+            (sounds / name).write_bytes(b"OggS" + name.encode())
+        self.payload = (
+            'local file = "Sounds/OHP/example.ogg"\n'
+            + "\n".join(f'local smoke_{index} = "Sounds/OHP/{name}"' for index, name in enumerate(smoke_files))
+        ).encode()
+        source, _ = self.fixture()
+        self.run_update(source)
+        with ZipFile(self.root / "out/operation-hidden-passage-testing.miz") as archive:
+            for name in smoke_files:
+                self.assertEqual(archive.read("Sounds/OHP/" + name), (sounds / name).read_bytes())
 
     def test_new_filename_is_verified_backed_up_and_old_name_retired(self):
         source, _ = self.fixture()

@@ -75,6 +75,7 @@ local function harness(options)
     groups = {},
     notices = {},
     sounds = {},
+    sound_times = {},
     sound_targets = {},
     notice_targets = {},
     errors = {},
@@ -125,6 +126,7 @@ local function harness(options)
       outSoundForCoalition = function(side, path)
         assert(side == 2, "Voice must play to Blue")
         h.sounds[#h.sounds + 1] = path
+        h.sound_times[#h.sounds] = h.now
         h.sound_targets[#h.sounds] = "coalition"
       end,
     },
@@ -134,6 +136,7 @@ local function harness(options)
       return {
         ToUnit = function(_, unit)
           h.sounds[#h.sounds + 1] = path
+          h.sound_times[#h.sounds] = h.now
           h.sound_targets[#h.sounds] = unit:GetID()
         end,
       }
@@ -366,8 +369,11 @@ local function harness(options)
   }
   env.GROUP = {
     FindByName = function(_, name)
-      if options.firefight and name == config.firefight.template then
+      if options.firefight and name == h.opposition_template_name then
         return h.opposition_template
+      end
+      if options.pickup_opposition and name == config.firefight.pickup_template then
+        return h.pickup_opposition_template
       end
       return h.groups[name]
     end,
@@ -411,25 +417,42 @@ local function harness(options)
       }
     end,
   }
+  h.opposition_spawns, h.pickup_opposition_spawns = 0, 0
   if options.firefight then
     local point = {
       x = config.personnel.x + config.firefight.staging_offset_m,
       y = config.personnel.y - config.firefight.staging_offset_m,
     }
-    h.opposition_template = group(config.firefight.template, point, config.firefight.enemy_unit_count)
-    h.opposition_spawns = 0
+    h.opposition_template_name = options.firefight_alias and config.firefight.template_alias
+      or config.firefight.template
+    h.opposition_template =
+      group(h.opposition_template_name, point, options.firefight_unit_count or config.firefight.enemy_unit_count)
+  end
+  if options.pickup_opposition then
+    h.pickup_opposition_template = group(config.firefight.pickup_template, config.personnel, 8)
+  end
+  if options.firefight or options.pickup_opposition then
     env.SPAWN = {
       New = function(_, template)
-        assert(template == config.firefight.template)
+        assert(
+          template == h.opposition_template_name
+            or (options.pickup_opposition and template == config.firefight.pickup_template),
+          "Unexpected opposition template " .. tostring(template)
+        )
         local spawner = {}
         function spawner:InitLimit(maximum_units, maximum_groups)
-          assert(maximum_units == config.firefight.enemy_unit_count and maximum_groups == 1)
+          assert(maximum_units == 0 and maximum_groups == 1)
           return self
         end
         function spawner:Spawn()
-          h.opposition_spawns = h.opposition_spawns + 1
-          h.opposition = group(template .. "#001", point, config.firefight.enemy_unit_count)
-          return h.opposition
+          if template == h.opposition_template_name then
+            h.opposition_spawns = h.opposition_spawns + 1
+            h.opposition = group(template .. "#001", h.opposition_template.point, h.opposition_template.size)
+            return h.opposition
+          end
+          h.pickup_opposition_spawns = h.pickup_opposition_spawns + 1
+          h.pickup_opposition = group(template .. "#001", config.personnel, 8)
+          return h.pickup_opposition
         end
         return spawner
       end,
@@ -720,7 +743,7 @@ test("Mule takeoff plays only its own clearance once and only to its crew", func
   )
   handler:onEvent({ id = 3, initiator = h.player })
   assert(h.sounds[1] == "Sounds/OHP/mule-one-cleared-for-pickup.ogg")
-  assert(h.sound_targets[1] == h.player.id and h.notice_targets[1] == h.player.id)
+  assert(h.sound_targets[1] == h.player.id and #h.notices == 0)
   handler:onEvent({ id = 3, initiator = h.player })
   assert(#h.sounds == 1, "Takeoff call repeated")
 end)
@@ -729,7 +752,7 @@ test("Raven takeoff plays only its support call once and only to its crew", func
   local handler = h.event_handlers[1]
   handler:onEvent({ id = 3, initiator = h.raven })
   assert(h.sounds[1] == "Sounds/OHP/raven-one-cleared-for-support.ogg")
-  assert(h.sound_targets[1] == h.raven.id and h.notice_targets[1] == h.raven.id)
+  assert(h.sound_targets[1] == h.raven.id and #h.notices == 0)
   handler:onEvent({ id = 3, initiator = h.raven })
   assert(#h.sounds == 1)
   assert(h.runtime.objective.carrier_id == nil, "Raven's call must not claim the extraction")
@@ -793,8 +816,11 @@ test("UH-60 boarding helper reuses HVT aboard and targets all lines to Raven", f
   assert(h.sounds[2] == "Sounds/OHP/boarding-hvt-aboard.ogg")
   assert(h.sounds[3] == "Sounds/OHP/uh60-boarding-complete.ogg")
   for i = 1, 3 do
-    assert(h.sound_targets[i] == h.raven.id and h.notice_targets[i] == h.raven.id)
+    assert(h.sound_targets[i] == h.raven.id)
   end
+  assert(#h.notices == 2 and h.notice_targets[1] == h.raven.id and h.notice_targets[2] == h.raven.id)
+  assert(h.notices[1] == "Boarding. Remain landed until all three are aboard.")
+  assert(h.notices[2] == "Three personnel aboard.")
   assert(h.runtime.objective.phase == "waiting", "Audio helpers must not implement UH-60 extraction")
 end)
 test("non-blue or non-takeoff events stay silent", function()
@@ -929,6 +955,37 @@ test("Enemies stage at mission start, move at the pre-pickup trigger, then enter
   assert(h.runtime.firefight.state == "active" and h.opposition:IsAlive())
   assert(h.group_commands[#h.group_commands].group == party)
   assert(h.group_commands[#h.group_commands].command.params.value, "HVTs must remain protected after they stop firing")
+end)
+test("The auto-suffixed primary template is selected with its full editor unit count", function()
+  local h = harness({ firefight = true, firefight_alias = true, firefight_unit_count = 8 })
+  assert(h.runtime.firefight.state == "staged")
+  assert(h.opposition_spawns == 1 and h.opposition:IsAlive() and h.opposition:GetSize() == 8)
+  assert(h.runtime.firefight.enemy_group == h.opposition)
+end)
+test("The concealed reinforcement spawns and moves when boarding begins, then holds when aboard", function()
+  local h = harness({ firefight = true, pickup_opposition = true })
+  local party = h.groups[h.runtime.objective.party_key]
+  local target = { x = party.point.x, y = party.point.y }
+  assert(h.runtime.pickup_opposition.state == "staged" and h.pickup_opposition_spawns == 0)
+
+  approach_firefight(h)
+  assert(h.pickup_opposition_spawns == 0, "The pickup group must not spawn at the outbound contact point")
+
+  h.player.point = config.pickup
+  h.player.airborne = false
+  h:extract()
+  assert(
+    h.runtime.objective.phase == "aboard",
+    "phase=" .. tostring(h.runtime.objective.phase) .. " reason=" .. tostring(h.runtime.objective.reason)
+  )
+  assert(h.pickup_opposition_spawns == 1 and h.pickup_opposition:IsAlive())
+  assert(h.pickup_opposition.route_target.x == target.x and h.pickup_opposition.route_target.y == target.y)
+  assert(h.pickup_opposition.route_speed == config.firefight.approach_speed_mps)
+  assert(h.runtime.pickup_opposition.state == "stopped")
+  assert(h.pickup_opposition.assigned_task.id == "Hold" and h.pickup_opposition.roe == "hold")
+  h:extract()
+  assert(h.pickup_opposition_spawns == 1, "The pickup trigger must be one-shot")
+  assert(#h.errors == 0)
 end)
 test("Testing firefight stops when the party is confirmed aboard", function()
   local h = harness({ firefight = true })
@@ -1173,7 +1230,7 @@ test("too-close automatic pickup gives one crew-only warning and resumes after r
   h:observe_for(5)
   local warnings = 0
   for i, text in ipairs(h.notices) do
-    if text:find("Too close for automatic boarding", 1, true) then
+    if text:find("Too close for boarding", 1, true) then
       warnings = warnings + 1
       assert(h.notice_targets[i] == h.player.id)
     end
@@ -1268,9 +1325,10 @@ test("troops remain visible until boarding receipt, then disappear and takeoff i
     h:advance(0.01)
     assert(h.runtime.objective.phase == "aboard" and not party:IsAlive())
     assert(party.disappeared_at == h.boarding_due)
-    assert(h.notices[#h.notices]:find("All three aboard", 1, true))
+    assert(h.notices[#h.notices] == "Three personnel aboard.")
+    local notices = #h.notices
     h:advance(4)
-    assert(h.notices[#h.notices]:find("Three personnel aboard", 1, true))
+    assert(#h.notices == notices, "Routine voice lines should not create duplicate subtitles")
     h.player.airborne = true
     h:tick()
     assert(h.runtime.objective.phase == "aboard" and #h.errors == 0)
@@ -1375,13 +1433,94 @@ test("only four focused commands and no CTLD logistics/reset menu", function()
   end
   assert(total == 4 and next(h.runtime.ctld.CtldUnits) == nil)
 end)
-test("green smoke marks editor LZ rather than a fixed southern offset, with no range gate", function()
+test("green smoke request marks editor LZ rather than a fixed southern offset, with no range gate", function()
   local h = harness()
   h.player.point = config.receiving -- Still at Hatay, away from the pickup.
-  h:command("Mark landing area (green smoke)")
+  h:command("Request green smoke")
   assert(#h.smokes == 1)
   local smoke = h.smokes[1]
   assert(math.abs(smoke.x - config.pickup.x) < 0.01 and math.abs(smoke.y - config.pickup.y) < 0.01)
+end)
+test("green smoke request plays Mule audio and calm HVT response before contact", function()
+  local h = harness({ firefight = true })
+  assert(h.runtime.firefight.state == "staged")
+  local previous_notices = #h.notices
+  h:command("Request green smoke")
+  assert(#h.smokes == 1 and #h.sounds == 1, "HVT response must not play immediately")
+  assert(h.sounds[1] == "Sounds/OHP/mule1-smoke-request.ogg")
+  local minimum_response_delay = 5.3 + 0.35 + 5 -- request duration, safety tail, deliberate pause
+  h:advance(minimum_response_delay - 0.01)
+  assert(#h.sounds == 1, "HVT response started before the request and pause finished")
+  h:advance(0.02)
+  assert(
+    #h.sounds == 2 and h.sound_times[2] - h.sound_times[1] >= minimum_response_delay - 0.000001,
+    "HVT response did not wait through the request, safety tail, and 5-second pause"
+  )
+  assert(h.sounds[2] == "Sounds/OHP/popping-green-smoke-normal.ogg")
+  assert(h.sound_targets[1] == h.player.id and h.sound_targets[2] == h.player.id)
+  for index = previous_notices + 1, #h.notices do
+    assert(not h.notices[index]:find("Requesting green smoke", 1, true))
+    assert(not h.notices[index]:find("Popping green smoke", 1, true))
+  end
+end)
+test("green smoke request uses under-fire HVT response only after the firefight starts", function()
+  local h = harness({ firefight = true })
+  approach_firefight(h)
+  h:flush()
+  start_firefight(h)
+  assert(h.runtime.firefight.state == "active")
+  h:flush()
+  local previous_sounds = #h.sounds
+  local previous_notices = #h.notices
+  h:command("Request green smoke")
+  local wait_for_request = 0
+  while #h.sounds == previous_sounds and wait_for_request < 15 do
+    h:advance(1)
+    wait_for_request = wait_for_request + 1
+  end
+  assert(#h.sounds == previous_sounds + 1, "Queued pilot request did not play after the earlier firefight call")
+  assert(h.sounds[previous_sounds + 1] == "Sounds/OHP/mule1-smoke-request.ogg")
+  local minimum_response_delay = 5.3 + 0.35 + 5 -- request duration, safety tail, deliberate pause
+  local remaining = h.sound_times[previous_sounds + 1] + minimum_response_delay - h.now
+  assert(remaining > 0, "Test advanced beyond the expected response time")
+  h:advance(remaining - 0.01)
+  assert(#h.sounds == previous_sounds + 1, "Under-fire response started before the 5-second pause finished")
+  h:advance(0.02)
+  assert(
+    #h.sounds == previous_sounds + 2
+      and h.sound_times[previous_sounds + 2] - h.sound_times[previous_sounds + 1] >= minimum_response_delay - 0.000001,
+    "Under-fire response did not wait through the request, safety tail, and 5-second pause"
+  )
+  assert(h.sounds[previous_sounds + 2] == "Sounds/OHP/popping-green-smoke-under-fire.ogg")
+  assert(h.sound_targets[previous_sounds + 1] == h.player.id)
+  assert(h.sound_targets[previous_sounds + 2] == h.player.id)
+  assert(#h.smokes == 1)
+  for index = previous_notices + 1, #h.notices do
+    assert(not h.notices[index]:find("Requesting green smoke", 1, true))
+    assert(not h.notices[index]:find("Popping green smoke", 1, true))
+  end
+end)
+test("Raven smoke request uses Raven request audio and normal HVT response", function()
+  local h = harness({ only_uh60 = true })
+  local previous_notices = #h.notices
+  h:command("Request green smoke", h.raven)
+  assert(#h.sounds == 1, "HVT response must not play immediately")
+  assert(h.sounds[1] == "Sounds/OHP/raven-smoke-request.ogg")
+  local minimum_response_delay = 4.6 + 0.35 + 5 -- request duration, safety tail, deliberate pause
+  h:advance(minimum_response_delay - 0.01)
+  assert(#h.sounds == 1, "HVT response started before the request and pause finished")
+  h:advance(0.02)
+  assert(
+    #h.sounds == 2 and h.sound_times[2] - h.sound_times[1] >= minimum_response_delay - 0.000001,
+    "HVT response did not wait through the request, safety tail, and 5-second pause"
+  )
+  assert(h.sounds[2] == "Sounds/OHP/popping-green-smoke-normal.ogg")
+  assert(h.sound_targets[1] == h.raven.id and h.sound_targets[2] == h.raven.id)
+  assert(#h.smokes == 1)
+  for index = previous_notices + 1, #h.notices do
+    assert(not h.notices[index]:find("Requesting green smoke", 1, true))
+    assert(not h.notices[index]:find("Popping green smoke", 1, true))
+  end
 end)
 test("status and map labels use operational names and runtime distance", function()
   local h = harness()
@@ -1389,8 +1528,8 @@ test("status and map labels use operational names and runtime distance", functio
   local text = h.notices[#h.notices]
   local distance = math.sqrt((config.pickup.x - config.receiving.x) ^ 2 + (config.pickup.y - config.receiving.y) ^ 2)
     / 1852
-  assert(text:find("OHP-Pickup", 1, true) and text:find(string.format("%.1f NM", distance), 1, true))
-  assert(text:find("OHP-HVTs", 1, true) and text:find("Either helicopter can extract", 1, true))
+  assert(text:find(string.format("%.1f NM", distance), 1, true))
+  assert(text:find("105 m", 1, true) and text:find("35 m clear", 1, true))
   assert(#h.marks == 3)
   for _, mark in ipairs(h.marks) do
     assert(not mark:find("TEST", 1, true) and not mark:find("north", 1, true))
@@ -1400,7 +1539,7 @@ end)
 test("UH-60L-only occupancy gets its own menu without prematurely claiming the objective", function()
   local h = harness({ only_uh60 = true })
   h:tick()
-  assert(h.commands["Mark landing area (green smoke)"] and h.runtime.objective.phase == "waiting")
+  assert(h.commands["Request green smoke"] and h.runtime.objective.phase == "waiting")
   assert(h.runtime.objective.carrier_id == nil and #h.errors == 0)
 end)
 test("runtime zones override build coordinate snapshots for smoke and navigation distance", function()
@@ -1408,7 +1547,7 @@ test("runtime zones override build coordinate snapshots for smoke and navigation
   local people =
     { x = moved.x + config.personnel.x - config.pickup.x, y = moved.y + config.personnel.y - config.pickup.y }
   local h = harness({ zone_points = { [config.pickup_zone] = moved, [config.personnel_zone] = people } })
-  h:command("Mark landing area (green smoke)")
+  h:command("Request green smoke")
   assert(h.smokes[1].x == moved.x and h.smokes[1].y == moved.y)
   local expected = math.sqrt((moved.x - config.receiving.x) ^ 2 + (moved.y - config.receiving.y) ^ 2) / 1852
   assert(math.abs(h.runtime.distance_nm - expected) < 0.001)
@@ -1418,7 +1557,7 @@ test("off-site recovery smoke preserves editor LZ direction and separation", fun
   h:extract()
   local drop = { x = config.pickup.x + 300, y = config.pickup.y - 900 }
   h:drop(drop)
-  h:command("Mark landing area (green smoke)")
+  h:command("Request green smoke")
   local smoke = h.smokes[1]
   assert(math.abs(smoke.x - (drop.x + config.pickup.x - config.personnel.x)) < 0.01)
   assert(math.abs(smoke.y - (drop.y + config.pickup.y - config.personnel.y)) < 0.01)
@@ -1453,8 +1592,13 @@ test("airborne and rolling menu requests are refused", function()
 end)
 test("both helicopters have independent smoke/status/transport menus", function()
   local h = harness({ pinned = true })
-  h:command("Mark landing area (green smoke)", h.raven)
-  assert(#h.smokes == 1 and h.notice_targets[#h.notices] == h.raven.id)
+  local previous_notices = #h.notices
+  h:command("Request green smoke", h.raven)
+  assert(#h.smokes == 1 and h.sound_targets[1] == h.raven.id)
+  for index = previous_notices + 1, #h.notices do
+    assert(not h.notices[index]:find("Requesting green smoke", 1, true))
+    assert(not h.notices[index]:find("Popping green smoke", 1, true))
+  end
   h:command("Instructions / status", h.player)
   assert(h.notice_targets[#h.notices] == h.player.id)
   for _, unit in ipairs({ h.player, h.raven }) do
@@ -1528,7 +1672,7 @@ test("entering Chinook first then switching before pickup does not fail or claim
   h.player.alive = false
   h:tick()
   assert(h.runtime.objective.phase == "waiting")
-  h:command("Mark landing area (green smoke)", h.raven)
+  h:command("Request green smoke", h.raven)
   h.raven.point = config.pickup
   h:observe_for(2)
   assert(h.runtime.objective.phase == "boarding" and h.runtime.objective.carrier_id == h.raven.id)

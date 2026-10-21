@@ -1,6 +1,11 @@
 -- Archive-side guard for explicit testing/operational updates. No DCS APIs used.
 local path = assert(arg[1])
-local layout = arg[3] or "testing"
+local dictionary_path, layout
+if arg[3] then
+  dictionary_path, layout = arg[2], arg[3]
+else
+  layout = arg[2] or "testing"
+end
 local config = assert(loadfile("src/missions/operation-hidden-passage/config.lua"))()
 assert(layout == "testing" or layout == "operational", "Unknown mission layout")
 local sandbox = {}
@@ -71,18 +76,25 @@ for _, country in pairs(mission.coalition.blue.country) do
   end
 end
 assert(found["Mule-1-1"] and found["Raven-1-1"], "Expected named Mule and Raven aircraft")
-if arg[2] then
+if dictionary_path then
   local dictionary_env = {}
-  local briefing = assert(loadfile(arg[2]))
+  local briefing = assert(loadfile(dictionary_path))
   setfenv(briefing, dictionary_env)
   briefing()
   local title = layout == "testing" and "Operation Hidden Passage - Testing" or "Operation Hidden Passage"
   assert(dictionary_env.dictionary[mission.sortie] == title, "Unexpected mission title")
   for _, key in ipairs({ mission.descriptionText, mission.descriptionBlueTask }) do
     local text = dictionary_env.dictionary[key]
-    assert(text:find("boarding starts automatically", 1, true), "Missing automatic pickup briefing")
-    assert(text:find("Both helicopters can extract", 1, true), "Missing dual-aircraft briefing")
-    assert(not text:find("NOT connected", 1, true), "Stale UH-60 restriction in briefing")
+    if text:find("Three local sources have been compromised", 1, true) then
+      assert(text:find("Mule One is tasked to extract all three", 1, true), "Missing extraction story/task")
+      assert(text:find("Raven One can cover the pickup", 1, true), "Missing Raven's role")
+      assert(text:find("request green smoke", 1, true), "Missing smoke request instruction")
+      assert(text:find("remain landed until all three are aboard", 1, true), "Missing boarding instruction")
+    else
+      assert(text:find("boarding starts automatically", 1, true), "Missing automatic pickup briefing")
+      assert(text:find("Both helicopters can extract", 1, true), "Missing dual-aircraft briefing")
+      assert(not text:find("NOT connected", 1, true), "Stale UH-60 restriction in briefing")
+    end
   end
 end
 print(string.format("%s archive guard: %.2f NM, named Chinook and UH-60L verified", layout, nm))

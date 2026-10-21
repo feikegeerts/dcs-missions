@@ -74,11 +74,15 @@ local function report_failure()
 end
 
 local stop_firefight
+local stop_pickup_opposition
 
 local function fail(reason)
   runtime.objective:fail(reason)
   if stop_firefight then
     stop_firefight("objective failed")
+  end
+  if stop_pickup_opposition then
+    stop_pickup_opposition("objective failed")
   end
   report_failure()
 end
@@ -92,19 +96,13 @@ local function status(name)
   end
   local messages = {
     waiting = string.format(
-      "Fly to %s, about %.1f NM from Hatay (straight line). Mark the landing area with green smoke; do NOT land on %s. Either helicopter can extract: land within 105 m of the party, keep at least 35 m clear of every person, and stop for 2 seconds. Boarding starts automatically; F10 > Extract waiting personnel remains a fallback.",
-      config.pickup_zone,
-      runtime.distance_nm,
-      config.personnel_zone
+      "Pickup is %.1f NM from Hatay. Land on green smoke within 105 m of the party, 35 m clear of personnel, and stop for 2 seconds.",
+      runtime.distance_nm
     ),
-    boarding = "Personnel boarding. Remain landed until the party disappears and 'Three personnel aboard' appears (allow about 20-45 seconds).",
-    aboard = "Three personnel aboard. Return to "
-      .. config.return_zone
-      .. ". Land and stop, then F10 > Operation Hidden Passage > Unload personnel.",
-    complete = "Operation complete. Restart the mission to fly again.",
-    failed = "Operation failed: "
-      .. tostring(objective.reason)
-      .. " Restart the mission to retry; re-slotting does not reset the operation.",
+    boarding = "Boarding. Remain landed until all three are aboard.",
+    aboard = "Three aboard. Return to Hatay and unload at " .. config.return_zone .. ".",
+    complete = "Operation complete.",
+    failed = "Operation failed: " .. tostring(objective.reason) .. " Restart the mission.",
   }
   local text = messages[objective.phase]
   if runtime.carrier_name then
@@ -208,11 +206,25 @@ local function setup()
   runtime.objective = Operation.new(party:GetName(), config.party_size)
   local initial_party_key = party:GetName()
 
-  -- Archives with the late-activated Red template spawn killable enemies at
-  -- mission setup, held beyond firing range. They begin their approach when a
-  -- Blue helicopter reaches the configured outbound contact point.
-  local opposition_template = GROUP:FindByName(config.firefight.template)
-  if opposition_template then
+  -- Older archives use the unsuffixed name; the current editor archive has
+  -- auto-suffixed the original group after a second template was added.
+  local opposition_template_name
+  for _, candidate in ipairs({ config.firefight.template, config.firefight.template_alias }) do
+    if candidate and GROUP:FindByName(candidate) then
+      opposition_template_name = candidate
+      break
+    end
+  end
+  -- This concealed reinforcement remains a late-activated editor template. It
+  -- spawns and advances only when CTLD confirms that pickup/boarding has begun.
+  if GROUP:FindByName(config.firefight.pickup_template) then
+    runtime.pickup_opposition = { state = "staged" }
+    log("FIREFIGHT pickup reinforcement armed: " .. config.firefight.pickup_template)
+  end
+
+  -- The primary Red template spawns at setup, held beyond firing range. It
+  -- begins its approach when a Blue helicopter reaches the outbound contact point.
+  if opposition_template_name then
     -- CTLD's injected HVTs otherwise retain autonomous/default ROE and can
     -- engage a visible enemy immediately, before any aircraft departs.
     party:OptionROEHoldFire()
@@ -223,7 +235,9 @@ local function setup()
       enemy_group = nil,
     }
     local ok, spawned = pcall(function()
-      local spawner = SPAWN:New(config.firefight.template):InitLimit(config.firefight.enemy_unit_count, 1)
+      -- One group is spawned by this one-shot setup; a zero unit cap preserves
+      -- the editor template's full strength (which can differ by archive).
+      local spawner = SPAWN:New(opposition_template_name):InitLimit(0, 1)
       local group = spawner:Spawn()
       return { spawner = spawner, group = group }
     end)
@@ -278,6 +292,45 @@ local function setup()
     return { x = center.x + offset, y = center.y - offset }
   end
 
+  local function start_pickup_opposition()
+    local reinforcement = runtime.pickup_opposition
+    if not reinforcement or reinforcement.state ~= "staged" then
+      return
+    end
+    reinforcement.state = "spawning"
+    local ok, spawned = pcall(function()
+      local spawner = SPAWN:New(config.firefight.pickup_template):InitLimit(0, 1)
+      local group = assert(spawner:Spawn(), "MOOSE did not spawn the pickup reinforcement")
+      assert(group:IsAlive(), "Pickup reinforcement spawned without live units")
+      local hvt_position = party:GetVec2()
+      group:RouteToVec2({ x = hvt_position.x, y = hvt_position.y }, config.firefight.approach_speed_mps)
+      return { spawner = spawner, group = group }
+    end)
+    if not ok then
+      reinforcement.state = "unavailable"
+      env.error("[hidden-passage] pickup opposition: " .. tostring(spawned))
+      log("FIREFIGHT pickup reinforcement unavailable: spawn or route failed")
+      return
+    end
+    reinforcement.state = "approaching"
+    reinforcement.spawner = spawned.spawner
+    reinforcement.group = spawned.group
+    log("FIREFIGHT pickup reinforcement moving toward the HVTs at boarding start")
+  end
+
+  stop_pickup_opposition = function(reason)
+    local reinforcement = runtime.pickup_opposition
+    if not reinforcement or reinforcement.state ~= "approaching" then
+      return
+    end
+    reinforcement.state = "stopped"
+    if reinforcement.group and reinforcement.group:IsAlive() then
+      reinforcement.group:SetTask(reinforcement.group:TaskHold())
+      reinforcement.group:OptionROEHoldFire()
+    end
+    log("FIREFIGHT pickup reinforcement stopped: " .. reason)
+  end
+
   local function start_firefight()
     local fight = runtime.firefight
     if not fight or fight.state ~= "approaching" then
@@ -306,9 +359,7 @@ local function setup()
       return
     end
     fight.hvt_fire_stopped = false
-    say(
-      "Enemy contact: hostile infantry are firing. The HVT is returning fire; engage the enemies and complete pickup."
-    )
+    say("Enemy contact. HVT under fire.")
     log("FIREFIGHT started enemy=" .. enemy:GetName() .. " HVT=" .. party:GetName())
   end
 
@@ -413,6 +464,7 @@ local function setup()
     if claim_carrier(unit) and runtime.objective:begin_boarding(unit:GetID()) then
       runtime.auto_pickup = {}
       voice:boarding_start(unit)
+      start_pickup_opposition()
       return true
     end
     return false
@@ -459,6 +511,9 @@ local function setup()
     end
     if stop_firefight then
       stop_firefight("HVT confirmed aboard")
+    end
+    if stop_pickup_opposition then
+      stop_pickup_opposition("HVT confirmed aboard")
     end
     -- The receipt, disappearance, and clearance happen in this one callback.
     -- CTLD's separate 10-20 s removal was suppressed only during extraction.
@@ -563,7 +618,7 @@ local function setup()
       return
     end
     if not personnel_clearance(unit, current) then
-      say("Too close to the personnel. Reposition to the green landing smoke, at least 35 m from every person.", unit)
+      say("Too close to personnel. Reposition to green smoke, 35 m clear.", unit)
       return
     end
     -- Pinned CTLD adapter boundary; this is the same method used by its native
@@ -605,8 +660,7 @@ local function setup()
     if not personnel_clearance(unit, current) then
       state.since = nil
       if not state.blocked then
-        local text =
-          "Too close for automatic boarding. Reposition to the green landing area, at least 35 m clear of every person, then stop."
+        local text = "Too close for boarding. Reposition to green smoke, 35 m clear of personnel."
         MESSAGE:New(text, 20, config.title):ToUnit(unit)
         log(text)
         state.blocked = true
@@ -652,14 +706,14 @@ local function setup()
     if objective.party_key ~= initial_party_key then
       mark = current:GetCoordinate():Translate(separation, landing_bearing)
     end
+    local unit = carrier(name)
+    if not unit then
+      return
+    end
+    local under_fire = runtime.firefight and runtime.firefight.state == "active"
+    voice:request_smoke(unit, under_fire)
     mark:SmokeGreen()
-    say(
-      string.format(
-        "Green smoke marks the landing area, about %.0f m from the waiting party. Check obstacles and keep at least 35 m clear of every person.",
-        separation
-      ),
-      carrier(name)
-    )
+    log("Green smoke requested by " .. transport_by_name[name].callsign .. (under_fire and " under fire" or ""))
   end
 
   runtime.observer = TIMER:New(safe("observer", function()
@@ -686,7 +740,7 @@ local function setup()
         end)
         MENU_GROUP_COMMAND:New(
           group,
-          "Mark landing area (green smoke)",
+          "Request green smoke",
           menu,
           safe("smoke", function()
             smoke(name)

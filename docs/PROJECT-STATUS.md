@@ -1,6 +1,36 @@
 # Project status
 
-**Hidden Passage operational firefight deployment — 2026-10-20:** The approved
+**Hidden Passage briefing update — 2026-10-21:** The operational briefing now
+explains the extraction: three compromised local sources know enemy positions and
+movements and must reach Hatay before capture. The shorter text keeps the story
+and essential task instructions. Only the DCS dictionary changed in this
+deployment; the editor mission table remains byte-for-byte preserved. Deployed
+SHA-256:
+`d4b92f92df38ab3c76b2f47932df6a7f5ee3219ac9b800a1329675adc9460b34`; verified
+backup:
+`C:\Users\g_for\Saved Games\DCS\Backups\Operation-Hidden-Passage\Operation Hidden Passage-before-voice-20261021T200504361143Z.miz`
+(original SHA-256 `2c5019a36712549741b6f809e7a11cba2de27e717a90a490c56d0506dc266832`).
+18 packaging/deployment tests, 11 objective tests, 77 adapter checks, StyLua,
+and archive-preservation checks pass. Live briefing acceptance remains pending.
+The Testing archive is unchanged. Details: `docs/hidden-passage.md`.
+
+The preceding smoke-radio update remains deployed: F10 requests green smoke with
+aircraft-specific pilot audio and the HVT woman's calm or under-fire reply. Routine
+voice subtitles and verbose smoke/status text were reduced; essential safety,
+boarding, contact and completion cues remain. Details: `docs/hidden-passage.md`.
+
+**Hidden Passage smoke-response timing — 2026-10-21:** Source and the dedicated-
+server mission copy now wait 5 seconds after the pilot request recording and its
+0.35-second duration safety tail before playing the HVT reply. Timing tests cover
+both aircraft and the under-fire reply. The server mission was deployed to
+`C:\Users\g_for\Saved Games\DCS.dcs_serverrelease\Missions\Operation Hidden Passage.miz`
+(SHA-256 `ca957f5b7589095b338981f87e87f1ebb8b1de9397d894e59429eab12642a4e4`). Only
+`OHP-main.lua` changed; the editor mission table was preserved byte-for-byte. The
+dedicated server was not running, so loading and live behavior remain unverified.
+The client archive was left untouched. Details and hashes: `docs/hidden-passage.md`.
+
+**Hidden Passage operational firefight deployment — 2026-10-20 (historical; see
+the 2026-10-21 updates above):** The approved
 staged firefight is deployed to the real 33.06 NM operational archive. The
 Blue-wide warning and enemy advance trigger at 3 NM from pickup; the exchange
 starts when the killable six-person rifle group reaches 300 m. HVTs are held at

@@ -24,6 +24,8 @@ return {
   -- pickup; the short Testing route retains its midpoint trigger.
   firefight = {
     template = "OHP-TestOpposition",
+    template_alias = "OHP-TestOpposition-1",
+    pickup_template = "OHP-TestOpposition-2",
     maximum_duration_s = 10 * 60,
     fire_radius_m = 45,
     start_distance_from_pickup_nm = 3,

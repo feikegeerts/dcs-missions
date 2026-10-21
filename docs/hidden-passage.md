@@ -1,18 +1,43 @@
 # Operation Hidden Passage
 
-Status (2026-10-20): **The staged firefight is deployed to the operational
-mission.** Its 33.06 NM route now triggers the Blue-wide HVT-under-fire call and
-starts the enemy approach when a recognized outbound helicopter reaches **3 NM
-from pickup**. The exchange starts once the six killable riflemen move within
-300 m. The short Testing route keeps its existing halfway trigger (about 1.53 NM
-from pickup); a candidate-only rebuild confirmed that behavior and left the
-deployed Testing archive unchanged. Both layouts hold HVT fire until the exchange,
-allow a five-second return-fire burst, and protect only the HVT party during the
-exchange. The operational archive was backed up before deployment; its deployed
-SHA-256 is recorded below. This port is build-verified, **not yet live-flown**.
-The earlier short-range transport acceptance remains valid; operational firefight,
-full long-range flight, remote multicrew and dedicated-server behavior remain live
-gates.
+Status (2026-10-21): **The operational briefing now gives the extraction a
+reason:** three compromised local sources know enemy positions and movements;
+they must reach Hatay before hostile troops capture them. The mission text is much
+shorter and keeps only the story and essential task instructions. The existing
+F10 **Request green smoke** voice exchange and pickup-triggered reinforcement
+remain in place. This deployment changed only the DCS dictionary/briefing; the
+editor mission table is byte-for-byte preserved. The verified backup and deployed
+hash are recorded below. Packaging, objective, adapter, formatting and archive
+checks pass; this briefing update is **not yet live-tested**. The Testing archive
+was not changed.
+
+The smoke-response timing now waits **5 seconds after the pilot recording and
+its 0.35-second audio safety tail**. Lua adapter tests verify that neither
+aircraft receives the reply early, including the under-fire response. A new
+operational copy was deployed to the dedicated-server mission folder:
+`C:\Users\g_for\Saved Games\DCS.dcs_serverrelease\Missions\Operation Hidden Passage.miz`
+(SHA-256 `ca957f5b7589095b338981f87e87f1ebb8b1de9397d894e59429eab12642a4e4`).
+It was built from the client operational archive at SHA-256
+`c3ac56e8fed7d96a935c1b4e358e3fa229f37263edd7d20594ee57abbd77ea57`; only
+`l10n/DEFAULT/OHP-main.lua` changed, and the editor mission member is byte-for-byte
+preserved. The verified source backup is
+`C:\Users\g_for\Saved Games\DCS\Backups\Operation-Hidden-Passage\Operation Hidden Passage-before-voice-20261021T202254629779Z.miz`
+(same source SHA-256). The dedicated server was not running during deployment, so
+the new mission file has not yet been loaded or live-tested. The client archive
+was not replaced by this deployment.
+
+On approach, F10 > **Request green smoke** plays the requesting helicopter's call,
+emits green smoke at the landing area, then plays the HVT woman's reply. The calm
+reply is used until the primary firefight starts; the under-fire recording is used
+once the enemy reaches engagement range. Routine voice transcripts and the long
+smoke instruction have been removed from the screen; concise boarding, threat,
+delivery, and success cues remain. Full-route, firefight, remote multicrew and
+dedicated-server behavior remain live gates.
+
+The original operational firefight remains: a recognized outbound helicopter
+triggers the Blue-wide warning and starts the primary group's approach at **3 NM
+from pickup**. The short Testing route retains its halfway trigger (about 1.53 NM
+from pickup) and its original single unsuffixed enemy template.
 
 ## Retained mission files
 
@@ -24,14 +49,19 @@ Both files live in `C:\Users\g_for\Saved Games\DCS\Missions`:
 | `Operation Hidden Passage - Testing.miz` | 3.06 NM northeast of Hatay | Retained testing mission; renamed from Short Voice Test |
 
 The short archive's mission-list title is also **Operation Hidden Passage -
-Testing**. Both archives now use `transport-firefight-1`, the same nine Ogg
-recordings, and a late-activated enemy template. The old Short Voice Test filename
-was retired only after verified backup/deployment.
+Testing**. The deployed operational archive now contains 13 Ogg recordings; the
+unchanged Testing archive retains its previous nine. The operational archive has
+two late-activated enemy templates; Testing retains its single template. The old
+Short Voice Test filename was retired only after verified backup/deployment.
 
 ## Accepted transport behaviour
 
 - Either **Mule One / CH-47F** or **Raven One / UH-60L** can collect the one
   three-person party. Both have independent smoke/status/transport menus.
+- On approach, choose **Request green smoke**. The pilot request and HVT response
+  play to that aircraft while green smoke appears at the landing area. The calm
+  response is used until `runtime.firefight.state` becomes active (enemy reaches
+  the 300 m engagement range); after that, the under-fire response is used.
 - Land within **105 m** of the party, stay **35 m clear of every person**, and
   stop for **two seconds**. Boarding starts automatically. Ramp/door checks are
   deliberately disabled; the extraction menu remains a fallback.
@@ -54,32 +84,37 @@ was retired only after verified backup/deployment.
 
 ## Staged firefight
 
-Both archives contain a late-activated six-person Red **Infantry AK** template,
-placed relative to that archive's actual HVT zone. Enemies spawn at setup about
-**396 m** from the HVTs and hold fire. HVTs are also explicitly placed on weapons
-hold at setup. The operational route starts their approach and plays the warning
-at **3 NM from pickup**; the retained short Testing route keeps the accepted
-halfway trigger (about **1.53 NM** from pickup). From either trigger, enemies move
-toward a point about **255 m** from the HVTs at **5 m/s**. The scripted exchange
-starts when they reach **300 m**; both groups are then assigned fire tasks. Only
-the HVT party is temporarily immortal; enemy infantry remain killable, and player
-aircraft remain vulnerable. HVTs return fire for **5 seconds**, then hold fire
-while remaining protected until the exchange ends.
+The operational archive contains two late-activated Red **Infantry AK** groups,
+eight units each. The primary template is `OHP-TestOpposition-1` (older archives
+may use the unsuffixed `OHP-TestOpposition`); it spawns at setup, holds fire, and
+starts moving at the **3 NM from pickup** outbound trigger. It approaches a point
+about **255 m** from the HVTs at **5 m/s**; the exchange starts inside **300 m**.
+The editor-authored concealed template `OHP-TestOpposition-2` stays inactive until
+the CTLD pickup changes to boarding. At that point it spawns and routes toward the
+HVTs at **5 m/s**. It remains killable and uses its editor-authored engagement
+settings while advancing. Once all three HVTs are confirmed aboard, it is ordered
+to hold and hold fire. If the second template is absent (as in the retained
+Testing archive), this additional behavior is skipped.
 
-The exchange stops when the party is confirmed aboard, all enemies are eliminated,
-or the **10-minute maximum** is reached. Riflemen can also stop firing sooner if
-they expend their ammunition. The exchange does not continue during the return
-flight. The staging/migration guards, layout-specific trigger, 300 m gate, ROE/fire
-windows, killability, timeout, and boarding stop are covered by adapter/package
-tests; actual DCS route speed, line-of-sight, infantry firing, helicopter-gunner
-targeting, ammunition use, and CTLD boarding with the protected party still
-require live testing. Expect live ammunition and danger-close gunfire; the player
-aircraft are not protected.
+HVTs are held at setup, return fire for **5 seconds** after the primary exchange
+starts, then hold fire while remaining protected until that exchange ends. Only
+the HVT party is temporarily immortal during the primary exchange; enemy infantry
+and player aircraft remain vulnerable.
 
-Operational deployment SHA-256: `57e60cdb26aa48e5a5f568f35655be95237cea4beee15269c0274cd6f639fd05`.
+The primary exchange stops when the party is confirmed aboard, all primary enemies
+are eliminated, or the **10-minute maximum** is reached. The pickup reinforcement
+stops advancing when the party is confirmed aboard. The layout-specific triggers,
+300 m gate, ROE/fire windows, one-shot pickup spawn, killability, timeout, and
+boarding stop are covered by adapter/package tests; actual DCS route speed,
+line-of-sight, infantry firing, helicopter-gunner targeting, ammunition use, and
+CTLD boarding with the protected party still require live testing. Expect live
+ammunition and danger-close gunfire; the player aircraft are not protected.
+
+Previously verified operational deployment SHA-256:
+`d4b92f92df38ab3c76b2f47932df6a7f5ee3219ac9b800a1329675adc9460b34`.
 The verified pre-deployment backup is
-`C:\Users\g_for\Saved Games\DCS\Backups\Operation-Hidden-Passage\Operation Hidden Passage-before-voice-20261020T210540132207Z.miz`
-(original SHA-256 `770524081e0a4ac432ec54228bcd0d10c2c662d088a858de7b92e1b844ddabdf`).
+`C:\Users\g_for\Saved Games\DCS\Backups\Operation-Hidden-Passage\Operation Hidden Passage-before-voice-20261021T200504361143Z.miz`
+(original SHA-256 `2c5019a36712549741b6f809e7a11cba2de27e717a90a490c56d0506dc266832`).
 The deployed Testing archive remains unchanged at SHA-256
 `86ebe8673b54ff1715c8716a808b3ff0c97fce8af3875c8e5895ddc0acda609b`.
 
@@ -100,16 +135,20 @@ To deploy the operational port after further changes, use the explicit operation
 layout and `--deploy`:
 
 ```powershell
-python build/update-hidden-passage.py --input 'C:\Users\g_for\Saved Games\DCS\Missions\Operation Hidden Passage.miz' --layout operational --enable-firefight --deploy
+python build/update-hidden-passage.py --input 'C:\Users\g_for\Saved Games\DCS\Missions\Operation Hidden Passage.miz' --layout operational --deploy
 ```
+
+The current operational archive already contains both editor-authored groups, so
+ordinary updates should omit `--enable-firefight`; that option is only for a
+reviewed archive that still needs the primary template added.
 
 Omit `--deploy` for candidate-only builds. Explicit layout guards reject the wrong
 archive. The updater preserves editor-authored mission data, aircraft, weather, zones, triggers,
 warehouses and resources; the explicit firefight option adds only its constrained
-enemy template. It replaces the embedded payload, adds missing audio and surgically
-updates known briefing sentences. Existing audio
-differences require explicit `--replace-audio NAME.ogg`; unknown briefing changes
-are rejected rather than overwritten. The tested MOOSE pin is verified, not
+enemy template. It replaces the embedded payload, adds missing audio, and replaces
+the operational description only when the recognized old text is intact. Unknown
+briefing changes are rejected rather than overwritten. Existing audio differences
+require explicit `--replace-audio NAME.ogg`; the tested MOOSE pin is verified, not
 silently replaced. Deployment backs up and detects concurrent editor saves.
 
 For the initial rename, the updater supports `--deploy-to '<new filename.miz>'
@@ -135,7 +174,7 @@ lua5.1 tests/lua/run-hidden-passage-operation.lua
 lua5.1 tests/lua/run-hidden-passage-adapter.lua
 ```
 
-Thirteen archive/deployment safety tests, 11 objective tests and 72 adapter checks
+Eighteen archive/deployment safety tests, 11 objective tests and 77 adapter checks
 pass. The updater repeats adapter checks using **each archive's actual zones**.
 These checks do not replace DCS firefight, terrain, mod-package and multiplayer QA.
 
