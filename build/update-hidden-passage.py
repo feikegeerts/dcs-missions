@@ -4,7 +4,8 @@ Mission/editor tables are preserved. Operational briefing replacement is guarded
 by its recognized prior text; existing recordings require explicit --replace-audio permission.
 Default layout is testing; --layout operational explicitly enables the approved
 long-range port. --enable-firefight adds the staged enemy template to either
-layout; --enable-test-firefight remains a Testing-only compatibility alias.
+layout; the optional CAS convoy is editor-authored and conditionally spawned at
+the first human Blue takeoff. --enable-test-firefight remains a Testing-only alias.
 --deploy replaces --input; --deploy-to writes a new named copy.
 """
 
@@ -68,6 +69,8 @@ def _lua_string_field(data, key):
 
 
 def _rewrite_operational_briefing(dictionary):
+    if _has_current_operational_briefing(dictionary):
+        return dictionary
     fields = [_lua_string_field(dictionary, key) for key in OPERATIONAL_BRIEFING_KEYS]
     values = [field[4] for field in fields]
     if values[0] != values[1]:
@@ -92,7 +95,12 @@ def _has_current_operational_briefing(dictionary):
         values = [_lua_string_field(dictionary, key)[4] for key in OPERATIONAL_BRIEFING_KEYS]
     except ValueError:
         return False
-    return values[0] == OPERATIONAL_STORY_BRIEFING and values[1] == OPERATIONAL_STORY_BRIEFING
+    if values[0] == OPERATIONAL_STORY_BRIEFING and values[1] == OPERATIONAL_STORY_BRIEFING:
+        return True
+    # The owner separated the already-approved story and Blue task in the editor.
+    # Recognize only that exact content; preserve its formatting and field split.
+    story, task = OPERATIONAL_STORY_BRIEFING.split("\n\nMule One", 1)
+    return values[0].strip() == story and values[1].strip() == "Mule One" + task
 
 
 def update(
@@ -272,7 +280,8 @@ def update(
             assert changed <= permitted, f"Unapproved archive changes: {changed}"
             for name, data in candidate.items():
                 assert archive.read(name) == data
-        data = generated.read_bytes()
+        # Keep a no-op rebuild byte-identical even across ZIP timestamp ticks.
+        data = original if candidate == members else generated.read_bytes()
         artifact.write_bytes(data)
     sha = lambda data: hashlib.sha256(data).hexdigest()
     evidence = {
@@ -281,7 +290,7 @@ def update(
         "output": str(artifact), "outputSha256": sha(data),
         "changedMembers": sorted(changed), "addedMembers": sorted(candidate.keys() - members.keys()),
         "replacedAudio": sorted(name for name in changed if name.startswith("Sounds/OHP/")),
-        "verified": "explicit layout, tested MOOSE pin, targeted briefing/audio edits, editor preservation, optional constrained killable-infantry template, adapter mocks, ZIP CRC; NOT live DCS acceptance",
+        "verified": "explicit layout, tested MOOSE pin, targeted briefing/audio edits, editor preservation, optional constrained killable-infantry template, shared first-human-Blue-takeoff CAS/CAP snapshot, staged Kub-radar air response, event-queued CAS/CAP/extraction voice cues, editor CAS/CAP template guards, adapter mocks and pinned spawn path, ZIP CRC; NOT live DCS acceptance",
     }
     if source.read_bytes() != original:
         raise RuntimeError("Input changed during build; refusing deployment")

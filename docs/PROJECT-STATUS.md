@@ -1,5 +1,208 @@
 # Project status
 
+**Hidden Passage fighters-first Hind handoff deployed — 2026-10-27:**
+Client `transport-cap-hind-handoff-1` still spawns the Hind alongside the MiGs
+at the Kub radar kill, but holds its existing recording and matching text until
+all spawned fighters are confirmed destroyed, then applies the normal 20-second
+reporting pause. The owner explicitly retained the old "preparing to launch"
+wording even if the Hind is already airborne. Handoff is once-only and stale
+calls are suppressed if the Hind is lost or the objective becomes terminal.
+Aircraft readiness now requires the authored unit count before destruction
+tracking is snapshotted, preventing a partial birth from omitting the wingman.
+160 source/shipping adapter, 11 objective, 23 packaging, five audio and 15 DTC
+checks pass. Backup/deployment verified; only main script changed. Recordings,
+routes, waypoint edits and DTCs remain exact. Checkpoint tasking stays at five
+seconds. Live handoff/pacing and runway timing still need acceptance after reload.
+Details: `docs/hidden-passage.md`.
+
+**Hidden Passage report latency + runway scramble deployed — 2026-10-27:**
+The latest CAP flight measured radar death → MiG takeoffs at **6m 55.607s** and
+**7m 18.197s**, with engines running at +0.797s. The owner approved runway-ready
+MiGs to bypass taxi; their airfield, loadouts and airborne route stay authored.
+The Hind retains its parking start. False aircraft-spawn failures are fixed by
+bounded readiness observation instead of rejecting asynchronous DCS births.
+Client `transport-overlord-latency-scramble-2` waits **20 seconds minimum** for
+Overlord outcome confirmations, except **checkpoint package-aboard tasking at
+5 seconds**, per the owner's clarification. Matching text waits too; the
+checkpoint task can pass routine intelligence, but never interrupt crew audio.
+Actual objective and spawn transitions stay immediate; initial tasking and
+direct crew/pilot calls are unchanged. 154 source/shipping adapter, 11 objective,
+23 packaging, five audio and 15 DTC tests pass, including pinned runway spawning.
+Only main script changed; editor data, waypoint edits, DTCs, briefing and audio
+are exact. Verified backup/deployment; live runway timing and radio pacing
+remain open. Measurements: `docs/hidden-passage-flight-tests.md`; deployment:
+`docs/hidden-passage.md`.
+
+**Hidden Passage delayed Overlord failure report deployed — 2026-10-27:**
+Client `transport-failure-report-delay-1` waits **20 seconds** after failure is
+detected before Overlord's abort recording and the automatic failure text.
+Objective failure and stale-voice cancellation remain immediate; repeated
+checks cannot restart the pause or duplicate the report. Existing audio cannot
+be interrupted, so the abort still waits for an occupied clip if necessary.
+145 source/shipping adapter, 11 objective, 23 packaging, five audio and 15 DTC
+tests pass. Only the main payload changed; waypoint edits, both CAP cartridges,
+briefing and audio remain exact. Backup/deployment verified; live pacing remains
+to confirm after reload. Details: `docs/hidden-passage.md`.
+
+**Hidden Passage CAP threat cartridges deployed — 2026-10-27:**
+The saved client mission now assigns native auto-load DTCs only to `CAP-Hornet`
+and `CAP-Viper`. Each contains all six known visible SAM sites, including the
+late-activated LZ Kub (25 km planning ring). Static cockpit intelligence does
+not activate the Kub or change frozen CAP participation. The owner's saved
+waypoint edits, routes, loadouts, briefing, gameplay and audio are preserved;
+only two aircraft DTC fields and two new cartridge members changed.
+15 DTC, 23 packaging, five audio, 141 source/shipping adapter and 11 objective
+checks pass; both installed native importers accept six points each. Backup,
+installed/output hashes, CRC and exact preservation verified. **Live automatic
+loading/rings on Hornet SA and Viper HSD remain unverified**; reload from disk
+and check both while parked. Dedicated-server/Testing copies are unchanged.
+Deployment and test instructions: `docs/hidden-passage.md`.
+
+**Hidden Passage fighter departure voice calls removed — 2026-10-27:**
+Client `transport-no-fighter-departures-1` no longer speaks CAS/CAP takeoff
+acknowledgements in the human pilots' voices. Hooks are removed and the two
+retained assets are explicitly disabled against stale callers. Overlord tasking,
+helicopter crew calls, target-destruction reports and staged CAS/solo-test logic
+are unchanged. 141 source/shipping adapter, 11 objective, 22 packaging and five
+audio tests pass; deployment/backup verified. The owner will fix Hornet waypoint
+heights; all editor members and audio bytes were preserved.
+
+The latest CAS attempt's first GBU-12 impact was approximately **7m 07.6s after
+takeoff**, not a convoy hit. Timings and FLIR findings are recorded in
+[`hidden-passage-flight-tests.md`](hidden-passage-flight-tests.md).
+
+**Hidden Passage sequential CAS + temporary solo test deployed — 2026-10-27:**
+Client `transport-cas-sequence-test-1` releases the convoy at the frozen first
+Blue takeoff, but holds checkpoint troops/tasking until all three HVTs are
+confirmed aboard either helicopter. Boarding start or convoy destruction alone
+cannot release it; convoy clearance is not an extraction prerequisite.
+Three new Downloads takes replace CAS departure, convoy tasking and checkpoint
+tasking at the approved 90% level; other recordings/editor members are unchanged.
+Temporary F10 in a CAS group: **Operation Hidden Passage - TEMP TEST > TEST:
+Simulate pickup complete (CAS stage only)**. Requires one human Blue aircraft,
+the invoking CAS slot and frozen CAS participation. It releases only the CAS
+stage, not cargo, carrier, boarding or success. Disable
+`cas.enable_pickup_test_menu` after solo acceptance.
+140 source/shipping adapter, 11 objective, 22 packaging and five audio tests
+pass. Fresh live sequence/audio/menu acceptance remains open. Deployment, backup
+and solo procedure: `docs/hidden-passage.md`.
+
+**Hidden Passage voice volume reduced — 2026-10-27:**
+Client `transport-voice-volume-90-1` reduces all 27 mission recordings to **90%
+of their previous level**. Dialogue, call counts, durations/queue timing and
+gameplay are unchanged. This explicitly includes previously retained clips
+15/18/19/20; their content is retained, but the quieter renders are no longer
+byte-identical. Original assets and the installed mission were backed up.
+Decoded RMS ratios verify 0.8993–0.9004; all 133 adapter, 11 objective, 22 packaging
+and five audio tests pass. DCS built-in radio/master settings were not changed.
+Reload required; live listening acceptance remains open. Manifest:
+`src/missions/operation-hidden-passage/voice-gain.json`; deployment/backup details:
+`docs/hidden-passage.md`.
+
+**Hidden Passage AWACS waypoint chatter disabled — 2026-10-27:**
+Client `transport-awacs-quiet-1` applies MOOSE
+`SetOptionWaypointPassReport(false)` only to the editor's `Overlord` E-3A group.
+This suppresses built-in waypoint-passage reports, not all AWACS radio traffic.
+Its AWACS task, route, datalink and recorded mission cues remain unchanged.
+133 source/shipping adapter checks, 11 objective checks, 22 packaging and four
+audio tests pass; backup and archive preservation verified. Reload required;
+live suppression remains to confirm. Deployment details: `docs/hidden-passage.md`.
+
+**Hidden Passage Mule live-test follow-up — 2026-10-27:**
+Measured takeoff-to-touchdown **15m 39.640s**. The enemies advanced at 3 NM but
+never crossed the 300 m gate, so the actual firefight/audio never started.
+Touchdown was 107.6 m from the HVTs, just outside the old 105 m limit; boarding
+began after repositioning. Enemy reinforcement rifle fire then killed one HVT.
+Client `transport-approach-lz-1` widens pickup to **125 m** and uses **400 m to
+the nearest surviving enemy** for inbound contact. Existing clearance, protection,
+enemy settings and recordings remain unchanged. All 130 adapter, 11 objective,
+22 packaging and four audio tests pass; live retest remains open.
+Timeline, preserved evidence, backup and deployment hashes:
+[`hidden-passage-flight-tests.md`](hidden-passage-flight-tests.md).
+
+**Hidden Passage full voice integration deployed — 2026-10-27:**
+`transport-firefight-voice-1` wires/packages all 27 clips: 14 new recordings,
+three approved replacements and ten unchanged originals, including retained
+entries 15, 18, 19 and 20. CAS/CAP tasking, radar kill/air launch, actual fire,
+failure, role departure and verified target-destruction reports are voiced.
+Urgent pickup/cabin calls jump routine backlog; stale/absent-role calls are
+suppressed and failure clears pending chatter. CAS/CAP activation and editor
+layout/loadouts remain unchanged; no Blue AI or extraction gates were added.
+The 126 source/shipping adapter, 22 packaging, 11 objective and four audio tests
+covering all 27 assets pass, along with syntax/format/layout guards. Client and
+generated archive SHA-256:
+`3715ca8f71d3adb5f77343b12eb054f589855a8f4e7a9952639819680bf1ef8c`.
+Reload required; live audio/pacing and existing AI/convoy/checkpoint gates remain
+open. Dedicated-server/Testing copies are unchanged. Backup/deployment details:
+`docs/hidden-passage.md`; speaker/filename/cue reference:
+`docs/hidden-passage-voice-script.md`.
+
+**Hidden Passage staged CAP/SEAD deployed — 2026-10-26:**
+`transport-firefight-cap-1` preserves both CAS ground threats. A single frozen
+first-human-Blue-takeoff roster independently enables CAS and CAP. Either CAP
+client seat activates the nearby Kub; destruction of its spawned tracking radar
+then releases the two armed Fulcrums and one Hind from their editor airfields
+once. Radar silence or destroyed support vehicles does not count. All authored
+routes, skills, payloads, briefing and non-script members are preserved. Missing
+templates fail safely, and neither role's absence disables the other branch.
+The 108 source/shipping adapter checks, 22 packaging tests, 11 objective tests,
+actual archive guards and formatting checks pass. Client Missions and generated
+output SHA-256:
+`0239c74934a3965786660d8fb0b8db55845a7f8ec2b60405d516262371eb367e`.
+Reload required. Live taxi/takeoff, contact timing and Hind-versus-Chinook AI
+behaviour remain unverified; existing convoy survivor-movement and checkpoint
+engagement gates remain open. Dedicated-server/Testing archives are unchanged.
+Backup and details: `docs/hidden-passage.md`.
+
+**Hidden Passage CAS-only RPG checkpoint deployed — 2026-10-23:** CAS-3 adds
+the editor's `CAS-Convoy-1` (four RPG soldiers/four riflemen) to the convoy's
+frozen first-human-Blue-takeoff decision. Either CAS slot enables both once;
+helicopter-only/late CAS joins spawn neither. CAS gets a warning to clear the
+north-road checkpoint before helicopter approach, without an artificial
+boarding gate. The latest client editor layout, patrol and split briefing are
+preserved; only the main payload changed. Client Missions and generated output
+SHA-256: `958cfc43f7cca9b6ab996115d73d0ba5ec3f2c1fa5c9a41f745b118a8df06127`.
+All 20 packaging, 11 objective, 89 adapter, layout and formatting checks pass;
+actual checkpoint engagement remains unverified. Dedicated-server and Testing
+copies are unchanged. Backup/details: `docs/hidden-passage.md`.
+
+**Hidden Passage CAS-2 installed in client Missions — 2026-10-23:** The owner
+requested shipping to Saved Games. The client operational archive now contains
+the CAS-2 payload, with its newer editor mission/briefing and all non-script
+members preserved byte-for-byte. Backup, actual client layout guard, 84 shipping
+adapter checks, CRC and post-deployment verification passed. Deployed SHA-256:
+`3c76f7247f086f9949ba63a6a890aa6bc2c184baa4a18ccc84f24a5b644e39e4`.
+The dedicated-server copy and Testing archive remain unchanged. Mission reload
+and a fresh lead-BTR strike are needed for live acceptance of survivor movement.
+Backup and evidence: `docs/hidden-passage.md`.
+
+**Hidden Passage convoy movement follow-up — 2026-10-23:** After the owner
+observed survivors halting behind the destroyed lead BTR, `transport-firefight-cas-2`
+disables automatic dispersal only on the spawned CAS convoy. The editor route,
+vehicles, spacing, speed, and first-human-Blue-takeoff decision remain unchanged.
+Physical wreck blockage/pathfinding is not guaranteed solved; live retest pending.
+`out/operation-hidden-passage.miz` was rebuilt from the last tested candidate,
+leaving separate client editor changes and the dedicated-server copy untouched.
+SHA-256: `0f0cd74419b3228a91eb53dcdd0b8fa74b7a4a84ab6284e7f9d7eef5f9d0bb8c`.
+The 18 packaging, 11 objective, 84 adapter, formatting, and archive-preservation
+checks pass. A pre-existing timestamp-sensitive no-op packaging issue was also
+fixed and regression-tested. Details: `docs/hidden-passage.md`.
+
+**Hidden Passage conditional CAS convoy — 2026-10-23:** The operational client
+archive now has the authored `CAS-Hornet`, `CAS-Warthog`, and late-activated
+`CAS-Convoy` groups. Runtime snapshots Blue player slots at the first human
+takeoff; either CAS slot enables one convoy, otherwise the branch remains off.
+Offline adapter tests and archive-layout guards cover snapshot timing,
+slot-switch behavior, idempotency, both CAS roles, and missing-template handling.
+The operational candidate `out/operation-hidden-passage.miz` was rebuilt from
+the updated client archive without deploying/replacing it; the dedicated-server
+copy remains on the prior build. The candidate SHA-256 is
+`dedb716a9b84a06b8c3371fa2bb45ac2c9acba22101bdf307963b001fa1b4ba0`. The 18
+packaging tests, 11 objective tests, 82 adapter checks, archive preservation,
+and StyLua checks pass. Live route, convoy lethality, and DCS event/roster
+behavior still need flight verification. The saved convoy route's waypoint ETA
+is 33m40s to a point 232 m from the HVT zone; see `docs/hidden-passage.md`.
+
 **Hidden Passage briefing update — 2026-10-21:** The operational briefing now
 explains the extraction: three compromised local sources know enemy positions and
 movements and must reach Hatay before capture. The shorter text keeps the story

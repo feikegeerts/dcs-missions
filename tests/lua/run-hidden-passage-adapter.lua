@@ -2,6 +2,7 @@
 -- This checks our adapter contract, not actual DCS terrain/CTLD simulation.
 local shipping = arg[1]
 local config = dofile("src/missions/operation-hidden-passage/config.lua")
+local archive_mission
 -- Optional real archive layout: exercise the same adapter at relocated zones,
 -- while retaining the packaged script/config unchanged (runtime reads zones).
 if arg[2] then
@@ -9,6 +10,7 @@ if arg[2] then
   local chunk = assert(loadfile(arg[2]))
   setfenv(chunk, sandbox)
   chunk()
+  archive_mission = sandbox.mission
   local fields = {
     [config.pickup_zone] = "pickup",
     [config.personnel_zone] = "personnel",
@@ -28,9 +30,10 @@ local Operation = dofile("src/missions/operation-hidden-passage/operation.lua")
 local moose_file = assert(io.open("src/lib/Moose_.lua", "rb"))
 local moose = moose_file:read("*a")
 moose_file:close()
-local function pinned_method(name, env)
-  local first = assert(moose:find("function CTLD:" .. name .. "(", 1, true))
-  local last = assert(moose:find("\nfunction CTLD:", first + 1, true))
+local function pinned_method(name, env, class)
+  class = class or "CTLD"
+  local first = assert(moose:find("function " .. class .. ":" .. name .. "(", 1, true))
+  local last = assert(moose:find("\nfunction " .. class .. ":", first + 1, true))
   local chunk = assert(loadstring(moose:sub(first, last - 1)))
   setfenv(chunk, env)
   chunk()
@@ -74,6 +77,7 @@ local function harness(options)
     timers = {},
     groups = {},
     notices = {},
+    notice_times = {},
     sounds = {},
     sound_times = {},
     sound_targets = {},
@@ -86,8 +90,20 @@ local function harness(options)
     commands_by_group = {},
     marks = {},
     event_handlers = {},
+    blue_players = {},
     now = 100,
   }
+  env.coalition.getPlayers = function(side)
+    assert(side == env.coalition.side.BLUE)
+    h.roster_reads = (h.roster_reads or 0) + 1
+    if options.roster_error then
+      error("simulated roster read failure")
+    end
+    if options.roster_invalid then
+      return nil
+    end
+    return h.blue_players
+  end
   function h:schedule(delay, fn)
     self.deferred[#self.deferred + 1] = { at = self.now + delay, run = fn }
   end
@@ -143,7 +159,7 @@ local function harness(options)
     end,
   }
   env.world = {
-    event = { S_EVENT_TAKEOFF = 3 },
+    event = { S_EVENT_TAKEOFF = 3, S_EVENT_DEAD = 8, S_EVENT_CRASH = 5, S_EVENT_UNIT_LOST = 30 },
     addEventHandler = function(handler)
       h.event_handlers[#h.event_handlers + 1] = handler
     end,
@@ -159,10 +175,12 @@ local function harness(options)
       return {
         ToCoalition = function()
           h.notices[#h.notices + 1] = text
+          h.notice_times[#h.notices] = h.now
           h.notice_targets[#h.notices] = "coalition"
         end,
         ToUnit = function(_, unit)
           h.notices[#h.notices + 1] = text
+          h.notice_times[#h.notices] = h.now
           h.notice_targets[#h.notices] = unit:GetID()
         end,
       }
@@ -230,10 +248,26 @@ local function harness(options)
         return self.size
       end,
       GetUnits = function(self)
+        if self.units_override then
+          return self.units_override
+        end
         local units = {}
         for i = 1, self.size do
+          local index = i
           local point = { x = self.point.x + (i - 1) * 12, y = self.point.y }
           units[i] = {
+            GetName = function()
+              return self.name .. "-" .. index
+            end,
+            GetLife = function()
+              if self.unit_observation_error then
+                error("simulated unit query error")
+              end
+              if self.units_removed then
+                return -1
+              end
+              return self.unit_life and self.unit_life[index] or (index <= self.size and 100 or 0)
+            end,
             GetVec2 = function()
               return point
             end,
@@ -265,6 +299,10 @@ local function harness(options)
       end,
       OptionROEOpenFire = function(self)
         self.roe = "open"
+      end,
+      OptionDisperseOnAttack = function(self, seconds)
+        self.disperse_on_attack_s = seconds
+        return self
       end,
       SetCommand = function(self, command)
         h.group_commands = h.group_commands or {}
@@ -304,13 +342,36 @@ local function harness(options)
     h.groups[name] = g
     return g
   end
+  if options.awacs then
+    env.AI = { Option = { Air = { id = { PROHIBIT_WP_PASS_REPORT = 19 } } } }
+    env.CONTROLLABLE = {}
+    pinned_method("SetOptionWaypointPassReport", env, "CONTROLLABLE")
+    h.awacs = group(config.awacs_group, config.receiving, 1)
+    h.awacs.F2 = function() end
+    h.awacs.IsAir = function()
+      return true
+    end
+    h.awacs.SetOptionWaypointPassReport = env.CONTROLLABLE.SetOptionWaypointPassReport
+    h.awacs.options = {}
+    h.awacs.SetOption = function(self, id, value)
+      if options.awacs_option_error then
+        error("simulated AWACS controller loss")
+      end
+      self.options[id] = value
+    end
+    if options.awacs_dead then
+      h.awacs.size = 0
+    end
+  end
   h.player = {
     id = 101,
     name = config.player_unit,
+    group_name = config.player_group,
+    player_name = "Mule Pilot",
     type_name = "CH-47Fbl1",
     alive = true,
     airborne = false,
-    point = config.pickup,
+    point = options.player_far and config.receiving or config.pickup,
     IsAlive = function(self)
       return self.alive
     end,
@@ -345,6 +406,17 @@ local function harness(options)
     getCoalition = function()
       return 2
     end,
+    getPlayerName = function(self)
+      return self.player_name
+    end,
+    getGroup = function(self)
+      local group_name = self.group_name
+      return {
+        getName = function()
+          return group_name
+        end,
+      }
+    end,
   }
   h.player.getName = h.player.GetName
   h.player.getTypeName = h.player.GetTypeName
@@ -354,7 +426,47 @@ local function harness(options)
     h.raven[key] = value
   end
   h.raven.id, h.raven.name, h.raven.type_name = 202, config.support_unit, "UH-60L"
+  h.raven.group_name, h.raven.player_name = config.support_group, "Raven Pilot"
   h.raven.point = config.receiving
+  local function cas_player(group_name, type_name, player_name)
+    local wrapper = group(group_name, config.receiving, 1)
+    local original_alive = wrapper.IsAlive
+    wrapper.IsAlive = function(self)
+      return original_alive(self) and options.cas_test_menus == true
+    end
+    return {
+      group_name = group_name,
+      type_name = type_name,
+      player_name = player_name,
+      GetGroup = function()
+        return wrapper
+      end,
+      inAir = function(self)
+        return self.airborne ~= false
+      end,
+      getCoalition = function()
+        return env.coalition.side.BLUE
+      end,
+      getPlayerName = function(self)
+        return self.player_name
+      end,
+      getTypeName = function(self)
+        return self.type_name
+      end,
+      getGroup = function(self)
+        local name = self.group_name
+        return {
+          getName = function()
+            return name
+          end,
+        }
+      end,
+    }
+  end
+  h.cas_hornet = cas_player("CAS-Hornet", "FA-18C_hornet", "Hornet Pilot")
+  h.cas_warthog = cas_player("CAS-Warthog", "A-10C_2", "Warthog Pilot")
+  h.cap_hornet = cas_player("CAP-Hornet", "FA-18C_hornet", "CAP Hornet Pilot")
+  h.cap_viper = cas_player("CAP-Viper", "F-16C_50", "CAP Viper Pilot")
   env.UNIT = {
     FindByName = function(_, name)
       if name == config.support_unit then
@@ -369,6 +481,12 @@ local function harness(options)
   }
   env.GROUP = {
     FindByName = function(_, name)
+      if options.cas_checkpoint and name == config.cas.checkpoint_template then
+        return h.cas_checkpoint_template
+      end
+      if options.cas_convoy and name == config.cas.convoy_template then
+        return h.cas_convoy_template
+      end
       if options.firefight and name == h.opposition_template_name then
         return h.opposition_template
       end
@@ -380,7 +498,13 @@ local function harness(options)
   }
   env.TIMER = {
     New = function(_, fn)
-      local timer = { run = fn, Start = function() end }
+      local timer = {
+        run = fn,
+        Start = function(self, delay, interval)
+          self.delay, self.interval = delay, interval
+          return self
+        end,
+      }
       h.timers[#h.timers + 1] = timer
       return timer
     end,
@@ -417,7 +541,8 @@ local function harness(options)
       }
     end,
   }
-  h.opposition_spawns, h.pickup_opposition_spawns = 0, 0
+  h.opposition_spawns, h.pickup_opposition_spawns, h.cas_convoy_spawns = 0, 0, 0
+  h.cas_checkpoint_spawns = 0
   if options.firefight then
     local point = {
       x = config.personnel.x + config.firefight.staging_offset_m,
@@ -431,9 +556,174 @@ local function harness(options)
   if options.pickup_opposition then
     h.pickup_opposition_template = group(config.firefight.pickup_template, config.personnel, 8)
   end
-  if options.firefight or options.pickup_opposition then
+  if options.cas_convoy then
+    h.cas_convoy_template = group(config.cas.convoy_template, config.personnel, options.cas_convoy_size or 6)
+  end
+  if options.cas_checkpoint then
+    h.cas_checkpoint_template = group(config.cas.checkpoint_template, config.personnel, 8)
+  end
+  h.cap_spawns = { sam = 0, fighters = 0, hind = 0 }
+  h.cap_runway_starts = {}
+  env.AIRBASE = {
+    FindByID = function(_, id)
+      assert(id == 1, "Use the authored fighter airfield")
+      if not options.cap_airbase_missing then
+        return { id = id }
+      end
+    end,
+  }
+  local cap_templates = {
+    [config.cap.sam_template] = "sam",
+    [config.cap.fighters_template] = "fighters",
+    [config.cap.hind_template] = "hind",
+  }
+  for name, role in pairs(cap_templates) do
+    if options["cap_" .. role] then
+      local authored = group(name, config.personnel, role == "sam" and 9 or role == "fighters" and 2 or 1)
+      authored.GetTemplateRoutePoints = function()
+        return { { airdromeId = 1 } }
+      end
+      authored.GetTemplate = function()
+        local units = {}
+        for i = 1, authored.size do
+          units[i] = { name = name .. "-" .. i }
+        end
+        return { units = units }
+      end
+    end
+  end
+  if
+    options.firefight
+    or options.pickup_opposition
+    or options.cas_convoy
+    or options.cas_checkpoint
+    or options.cap_sam
+    or options.cap_fighters
+    or options.cap_hind
+  then
     env.SPAWN = {
+      Takeoff = { Runway = 2 },
       New = function(_, template)
+        local role = cap_templates[template]
+        if role then
+          assert(options["cap_" .. role], "Unavailable CAP template must not be spawned")
+          local spawner = {}
+          function spawner:InitLimit(maximum_units, maximum_groups)
+            assert(maximum_units == 0 and maximum_groups == 1)
+            return self
+          end
+          function spawner:SpawnAtAirbase(airbase, takeoff, altitude, terminal, emergency)
+            assert(role == "fighters" and airbase.id == 1 and takeoff == env.SPAWN.Takeoff.Runway)
+            assert(altitude == nil and terminal == nil and emergency == false, "No airborne fallback")
+            h.cap_runway_starts[role] = (h.cap_runway_starts[role] or 0) + 1
+            if options.cap_runway_blocked then
+              return nil
+            end
+            return self:Spawn()
+          end
+          function spawner:Spawn()
+            h.cap_spawns[role] = h.cap_spawns[role] + 1
+            if options["cap_" .. role .. "_spawn_error"] then
+              error("simulated " .. role .. " spawn failure")
+            end
+            if options["cap_" .. role .. "_spawn_nil"] then
+              return nil
+            end
+            local g = group(template .. "#001", config.personnel, role == "sam" and 9 or role == "fighters" and 2 or 1)
+            if role == "sam" then
+              h.radars = {}
+              g.units_override = {}
+              for i = 1, options.cap_radar_count or 1 do
+                local radar = {
+                  alive = true,
+                  life = 100,
+                  emitting = true,
+                  GetTypeName = function()
+                    return config.cap.radar_type
+                  end,
+                  IsAlive = function(self)
+                    if h.radar_observation_error then
+                      error("transient radar observation error")
+                    end
+                    return self.alive
+                  end,
+                  GetLife = function(self)
+                    return self.life
+                  end,
+                }
+                h.radars[i] = radar
+                g.units_override[#g.units_override + 1] = radar
+              end
+              -- Launchers and trucks remain alive when only the radar is killed.
+              g.units_override[#g.units_override + 1] = {
+                GetTypeName = function()
+                  return "Kub 2P25 ln"
+                end,
+                IsAlive = function()
+                  return true
+                end,
+                GetLife = function()
+                  return 100
+                end,
+              }
+              if options.cap_units_unavailable then
+                g.GetUnits = function()
+                  return nil
+                end
+              end
+            end
+            if options["cap_" .. role .. "_spawn_dead"] then
+              g.size = 0
+            end
+            if options["cap_" .. role .. "_birth_delay"] then
+              local size = g.size
+              g.size = 0
+              h:schedule(options["cap_" .. role .. "_birth_delay"], function()
+                g.size = size
+              end)
+            end
+            if role == "fighters" and options.cap_fighters_partial_birth then
+              g.size = 1
+              h:schedule(0.8, function()
+                g.size = 2
+              end)
+            end
+            h["cap_" .. role] = g
+            return g
+          end
+          return spawner
+        end
+        if options.cas_checkpoint and template == config.cas.checkpoint_template then
+          local spawner = {}
+          function spawner:InitLimit(maximum_units, maximum_groups)
+            assert(maximum_units == 0 and maximum_groups == 1)
+            return self
+          end
+          function spawner:Spawn()
+            h.cas_checkpoint_spawns = h.cas_checkpoint_spawns + 1
+            if options.checkpoint_spawn_error then
+              error("simulated checkpoint failure")
+            end
+            h.cas_checkpoint =
+              group(template .. "#001", h.cas_checkpoint_template.point, h.cas_checkpoint_template.size)
+            return h.cas_checkpoint
+          end
+          return spawner
+        end
+        if options.cas_convoy and template == config.cas.convoy_template then
+          local spawner = {}
+          function spawner:InitLimit(maximum_units, maximum_groups)
+            assert(maximum_units == 0 and maximum_groups == 1)
+            return self
+          end
+          function spawner:Spawn()
+            h.cas_convoy_spawns = h.cas_convoy_spawns + 1
+            h.cas_convoy =
+              group(config.cas.convoy_template .. "#001", h.cas_convoy_template.point, h.cas_convoy_template.size)
+            return h.cas_convoy
+          end
+          return spawner
+        end
         assert(
           template == h.opposition_template_name
             or (options.pickup_opposition and template == config.firefight.pickup_template),
@@ -572,6 +862,7 @@ local function harness(options)
       end,
     }
     env.SPAWN = {
+      Takeoff = env.SPAWN and env.SPAWN.Takeoff,
       New = env.SPAWN and env.SPAWN.New,
       NewWithAlias = function(_, template, alias)
         assert(template == config.party_template)
@@ -603,6 +894,11 @@ local function harness(options)
   h.timers[1].run()
   function h:tick()
     self.runtime.observer.run()
+  end
+  function h:cap_tick()
+    local observer = assert(self.runtime.cap.observer)
+    assert(observer.delay == config.cap.radar_check_interval_s and observer.interval == nil)
+    observer.run()
   end
   function h:observe_for(seconds)
     self:tick()
@@ -650,6 +946,39 @@ local function harness(options)
   end
   return h
 end
+local function transport_takeoff_handler(h)
+  return assert(h.runtime.takeoff_handler, "Transport takeoff handler was not registered")
+end
+test("Overlord waypoint calls are prohibited through the pinned MOOSE option, without replacing its task", function()
+  local h = harness({ awacs = true })
+  assert(h.awacs.options[19] == true, "PROHIBIT_WP_PASS_REPORT must be true")
+  local count = 0
+  for _ in pairs(h.awacs.options) do
+    count = count + 1
+  end
+  assert(count == 1, "Do not silence AWACS generally or change unrelated options")
+  assert(h.awacs.assigned_task == nil and h.awacs.route_target == nil)
+  assert(h.runtime.objective.phase == "waiting" and #h.errors == 0)
+  h.runtime.voice:radio("kub_neutralised")
+  assert(#h.sounds == 0, "Outcome confirmations retain reporting latency")
+  h:flush()
+  assert(h.sounds[1] == "Sounds/OHP/overlord-kub-neutralised.ogg", "Recorded Overlord cues must still play")
+end)
+test("absent or destroyed Overlord cannot block extraction setup", function()
+  for _, options in ipairs({ {}, { awacs = true, awacs_dead = true } }) do
+    local h = harness(options)
+    assert(h.runtime.objective.phase == "waiting" and #h.errors == 0)
+    if h.awacs then
+      assert(next(h.awacs.options) == nil)
+    end
+  end
+end)
+test("AWACS option errors are logged without failing extraction", function()
+  local h = harness({ awacs = true, awacs_option_error = true })
+  assert(h.runtime.objective.phase == "waiting" and #h.errors == 1)
+  h:extract()
+  assert(h.runtime.objective.phase == "aboard")
+end)
 test("landed pickup and correct delivery", function()
   local h = harness()
   h:extract()
@@ -735,8 +1064,8 @@ test("prepared UH-60 recordings play in order without overlapping", function()
 end)
 test("Mule takeoff plays only its own clearance once and only to its crew", function()
   local h = harness()
-  assert(#h.event_handlers == 1, "Takeoff handler was not registered")
-  local handler = h.event_handlers[1]
+  assert(#h.event_handlers == 2, "Early CAS snapshot and transport handlers were not registered")
+  local handler = transport_takeoff_handler(h)
   assert(
     type(handler) == "table" and type(handler.onEvent) == "function",
     "DCS calls handler:onEvent, so a table is required"
@@ -749,7 +1078,7 @@ test("Mule takeoff plays only its own clearance once and only to its crew", func
 end)
 test("Raven takeoff plays only its support call once and only to its crew", function()
   local h = harness({ only_uh60 = true })
-  local handler = h.event_handlers[1]
+  local handler = transport_takeoff_handler(h)
   handler:onEvent({ id = 3, initiator = h.raven })
   assert(h.sounds[1] == "Sounds/OHP/raven-one-cleared-for-support.ogg")
   assert(h.sound_targets[1] == h.raven.id and #h.notices == 0)
@@ -764,7 +1093,7 @@ test("both departure orders retain independent once-only calls and recipients", 
     if raven_first then
       first, second = second, first
     end
-    local handler = h.event_handlers[1]
+    local handler = transport_takeoff_handler(h)
     handler:onEvent({ id = 3, initiator = first })
     handler:onEvent({ id = 3, initiator = second })
     handler:onEvent({ id = 3, initiator = first })
@@ -776,7 +1105,7 @@ test("both departure orders retain independent once-only calls and recipients", 
 end)
 test("unrelated Blue aircraft and wrong airframe types cannot trigger either clearance", function()
   local h = harness()
-  local handler = h.event_handlers[1]
+  local handler = transport_takeoff_handler(h)
   h.player.name = "Unrelated-1-1"
   handler:onEvent({ id = 3, initiator = h.player })
   h.player.name, h.player.type_name = config.player_unit, "UH-60L"
@@ -789,14 +1118,14 @@ test("unrelated Blue aircraft and wrong airframe types cannot trigger either cle
 end)
 test("unavailable support aircraft does not consume its takeoff call", function()
   local h = harness({ missing_support = true })
-  h.event_handlers[1]:onEvent({ id = 3, initiator = h.raven })
+  transport_takeoff_handler(h):onEvent({ id = 3, initiator = h.raven })
   assert(#h.sounds == 0 and not h.runtime.takeoff_announced[config.support_unit])
 end)
 test("queued takeoff calls do not follow a destroyed or replaced recipient", function()
   for _, replaced in ipairs({ true, false }) do
     local h = harness()
-    h.event_handlers[1]:onEvent({ id = 3, initiator = h.player })
-    h.event_handlers[1]:onEvent({ id = 3, initiator = h.raven })
+    transport_takeoff_handler(h):onEvent({ id = 3, initiator = h.player })
+    transport_takeoff_handler(h):onEvent({ id = 3, initiator = h.raven })
     if replaced then
       h.raven.id = 303
     else
@@ -828,14 +1157,803 @@ test("non-blue or non-takeoff events stay silent", function()
   h.player.getCoalition = function()
     return 1
   end
-  h.event_handlers[1]:onEvent({ id = 3, initiator = h.player })
+  transport_takeoff_handler(h):onEvent({ id = 3, initiator = h.player })
   assert(#h.sounds == 0)
   h.player.getCoalition = function()
     return 2
   end
-  h.event_handlers[1]:onEvent({ id = 4, initiator = h.player })
+  transport_takeoff_handler(h):onEvent({ id = 4, initiator = h.player })
   assert(#h.sounds == 0)
 end)
+test("first human Blue takeoff snapshots either configured CAS slot and spawns one convoy", function()
+  for _, slot in ipairs({ "hornet", "warthog" }) do
+    local h = harness({ cas_convoy = true })
+    local cas_player = slot == "hornet" and h.cas_hornet or h.cas_warthog
+    h.blue_players = { h.player, cas_player }
+    h.runtime.cas_decision_handler:onEvent({ id = 3, initiator = h.player })
+    assert(h.runtime.cas_convoy.state == "active")
+    assert(h.runtime.cas_convoy.slot == cas_player.group_name)
+    assert(h.cas_convoy_spawns == 1 and h.cas_convoy:IsAlive())
+    assert(#h.notices == 1 and h.notices[1]:find("enemy convoy is advancing", 1, true))
+    h.runtime.cas_decision_handler:onEvent({ id = 3, initiator = cas_player })
+    assert(h.cas_convoy_spawns == 1, "A later CAS takeoff must not spawn a duplicate convoy")
+  end
+end)
+test("both CAS slots occupied at the snapshot still spawn only one convoy", function()
+  local h = harness({ cas_convoy = true })
+  h.blue_players = { h.player, h.cas_hornet, h.cas_warthog }
+  h.runtime.cas_decision_handler:onEvent({ id = 3, initiator = h.player })
+  assert(h.runtime.cas_convoy.state == "active" and h.cas_convoy_spawns == 1)
+end)
+test("only the spawned CAS convoy disables dispersal without replacing its route or protecting vehicles", function()
+  local h = harness({ cas_convoy = true, firefight = true, pickup_opposition = true })
+  h.blue_players = { h.player, h.cas_hornet }
+  assert(h.cas_convoy_template.disperse_on_attack_s == nil)
+  h.runtime.cas_decision_handler:onEvent({ id = 3, initiator = h.player })
+  assert(h.cas_convoy.disperse_on_attack_s == 0, "Survivors must not automatically disperse under attack")
+  assert(h.cas_convoy.assigned_task == nil and h.cas_convoy.route_target == nil, "Preserve the editor route")
+  assert(h.opposition.disperse_on_attack_s == nil, "Do not change the helicopter infantry fight")
+  assert(h.pickup_opposition_template.disperse_on_attack_s == nil)
+  assert(h.cas_convoy_template.disperse_on_attack_s == nil, "Change the spawned group, not the template")
+  assert(#(h.group_commands or {}) == 0, "Do not make the convoy invulnerable")
+  h.cas_convoy.size = h.cas_convoy.size - 1 -- Simulated lead vehicle loss.
+  h.runtime.cas_decision_handler:onEvent({ id = 3, initiator = h.cas_hornet })
+  assert(h.cas_convoy_spawns == 1 and h.cas_convoy:GetSize() == 5, "Casualties must not be replaced")
+end)
+test("the pinned MOOSE dispersal method sends zero to the DCS ground controller option", function()
+  local first = assert(moose:find("function CONTROLLABLE:OptionDisperseOnAttack(", 1, true))
+  local last = assert(moose:find("\nfunction CONTROLLABLE:", first + 1, true))
+  local sandbox = {
+    CONTROLLABLE = {},
+    AI = { Option = { Ground = { id = { DISPERSE_ON_ATTACK = 987 } } } },
+  }
+  local chunk = assert(loadstring(moose:sub(first, last - 1)))
+  setfenv(chunk, sandbox)
+  chunk()
+  local sent_option, sent_value
+  local group = {
+    F2 = function() end,
+    GetDCSObject = function()
+      return {}
+    end,
+    _GetController = function()
+      return {}
+    end,
+    IsGround = function()
+      return true
+    end,
+    SetOption = function(_, option, value)
+      sent_option, sent_value = option, value
+    end,
+  }
+  assert(sandbox.CONTROLLABLE.OptionDisperseOnAttack(group, 0) == group)
+  assert(sent_option == 987 and sent_value == 0)
+end)
+test("CAS slot changes before first Blue takeoff are honored; late CAS joins do not change the decision", function()
+  local h = harness({ cas_convoy = true })
+  -- The pilot has switched out of CAS before the first aircraft departs.
+  h.blue_players = { h.player }
+  h.runtime.cas_decision_handler:onEvent({ id = 3, initiator = h.player })
+  assert(h.runtime.cas_convoy.state == "disabled" and h.cas_convoy_spawns == 0)
+  -- A later slot change cannot reverse the frozen no-CAS decision.
+  h.blue_players = { h.raven, h.cas_hornet }
+  h.runtime.cas_decision_handler:onEvent({ id = 3, initiator = h.raven })
+  assert(h.runtime.cas_convoy.state == "disabled" and h.cas_convoy_spawns == 0)
+end)
+test("non-player Blue takeoff does not freeze the CAS decision", function()
+  local h = harness({ cas_convoy = true })
+  h.player.player_name = nil
+  h.runtime.cas_decision_handler:onEvent({ id = 3, initiator = h.player })
+  assert(h.runtime.cas_convoy.state == "waiting_for_first_blue_takeoff")
+  h.player.player_name = "Mule Pilot"
+  h.blue_players = { h.player, h.cas_warthog }
+  h.runtime.cas_decision_handler:onEvent({ id = 3, initiator = h.player })
+  assert(h.runtime.cas_convoy.state == "active" and h.cas_convoy_spawns == 1)
+end)
+test("CAS branch fails closed when its convoy template is absent", function()
+  local h = harness()
+  h.blue_players = { h.player, h.cas_hornet }
+  h.runtime.cas_decision_handler:onEvent({ id = 3, initiator = h.player })
+  assert(h.runtime.cas_convoy.state == "unavailable")
+  assert(h.cas_convoy_spawns == 0 and #h.errors == 0)
+end)
+test("either CAS role starts the convoy first and releases the authored checkpoint only after pickup", function()
+  for _, role in ipairs({ "hornet", "warthog" }) do
+    local h = harness({ cas_convoy = true, cas_checkpoint = true })
+    local pilot = role == "hornet" and h.cas_hornet or h.cas_warthog
+    h.blue_players = { pilot }
+    assert(h.cas_checkpoint_spawns == 0 and h.cas_convoy_spawns == 0)
+    h.runtime.cas_decision_handler:onEvent({ id = 3, initiator = pilot })
+    assert(h.cas_checkpoint_spawns == 0 and h.cas_convoy_spawns == 1)
+    assert(h.runtime.cas_checkpoint.state == "waiting_for_pickup")
+    assert(h.runtime.objective.phase == "waiting" and h.runtime.objective.carrier_id == nil)
+    assert(#h.notices == 1 and not h.notices[1]:find("RPG infantry", 1, true))
+    h:extract()
+    assert(h.runtime.cas_checkpoint.state == "active" and h.cas_checkpoint:GetSize() == 8)
+    assert(h.cas_checkpoint.assigned_task == nil and h.cas_checkpoint.route_target == nil, "Keep the authored patrol")
+    assert(h.cas_checkpoint.disperse_on_attack_s == nil, "Do not apply the vehicle-only dispersal change")
+    assert(h.runtime.objective.phase == "aboard")
+    h.blue_players = { h.cas_hornet, h.cas_warthog }
+    h.runtime.cas_decision_handler:onEvent({ id = 3, initiator = h.player })
+    assert(h.cas_checkpoint_spawns == 1 and h.cas_convoy_spawns == 1)
+  end
+end)
+test("checkpoint stays absent without CAS at first takeoff, including after a late CAS join", function()
+  local h = harness({ cas_convoy = true, cas_checkpoint = true })
+  h.blue_players = { h.player }
+  h.runtime.cas_decision_handler:onEvent({ id = 3, initiator = h.player })
+  assert(h.runtime.cas_checkpoint.state == "disabled")
+  h.blue_players = { h.cas_hornet }
+  h.runtime.cas_decision_handler:onEvent({ id = 3, initiator = h.cas_hornet })
+  h:extract()
+  assert(h.cas_checkpoint_spawns == 0 and h.cas_convoy_spawns == 0)
+end)
+test("slot selection, AI and Red takeoff cannot launch the checkpoint", function()
+  local h = harness({ cas_checkpoint = true })
+  h.blue_players = { h.cas_hornet }
+  h.runtime.cas_decision_handler:onEvent({ id = 15, initiator = h.cas_hornet })
+  h.player.player_name = nil
+  h.runtime.cas_decision_handler:onEvent({ id = 3, initiator = h.player })
+  h.raven.getCoalition = function()
+    return 1
+  end
+  h.runtime.cas_decision_handler:onEvent({ id = 3, initiator = h.raven })
+  assert(h.runtime.cas_checkpoint.state == "waiting_for_first_blue_takeoff" and h.cas_checkpoint_spawns == 0)
+end)
+test("checkpoint spawns independently when the convoy template is absent", function()
+  local h = harness({ cas_checkpoint = true })
+  h.blue_players = { h.cas_warthog }
+  h.runtime.cas_decision_handler:onEvent({ id = 3, initiator = h.player })
+  assert(h.runtime.cas_convoy.state == "unavailable")
+  assert(h.cas_checkpoint_spawns == 0)
+  h:extract()
+  assert(h.runtime.cas_checkpoint.state == "active" and h.cas_checkpoint_spawns == 1 and #h.errors == 0)
+end)
+test("a checkpoint spawn failure does not prevent the convoy or retry on another takeoff", function()
+  local h = harness({ cas_convoy = true, cas_checkpoint = true, checkpoint_spawn_error = true })
+  h.blue_players = { h.cas_hornet }
+  h.runtime.cas_decision_handler:onEvent({ id = 3, initiator = h.player })
+  assert(h.cas_checkpoint_spawns == 0 and #h.errors == 0)
+  h:extract()
+  assert(h.runtime.cas_checkpoint.state == "unavailable" and #h.errors == 1)
+  assert(h.runtime.cas_convoy.state == "active" and h.cas_convoy_spawns == 1)
+  h.runtime.cas_decision_handler:onEvent({ id = 3, initiator = h.cas_hornet })
+  assert(h.cas_checkpoint_spawns == 1 and h.cas_convoy_spawns == 1)
+end)
+local function cap_options(extra)
+  local options = { cap_sam = true, cap_fighters = true, cap_hind = true, player_far = true }
+  for key, value in pairs(extra or {}) do
+    options[key] = value
+  end
+  return options
+end
+local function first_takeoff(h, aircraft)
+  h.runtime.cas_decision_handler:onEvent({ id = 3, initiator = aircraft or h.player })
+end
+local TEST_PICKUP = "TEST: Simulate pickup complete (CAS stage only)"
+test("both real carriers release the checkpoint once only after pinned CTLD confirms the complete party", function()
+  for _, raven in ipairs({ false, true }) do
+    local h = harness({ pinned = true, only_uh60 = raven, cas_convoy = true, cas_checkpoint = true })
+    local unit = raven and h.raven or h.player
+    unit.point = config.pickup
+    h.blue_players = { h.cas_hornet, unit }
+    first_takeoff(h, h.cas_hornet)
+    h:command("Extract waiting personnel", unit)
+    assert(h.runtime.objective.phase == "boarding" and h.cas_checkpoint_spawns == 0)
+    local party = h.groups[h.runtime.objective.party_key]
+    h:flush()
+    assert(h.runtime.objective.phase == "aboard" and h.cas_checkpoint_spawns == 1)
+    assert(h.runtime.cas_checkpoint.release_reason == "pickup_confirmed")
+    assert(not h.runtime.cas_convoy.destroyed, "Convoy clearance must not become an extraction prerequisite")
+    h.runtime.ctld:OnAfterTroopsExtracted("Running", "TroopsExtracted", "Running", {}, unit, party, party.name)
+    h:tick()
+    assert(h.cas_checkpoint_spawns == 1 and #h.errors == 0)
+    local crew_complete, checkpoint
+    for index, path in ipairs(h.sounds) do
+      if path == "Sounds/OHP/boarding-confirm.ogg" or path == "Sounds/OHP/uh60-boarding-complete.ogg" then
+        crew_complete = index
+      elseif path == "Sounds/OHP/overlord-cas-checkpoint-tasking.ogg" then
+        checkpoint = index
+      end
+    end
+    assert(
+      crew_complete and checkpoint and checkpoint > crew_complete,
+      "Crew confirmation must precede checkpoint tasking"
+    )
+  end
+end)
+test("failed boarding never releases or briefs the checkpoint", function()
+  for _, fault in ipairs({ "casualty", "takeoff" }) do
+    local h = harness({ pinned = true, cas_convoy = true, cas_checkpoint = true })
+    h.blue_players = { h.cas_hornet, h.player }
+    first_takeoff(h, h.cas_hornet)
+    h:command("Extract waiting personnel")
+    assert(h.runtime.objective.phase == "boarding" and h.cas_checkpoint_spawns == 0)
+    if fault == "casualty" then
+      h.groups[h.runtime.objective.party_key].size = 2
+    else
+      h.player.airborne = true
+    end
+    h:tick()
+    h:flush()
+    assert(h.runtime.objective.phase == "failed" and h.cas_checkpoint_spawns == 0)
+    for _, path in ipairs(h.sounds) do
+      assert(path ~= "Sounds/OHP/overlord-cas-checkpoint-tasking.ogg")
+    end
+  end
+end)
+test("convoy destruction alone does not release the checkpoint before pickup", function()
+  local h = harness({ cas_convoy = true, cas_checkpoint = true })
+  h.blue_players = { h.cas_hornet }
+  first_takeoff(h, h.cas_hornet)
+  h.cas_convoy.size = 0
+  h:tick()
+  h:flush()
+  assert(h.runtime.cas_convoy.destroyed and h.cas_checkpoint_spawns == 0)
+  assert(h.runtime.cas_checkpoint.state == "waiting_for_pickup")
+end)
+test("solo F10 pickup simulation releases only the checkpoint, without faking cargo, carrier or success", function()
+  for _, pilot_name in ipairs({ "cas_hornet", "cas_warthog" }) do
+    local h = harness({ cas_convoy = true, cas_checkpoint = true, cas_test_menus = true, player_far = true })
+    local pilot = h[pilot_name]
+    h.blue_players = { pilot }
+    first_takeoff(h, pilot)
+    h:command(TEST_PICKUP, pilot)
+    h:flush()
+    assert(h.cas_checkpoint_spawns == 1 and h.runtime.cas_checkpoint.release_reason == "solo_test")
+    assert(h.runtime.objective.phase == "waiting" and h.runtime.objective.carrier_id == nil)
+    assert(h.runtime.carrier_name == nil and next(h.runtime.ctld.Loaded_Cargo) == nil)
+    assert(h.groups[h.runtime.objective.party_key]:GetSize() == 3)
+    h:command(TEST_PICKUP, pilot)
+    assert(h.cas_checkpoint_spawns == 1 and #h.errors == 0)
+    local checkpoint_calls = 0
+    for _, path in ipairs(h.sounds) do
+      if path == "Sounds/OHP/overlord-cas-checkpoint-tasking.ogg" then
+        checkpoint_calls = checkpoint_calls + 1
+      end
+      assert(path ~= "Sounds/OHP/hidden-passage-success.ogg" and not path:find("/boarding-", 1, true))
+    end
+    assert(checkpoint_calls == 1)
+    h:extract() -- A later real extraction still works and cannot duplicate the test stage.
+    h:flush()
+    assert(h.runtime.objective.phase == "aboard" and h.cas_checkpoint_spawns == 1)
+  end
+end)
+test("temporary F10 bypass cannot change a pre-takeoff or frozen no-CAS decision", function()
+  local h = harness({ cas_convoy = true, cas_checkpoint = true, cas_test_menus = true })
+  h.blue_players = { h.cas_hornet }
+  h:command(TEST_PICKUP, h.cas_hornet)
+  assert(h.cas_checkpoint_spawns == 0 and not h.runtime.package_decided)
+  h.blue_players = { h.player }
+  first_takeoff(h)
+  h.blue_players = { h.cas_hornet }
+  h:command(TEST_PICKUP, h.cas_hornet)
+  assert(h.cas_checkpoint_spawns == 0 and h.runtime.cas_checkpoint.state == "disabled")
+end)
+test("temporary F10 bypass rejects multiplayer, wrong CAS group, unreadable roster and terminal missions", function()
+  local options = { cas_convoy = true, cas_checkpoint = true, cas_test_menus = true }
+  local h = harness(options)
+  h.blue_players = { h.cas_hornet }
+  first_takeoff(h, h.cas_hornet)
+  h.blue_players = { h.cas_hornet, h.player }
+  h:command(TEST_PICKUP, h.cas_hornet)
+  h.blue_players = { h.cas_warthog }
+  h:command(TEST_PICKUP, h.cas_hornet)
+  h.blue_players = { h.cas_hornet }
+  options.roster_error = true
+  h:command(TEST_PICKUP, h.cas_hornet)
+  options.roster_error = false
+  h.runtime.objective:fail("test failure")
+  h:command(TEST_PICKUP, h.cas_hornet)
+  assert(h.cas_checkpoint_spawns == 0)
+end)
+test("temporary F10 bypass refuses in-progress boarding and can be disabled cleanly", function()
+  local h = harness({ pinned = true, cas_convoy = true, cas_checkpoint = true, cas_test_menus = true })
+  h.blue_players = { h.cas_hornet }
+  first_takeoff(h, h.cas_hornet)
+  h:command("Extract waiting personnel")
+  h:command(TEST_PICKUP, h.cas_hornet)
+  assert(h.runtime.objective.phase == "boarding" and h.cas_checkpoint_spawns == 0)
+  h.runtime.config.cas.enable_pickup_test_menu = false
+  h:tick()
+  assert(next(h.runtime.cas_test_menus) == nil)
+  h:command(TEST_PICKUP, h.cas_hornet) -- Simulate an already delivered stale callback.
+  assert(h.cas_checkpoint_spawns == 0)
+  h.runtime.config.cas.enable_pickup_test_menu = true
+end)
+test("either CAP role enables only the SAM at the first human Blue takeoff", function()
+  for _, role in ipairs({ "hornet", "viper" }) do
+    local h = harness(cap_options())
+    h.blue_players = { h["cap_" .. role] }
+    assert(h.runtime.cap.state == "waiting_for_first_blue_takeoff" and h.cap_spawns.sam == 0)
+    first_takeoff(h)
+    assert(h.runtime.cap.state == "sam_active" and h.runtime.cap.slot == h["cap_" .. role].group_name)
+    assert(h.cap_spawns.sam == 1 and h.cap_spawns.fighters == 0 and h.cap_spawns.hind == 0)
+    assert(h.runtime.cap.fighters.state == "waiting_for_sam" and h.runtime.cap.hind.state == "waiting_for_sam")
+    assert(h.runtime.cas_convoy.state == "disabled" and h.runtime.cas_checkpoint.state == "disabled")
+    assert(#h.notices == 1 and h.notices[1]:find("Destroy its tracking radar", 1, true))
+    first_takeoff(h, h["cap_" .. role])
+    assert(h.cap_spawns.sam == 1 and h.roster_reads == 1)
+  end
+end)
+test("both CAP seats produce one SAM and one air response with no respawn on later takeoffs", function()
+  local h = harness(cap_options())
+  h.blue_players = { h.cap_hornet, h.cap_viper }
+  first_takeoff(h)
+  h.radars[1].life = 0
+  h:cap_tick()
+  assert(h.runtime.cap.state == "air_response" and h.runtime.cap.sam.state == "neutralised")
+  assert(h.cap_spawns.sam == 1 and h.cap_spawns.fighters == 1 and h.cap_spawns.hind == 1)
+  assert(h.cap_fighters:GetSize() == 2 and h.cap_hind:GetSize() == 1)
+  assert(h.cap_sam:GetSize() == 9, "Live launchers and trucks must not delay the response")
+  assert(#h.notices == 1, "Outcome texts must not bypass Overlord's pause")
+  h:flush()
+  assert(#h.notices == 3, "Hind tasking waits for both fighters to be destroyed")
+  local observer = h.runtime.cap.observer
+  for _ = 1, 3 do
+    h:cap_tick()
+    first_takeoff(h, h.cap_viper)
+  end
+  assert(h.runtime.cap.observer == observer, "Do not re-arm the watch after radar destruction")
+  assert(h.cap_spawns.sam == 1 and h.cap_spawns.fighters == 1 and h.cap_spawns.hind == 1)
+  h.cap_fighters.size, h.cap_hind.size = 0, 0
+  first_takeoff(h)
+  assert(h.cap_spawns.fighters == 1 and h.cap_spawns.hind == 1, "Never replace aircraft losses")
+end)
+test("SAM damage, radar silence and support-vehicle losses do not release the air response", function()
+  local h = harness(cap_options())
+  h.blue_players = { h.cap_hornet }
+  first_takeoff(h)
+  local previous = h.runtime.cap.observer
+  h.radars[1].life, h.radars[1].emitting = 1, false
+  h.cap_sam.size = 1 -- Only the tracking radar remains.
+  h:cap_tick()
+  assert(h.runtime.cap.state == "sam_active" and h.cap_spawns.fighters == 0 and h.cap_spawns.hind == 0)
+  assert(h.runtime.cap.observer ~= previous, "An intact radar needs another observation")
+  h.radars[1].life = 0.5 -- DCS considers life < 1 destroyed, even before wreck removal.
+  h:cap_tick()
+  assert(h.cap_spawns.fighters == 1 and h.cap_spawns.hind == 1)
+end)
+test("a despawned radar wrapper also releases the response without querying a stale life object", function()
+  local h = harness(cap_options())
+  h.blue_players = { h.cap_viper }
+  first_takeoff(h)
+  h.radars[1].alive = false
+  h.radars[1].GetLife = function()
+    error("Removed unit must not be queried")
+  end
+  h:cap_tick()
+  assert(h.cap_spawns.fighters == 1 and h.cap_spawns.hind == 1 and #h.errors == 0)
+end)
+test("all tracked radars must be destroyed when the SAM template contains more than one", function()
+  local h = harness(cap_options({ cap_radar_count = 2 }))
+  h.blue_players = { h.cap_hornet }
+  first_takeoff(h)
+  assert(#h.runtime.cap.radars == 2)
+  h.radars[1].life = 0
+  h:cap_tick()
+  assert(h.cap_spawns.fighters == 0 and h.cap_spawns.hind == 0)
+  h.radars[2].life = 0
+  h:cap_tick()
+  assert(h.cap_spawns.fighters == 1 and h.cap_spawns.hind == 1)
+end)
+test("no CAP at the snapshot leaves every CAP threat inactive even after a late join", function()
+  local h = harness(cap_options())
+  h.blue_players = { h.player }
+  first_takeoff(h)
+  h.blue_players = { h.cap_hornet }
+  first_takeoff(h, h.cap_hornet)
+  assert(h.runtime.cap.state == "disabled" and h.runtime.cap.sam.state == "disabled")
+  assert(h.runtime.cap.fighters.state == "disabled" and h.runtime.cap.hind.state == "disabled")
+  assert(h.cap_spawns.sam == 0 and h.cap_spawns.fighters == 0 and h.cap_spawns.hind == 0)
+  assert(h.runtime.cap.observer == nil and h.roster_reads == 1)
+end)
+test(
+  "CAP slot switching before takeoff is honored and the departing CAP pilot counts even if absent from roster",
+  function()
+    local h = harness(cap_options())
+    h.blue_players = { h.cap_hornet }
+    h.runtime.cas_decision_handler:onEvent({ id = 15, initiator = h.cap_hornet })
+    h.blue_players = { h.player }
+    first_takeoff(h)
+    assert(h.cap_spawns.sam == 0)
+    h = harness(cap_options())
+    h.blue_players = {}
+    first_takeoff(h, h.cap_viper)
+    assert(h.cap_spawns.sam == 1 and h.runtime.cap.slot == "CAP-Viper")
+  end
+)
+test("wrong type, empty CAP seat, AI, Red and malformed events cannot enable CAP", function()
+  local h = harness(cap_options())
+  h.blue_players = { h.cap_hornet }
+  for _, event in ipairs({ {}, { id = 3 }, { id = 15, initiator = h.cap_hornet } }) do
+    h.runtime.cas_decision_handler:onEvent(event)
+  end
+  h.cap_hornet.player_name = ""
+  first_takeoff(h, h.cap_hornet)
+  h.cap_hornet.player_name = "CAP Pilot"
+  h.cap_hornet.getCoalition = function()
+    return 1
+  end
+  first_takeoff(h, h.cap_hornet)
+  assert(not h.runtime.package_decided and h.cap_spawns.sam == 0)
+  h.blue_players = { h.cap_viper }
+  h.cap_viper.type_name = "F-5E-3"
+  first_takeoff(h)
+  assert(h.runtime.cap.state == "disabled")
+end)
+test("CAS and CAP share exactly one frozen roster and both CAS ground threats remain operational", function()
+  local h = harness(cap_options({ cas_convoy = true, cas_checkpoint = true }))
+  h.blue_players = { h.cas_warthog, h.cap_viper }
+  first_takeoff(h)
+  assert(
+    h.roster_reads == 1 and h.runtime.package_slots.cas == "CAS-Warthog" and h.runtime.package_slots.cap == "CAP-Viper"
+  )
+  assert(h.cas_convoy_spawns == 1 and h.cas_checkpoint_spawns == 0 and h.cap_spawns.sam == 1)
+  h.blue_players = {}
+  h.radars[1].life = 0
+  h:cap_tick()
+  assert(h.cap_spawns.fighters == 1 and h.cap_spawns.hind == 1, "Slot departure does not undo the frozen decision")
+  assert(h.cas_convoy_spawns == 1 and h.cas_checkpoint_spawns == 0 and h.cas_convoy.disperse_on_attack_s == 0)
+  assert(h.runtime.objective.phase == "waiting", "CAP must not introduce an extraction gate")
+  h:extract()
+  assert(h.cas_checkpoint_spawns == 1, "Frozen CAS eligibility survives its pilot leaving")
+end)
+test("missing CAS templates cannot prevent the independently selected CAP branch", function()
+  local h = harness(cap_options())
+  h.blue_players = { h.cas_hornet, h.cap_hornet }
+  first_takeoff(h)
+  assert(h.runtime.cas_convoy.state == "unavailable" and h.runtime.cas_checkpoint.state == "waiting_for_pickup")
+  assert(h.runtime.cap.state == "sam_active" and h.cap_spawns.sam == 1)
+  h.radars[1].life = 0
+  h:cap_tick()
+  assert(h.cap_spawns.fighters == 1 and h.cap_spawns.hind == 1)
+end)
+test("CAS-only participation leaves CAP threats inactive", function()
+  local h = harness(cap_options({ cas_convoy = true, cas_checkpoint = true }))
+  h.blue_players = { h.cas_hornet }
+  first_takeoff(h)
+  assert(h.cas_convoy_spawns == 1 and h.cas_checkpoint_spawns == 0)
+  assert(h.runtime.cap.state == "disabled" and h.cap_spawns.sam == 0)
+end)
+test("unreadable or invalid roster fails both branches closed and never retries the snapshot", function()
+  for _, fault in ipairs({ "roster_error", "roster_invalid" }) do
+    local options = cap_options({ cas_convoy = true, cas_checkpoint = true })
+    options[fault] = true
+    local h = harness(options)
+    h.blue_players = { h.cap_hornet, h.cas_hornet }
+    first_takeoff(h)
+    first_takeoff(h, h.cap_hornet)
+    assert(h.roster_reads == 1 and h.runtime.cap.state == "unavailable" and h.runtime.cas_convoy.state == "unavailable")
+    assert(h.cas_convoy_spawns == 0 and h.cas_checkpoint_spawns == 0 and h.cap_spawns.sam == 0)
+  end
+end)
+test("missing or failed SAM holds aircraft back without blocking the CAS branch", function()
+  for _, fault in ipairs({ "missing", "cap_sam_spawn_error", "cap_sam_spawn_nil", "cap_sam_spawn_dead" }) do
+    local options = cap_options({ cas_convoy = true, cas_checkpoint = true })
+    if fault == "missing" then
+      options.cap_sam = false
+    else
+      options[fault] = true
+    end
+    local h = harness(options)
+    h.blue_players = { h.cap_hornet, h.cas_hornet }
+    first_takeoff(h)
+    assert(h.runtime.cap.state == "unavailable" and h.runtime.cap.observer == nil)
+    assert(h.cap_spawns.fighters == 0 and h.cap_spawns.hind == 0)
+    assert(h.cas_convoy_spawns == 1 and h.cas_checkpoint_spawns == 0)
+  end
+end)
+test("missing radar or unavailable SAM units cannot falsely release the air response", function()
+  for _, extra in ipairs({ { cap_radar_count = 0 }, { cap_units_unavailable = true } }) do
+    local h = harness(cap_options(extra))
+    h.blue_players = { h.cap_viper }
+    first_takeoff(h)
+    assert(h.runtime.cap.state == "unavailable" and h.runtime.cap.observer == nil and #h.errors == 1)
+    assert(h.cap_spawns.fighters == 0 and h.cap_spawns.hind == 0)
+  end
+end)
+test("a transient radar API error fails closed, logs once per episode and recovers", function()
+  local h = harness(cap_options())
+  h.blue_players = { h.cap_hornet }
+  first_takeoff(h)
+  h.radar_observation_error = true
+  h:cap_tick()
+  h:cap_tick()
+  assert(#h.errors == 1 and h.runtime.cap.state == "sam_active" and h.cap_spawns.fighters == 0)
+  h.radar_observation_error = false
+  h.radars[1].life = 0
+  h:cap_tick()
+  assert(h.cap_spawns.fighters == 1 and h.cap_spawns.hind == 1)
+end)
+test("either air template can fail independently and never be retried", function()
+  for _, role in ipairs({ "fighters", "hind" }) do
+    for _, fault in ipairs({ "missing", "spawn_error", "spawn_nil", "spawn_dead" }) do
+      local options = cap_options()
+      if fault == "missing" then
+        options["cap_" .. role] = false
+      else
+        options["cap_" .. role .. "_" .. fault] = true
+      end
+      local h = harness(options)
+      h.blue_players = { h.cap_viper }
+      first_takeoff(h)
+      h.radars[1].life = 0
+      h:cap_tick()
+      local other = role == "fighters" and "hind" or "fighters"
+      if fault == "spawn_dead" then
+        assert(h.runtime.cap[role].state == "spawning", "Do not reject an asynchronous aircraft birth")
+        h:advance(config.cap.spawn_ready_timeout_s)
+        h.runtime.cap[role].readiness_timer.run()
+      end
+      assert(h.runtime.cap[role].state == "unavailable" and h.runtime.cap[other].state == "active")
+      assert(h.cap_spawns[other] == 1)
+      local attempts = h.cap_spawns[role]
+      h:cap_tick()
+      first_takeoff(h)
+      assert(h.cap_spawns[role] == attempts and h.cap_spawns[other] == 1)
+    end
+  end
+end)
+test("CAP keeps authored tasks, skills, dispersal and vulnerability unchanged", function()
+  local h = harness(cap_options())
+  h.blue_players = { h.cap_hornet }
+  first_takeoff(h)
+  h.radars[1].life = 0
+  h:cap_tick()
+  for _, g in ipairs({ h.cap_sam, h.cap_fighters, h.cap_hind }) do
+    assert(g.assigned_task == nil and g.route_target == nil and g.disperse_on_attack_s == nil)
+  end
+  assert(#(h.group_commands or {}) == 0, "Do not add immortality or forced AI commands")
+end)
+test("pinned MOOSE radar wrappers distinguish live, cooking-off and removed DCS units", function()
+  local sandbox = { UNIT = {} }
+  for _, name in ipairs({ "IsAlive", "GetLife" }) do
+    local first = assert(moose:find("function UNIT:" .. name .. "(", 1, true))
+    local last = assert(moose:find("\nfunction UNIT:", first + 1, true))
+    local chunk = assert(loadstring(moose:sub(first, last - 1)))
+    setfenv(chunk, sandbox)
+    chunk()
+  end
+  local exists, active, life = true, true, 100
+  local dcs = {
+    isExist = function()
+      return exists
+    end,
+    isActive = function()
+      return active
+    end,
+    getLife = function()
+      return life
+    end,
+  }
+  local wrapper = {
+    GetDCSObject = function()
+      return exists and dcs or nil
+    end,
+  }
+  assert(sandbox.UNIT.IsAlive(wrapper) and sandbox.UNIT.GetLife(wrapper) == 100)
+  life = 0
+  assert(
+    sandbox.UNIT.IsAlive(wrapper) and sandbox.UNIT.GetLife(wrapper) == 0,
+    "A retained wreck can still appear active"
+  )
+  exists = false
+  assert(not sandbox.UNIT.IsAlive(wrapper) and sandbox.UNIT.GetLife(wrapper) == -1)
+end)
+test(
+  "pinned MOOSE spawning changes only approved fighter departure while preserving airborne routes and payloads",
+  function()
+    local function copy(value)
+      if type(value) ~= "table" then
+        return value
+      end
+      local result = {}
+      for key, item in pairs(value) do
+        result[key] = copy(item)
+      end
+      return result
+    end
+    local function equal(a, b)
+      if type(a) ~= "table" or type(b) ~= "table" then
+        return a == b
+      end
+      for key, item in pairs(a) do
+        if not equal(item, b[key]) then
+          return false
+        end
+      end
+      for key in pairs(b) do
+        if a[key] == nil then
+          return false
+        end
+      end
+      return true
+    end
+    local templates = {}
+    for _, country in pairs(archive_mission and archive_mission.coalition.red.country or {}) do
+      for _, category in ipairs({ "plane", "helicopter" }) do
+        for _, g in pairs(country[category] and country[category].group or {}) do
+          if g.name == config.cap.fighters_template or g.name == config.cap.hind_template then
+            templates[#templates + 1] = g
+          end
+        end
+      end
+    end
+    if #templates == 0 then
+      templates = {
+        {
+          name = "pin-aircraft",
+          groupId = 44,
+          lateActivation = true,
+          x = 10,
+          y = 20,
+          units = {
+            {
+              name = "pin-unit",
+              unitId = 45,
+              type = "Mi-24V",
+              skill = "High",
+              parking = 4,
+              payload = { pylons = { { CLSID = "test-rocket" } }, fuel = 100 },
+            },
+          },
+          route = {
+            points = {
+              {
+                type = "TakeOffParkingHot",
+                action = "From Parking Area Hot",
+                airdromeId = 3,
+                x = 10,
+                y = 20,
+                alt = 50,
+              },
+              { type = "Turning Point", x = 1000, y = 2000, task = { id = "ComboTask", params = { tasks = {} } } },
+            },
+          },
+        },
+      }
+      local fighter = copy(templates[1])
+      fighter.name = config.cap.fighters_template
+      fighter.units[1].type = "MiG-29 Fulcrum"
+      fighter.units[1].x, fighter.units[1].y = 10, 20
+      fighter.units[2] = copy(fighter.units[1])
+      fighter.units[2].name, fighter.units[2].unitId = "pin-wingman", 46
+      fighter.units[2].x, fighter.units[2].y = 12, 22
+      templates[#templates + 1] = fighter
+    end
+    local sandbox = {
+      SPAWN = { Takeoff = { Air = 1, Runway = 2, Hot = 3 } },
+      GROUP = { Takeoff = { Air = 1 } },
+      GROUPTEMPLATE = { Takeoff = { [2] = { "TakeOff", "From Runway" } } },
+      Airbase = { Category = { SHIP = 2, HELIPAD = 1 } },
+      AIRBASE = { TerminalType = { Runway = 16 } },
+      table = table,
+      Group = { Category = { GROUND = 2 } },
+      string = string,
+      pairs = pairs,
+      ipairs = ipairs,
+      math = math,
+      type = type,
+      tostring = tostring,
+      COORDINATE = {
+        New = function()
+          return {}
+        end,
+      },
+      EVENTS = { Birth = 1, Crash = 2, UnitLost = 3, RemoveUnit = 4 },
+    }
+    for _, name in ipairs({ "_Prepare", "Spawn", "SpawnWithIndex", "SpawnAtAirbase" }) do
+      local first = assert(moose:find("function SPAWN:" .. name .. "(", 1, true))
+      local last = assert(moose:find("\nfunction SPAWN:", first + 1, true))
+      local chunk = assert(loadstring(moose:sub(first, last - 1)))
+      setfenv(chunk, sandbox)
+      chunk()
+    end
+    for _, authored in ipairs(templates) do
+      local original = copy(authored)
+      local self = setmetatable({
+        SpawnInitKeepUnitNames = false,
+        SpawnTemplatePrefix = authored.name,
+        SpawnIndex = 0,
+        AIOnOff = true,
+        _GetTemplate = function()
+          return copy(authored)
+        end,
+        SpawnGroupName = function()
+          return authored.name .. "#001"
+        end,
+        T3 = function() end,
+        HandleEvent = function() end,
+        _GetSpawnIndex = function(self, index)
+          self.SpawnIndex = index
+          return true
+        end,
+      }, { __index = sandbox.SPAWN })
+      local prepared = self:_Prepare(authored.name, 1)
+      self.SpawnGroups = { { SpawnTemplate = prepared } }
+      local sent
+      local wrapper = {
+        SetAIOnOff = function(_, value)
+          assert(value == true)
+        end,
+      }
+      sandbox._DATABASE = {
+        Spawn = function(_, template)
+          sent = template
+          return wrapper
+        end,
+      }
+      local runway = authored.name == config.cap.fighters_template and config.cap.fighters_runway_start
+      if runway then
+        local unit = {
+          HasAttribute = function()
+            return false
+          end,
+        }
+        sandbox.GROUP.FindByName = function(_, name)
+          assert(name == authored.name)
+          return {
+            GetUnit = function()
+              return unit
+            end,
+            HasAttribute = function(_, attribute)
+              return attribute == "Fighters"
+            end,
+          }
+        end
+        local first = original.route.points[1]
+        local airbase = {
+          isAirdrome = true,
+          GetCoordinate = function()
+            return { x = 110, z = 220, y = 50 }
+          end,
+          GetID = function()
+            return first.airdromeId
+          end,
+          GetAirbaseCategory = function()
+            return 0
+          end,
+          FindFreeParkingSpotForAircraft = function(_, _, terminal, _, _, _, _, _, nunits)
+            assert(terminal == sandbox.AIRBASE.TerminalType.Runway and nunits == #original.units)
+            local spots = {}
+            for i = 1, nunits do
+              spots[i] = { Coordinate = { x = 110 + i * 20, z = 220, y = 50 }, TerminalID = 900 + i }
+            end
+            return spots
+          end,
+        }
+        assert(self:SpawnAtAirbase(airbase, sandbox.SPAWN.Takeoff.Runway, nil, nil, false) == wrapper)
+      else
+        assert(self:Spawn() == wrapper)
+      end
+      assert(sent == prepared)
+      assert(sent.lateActivation == false and sent.groupId == nil)
+      local expected_route = copy(original.route)
+      if runway then
+        assert(sent.route.points[1].type == "TakeOff" and sent.route.points[1].action == "From Runway")
+        assert(sent.route.points[1].airdromeId == original.route.points[1].airdromeId)
+        for _, field in ipairs({ "type", "action", "x", "y", "alt" }) do
+          expected_route.points[1][field] = sent.route.points[1][field]
+        end
+      else
+        assert(sent.x == original.x and sent.y == original.y)
+      end
+      assert(equal(sent.route, expected_route), "Preserve airborne waypoints, departure tasks and airfield")
+      for i, unit in ipairs(sent.units) do
+        local expected = original.units[i]
+        assert(equal(unit.payload, expected.payload) and unit.skill == expected.skill and unit.type == expected.type)
+        if runway then
+          assert(unit.parking == 900 + i and unit.parking_id == nil)
+        else
+          assert(unit.parking == expected.parking and unit.parking_id == expected.parking_id)
+          assert(unit.x == expected.x and unit.y == expected.y)
+        end
+      end
+      assert(equal(authored, original), "Leave the dormant editor template untouched")
+    end
+  end
+)
 local function outbound_position(unit, fraction, sideways)
   unit.point = {
     x = config.receiving.x + fraction * (config.pickup.x - config.receiving.x) + (sideways or 0),
@@ -850,7 +1968,7 @@ end
 local function depart(h, unit)
   outbound_position(unit, 0)
   unit.airborne = true
-  h.event_handlers[1]:onEvent({ id = 3, initiator = unit })
+  transport_takeoff_handler(h):onEvent({ id = 3, initiator = unit })
 end
 local function warning_count(h)
   local count = 0
@@ -900,7 +2018,12 @@ test("either helicopter crossing the configured pre-pickup point broadcasts once
     h.runtime.hvt_under_fire_observer.run()
     h:flush()
     assert(warning_count(h) == 1 and #h.errors == 0)
-    assert(h.sound_targets[#h.sounds] == "coalition" and h.notice_targets[#h.notices] == "coalition")
+    for i, path in ipairs(h.sounds) do
+      if path == "Sounds/OHP/mule-one-hvt-under-fire.ogg" then
+        assert(h.sound_targets[i] == "coalition")
+      end
+    end
+    assert(h.notice_targets[#h.notices] == "coalition")
   end
 end)
 test("long routes use 3 NM while the short Testing route retains its halfway trigger", function()
@@ -924,7 +2047,9 @@ test("Enemies stage at mission start, move at the pre-pickup trigger, then enter
   assert(h.opposition:IsAlive() and h.opposition.assigned_task.id == "Hold")
   local staged_distance =
     math.sqrt((h.opposition:GetVec2().x - party:GetVec2().x) ^ 2 + (h.opposition:GetVec2().y - party:GetVec2().y) ^ 2)
-  assert(staged_distance > config.firefight.fire_start_distance_m)
+  assert(staged_distance > 0)
+  h:tick()
+  assert(fight.state == "staged", "Even a nearby staged group must wait for the inbound trigger")
 
   approach_firefight(h)
   assert(h.opposition.route_target.x == fight.fire_position.x and h.opposition.route_target.y == fight.fire_position.y)
@@ -955,6 +2080,44 @@ test("Enemies stage at mission start, move at the pre-pickup trigger, then enter
   assert(h.runtime.firefight.state == "active" and h.opposition:IsAlive())
   assert(h.group_commands[#h.group_commands].group == party)
   assert(h.group_commands[#h.group_commands].command.params.value, "HVTs must remain protected after they stop firing")
+end)
+test("live-run infantry stalled outside 300 m now start contact without needing to close further", function()
+  local h = harness({ firefight = true })
+  approach_firefight(h)
+  h.opposition.point = { x = config.personnel.x + 166.83, y = config.personnel.y - 313.66 } -- Live lead offset.
+  h:tick()
+  h:flush()
+  assert(h.runtime.firefight.state == "active" and h.opposition.roe == "open")
+  local calls = 0
+  for _, path in ipairs(h.sounds) do
+    if path == "Sounds/OHP/hvt-taking-fire.ogg" then
+      calls = calls + 1
+    end
+  end
+  assert(calls == 1 and #h.errors == 0)
+end)
+test("nearest surviving soldier starts contact even if the group leader remains outside 400 m", function()
+  local h = harness({ firefight = true })
+  approach_firefight(h)
+  local function soldier(distance, life)
+    return {
+      GetLife = function()
+        return life
+      end,
+      GetVec2 = function()
+        return { x = config.personnel.x + distance, y = config.personnel.y }
+      end,
+    }
+  end
+  h.opposition.point = { x = config.personnel.x + 450, y = config.personnel.y }
+  h.opposition.units_override = { soldier(450, 100), soldier(200, 0), soldier(100, -1) }
+  h:tick()
+  assert(h.runtime.firefight.state == "approaching", "Dead/missing soldiers must not trigger contact")
+  h.opposition.units_override[4] = soldier(400, 100)
+  h:tick()
+  assert(h.runtime.firefight.state == "active")
+  h:tick()
+  assert(h.runtime.firefight.started_at == h.now and #h.errors == 0)
 end)
 test("The auto-suffixed primary template is selected with its full editor unit count", function()
   local h = harness({ firefight = true, firefight_alias = true, firefight_unit_count = 8 })
@@ -1066,7 +2229,7 @@ test("pickup/return takeoffs cannot arm the contact warning", function()
   local h = harness()
   h.player.airborne = true
   outbound_position(h.player, 1)
-  h.event_handlers[1]:onEvent({ id = 3, initiator = h.player })
+  transport_takeoff_handler(h):onEvent({ id = 3, initiator = h.player })
   outbound_position(h.player, 0.9)
   h.runtime.hvt_under_fire_observer.run()
   outbound_position(h.player, 0.8)
@@ -1168,7 +2331,11 @@ test("setup errors are logged and surfaced", function()
     { steep = true },
     { missing_zone = config.pickup_zone },
     { missing_zone = config.personnel_zone },
-    { zone_points = { [config.personnel_zone] = { x = config.pickup.x + 110, y = config.pickup.y } } },
+    {
+      zone_points = {
+        [config.personnel_zone] = { x = config.pickup.x + config.extraction_distance_m + 5, y = config.pickup.y },
+      },
+    },
     { zone_points = { [config.personnel_zone] = { x = config.pickup.x + 20, y = config.pickup.y } } },
   }) do
     local h = harness(opts)
@@ -1282,7 +2449,15 @@ test("terminal or injured attempts cannot auto-board", function()
       h.runtime.objective.phase = mode
     end
     h:observe_for(5)
-    assert(not h.boarding_due and #h.sounds == 0 and #h.errors == 0, mode)
+    assert(not h.boarding_due and #h.errors == 0, mode)
+    if mode == "complete" then
+      assert(#h.sounds == 0)
+    else
+      assert(#h.sounds == 0, "Failure report must wait; failure itself must not")
+      h:advance(config.overlord_confirmation_delay_s)
+      h:tick()
+      assert(#h.sounds == 1 and h.sounds[1] == "Sounds/OHP/overlord-extraction-failed.ogg")
+    end
   end
 end)
 test("automatic pickup follows relocated runtime zones, not embedded coordinate snapshots", function()
@@ -1529,7 +2704,7 @@ test("status and map labels use operational names and runtime distance", functio
   local distance = math.sqrt((config.pickup.x - config.receiving.x) ^ 2 + (config.pickup.y - config.receiving.y) ^ 2)
     / 1852
   assert(text:find(string.format("%.1f NM", distance), 1, true))
-  assert(text:find("105 m", 1, true) and text:find("35 m clear", 1, true))
+  assert(text:find("125 m", 1, true) and text:find("35 m clear", 1, true))
   assert(#h.marks == 3)
   for _, mark in ipairs(h.marks) do
     assert(not mark:find("TEST", 1, true) and not mark:find("north", 1, true))
@@ -1572,6 +2747,33 @@ test("focused menu uses pinned CTLD for the complete loop", function()
   h:command("Unload personnel")
   h:flush()
   assert(h.runtime.objective.phase == "complete" and #h.errors == 0)
+end)
+test("live touchdown and widened LZ edge board through pinned CTLD in either helicopter", function()
+  for _, raven in ipairs({ false, true }) do
+    for _, point in ipairs({
+      { x = config.personnel.x + 80.68, y = config.personnel.y + 71.13 }, -- Live touchdown offset: 107.6 m.
+      { x = config.personnel.x, y = config.personnel.y + 124.9 },
+    }) do
+      local h = harness({ pinned = true, only_uh60 = raven })
+      local unit = raven and h.raven or h.player
+      unit.point = point
+      h:observe_for(2)
+      assert(h.runtime.objective.phase == "boarding")
+      assert(h.runtime.ctld.CrateDistance * h.runtime.ctld.ExtractFactor == 125)
+      h:flush()
+      assert(h.runtime.objective.phase == "aboard" and #h.errors == 0)
+    end
+  end
+end)
+test("widened pickup still rejects just outside 125 m through both automatic and manual entry", function()
+  for _, raven in ipairs({ false, true }) do
+    local h = harness({ pinned = true, only_uh60 = raven })
+    local unit = raven and h.raven or h.player
+    unit.point = { x = config.personnel.x, y = config.personnel.y + 125.1 }
+    h:observe_for(3)
+    h:command("Extract waiting personnel", unit)
+    assert(h.runtime.objective.phase == "waiting" and not h.boarding_due and #h.errors == 0)
+  end
 end)
 test("extraction too close to any person is blocked", function()
   local h = harness({ pinned = true })
@@ -1795,6 +2997,751 @@ test("re-slot after failure has usable status but cannot resume or reset", funct
   h:command("Unload personnel")
   assert(h.notices[#h.notices]:find("Restart the mission", 1, true))
   assert(not h.notices[#h.notices]:find("Not confirmed aboard", 1, true))
+end)
+local function sound_count(h, basename)
+  local total = 0
+  for _, path in ipairs(h.sounds) do
+    if path == "Sounds/OHP/" .. basename .. ".ogg" then
+      total = total + 1
+    end
+  end
+  return total
+end
+local function report_for(h, id)
+  for _, report in ipairs(h.runtime.threat_reports) do
+    if report.id == id then
+      return report
+    end
+  end
+  error("Missing report " .. id)
+end
+local duration_by_file = {}
+do
+  local f = assert(io.open("src/missions/operation-hidden-passage/voice.lua", "rb"))
+  local source = f:read("*a")
+  f:close()
+  for file, duration in source:gmatch('file%s*=%s*"([^"]+)".-duration%s*=%s*([%d%.]+)') do
+    duration_by_file[file] = tonumber(duration)
+  end
+end
+local function no_overlap(h)
+  for i = 2, #h.sounds do
+    assert(
+      h.sound_times[i] + 0.001 >= h.sound_times[i - 1] + assert(duration_by_file[h.sounds[i - 1]]) + 0.35,
+      "Overlapping clips: " .. h.sounds[i - 1] .. " / " .. h.sounds[i]
+    )
+  end
+end
+test("combined participation voices taskings and destruction reports without speaking for departing pilots", function()
+  local h = harness(cap_options({ cas_convoy = true, cas_checkpoint = true }))
+  h.blue_players = { h.cap_hornet, h.cas_hornet, h.cap_viper, h.cas_warthog }
+  first_takeoff(h, h.cap_hornet)
+  h:flush()
+  first_takeoff(h, h.cas_hornet)
+  h:flush()
+  first_takeoff(h, h.cas_warthog)
+  first_takeoff(h, h.cap_viper)
+  h.radars[1].life = 0
+  h:cap_tick()
+  h:flush()
+  assert(h.cas_checkpoint_spawns == 0)
+  h:extract()
+  h:flush()
+  h.cas_convoy.size, h.cas_checkpoint.size, h.cap_fighters.size = 0, 0, 0
+  h:tick()
+  h:flush() -- Fighters cleared; the already-active Hind now gets its existing tasking.
+  h.cap_hind.size = 0
+  h:tick()
+  h:flush()
+  h:tick()
+  h:flush()
+  for _, name in ipairs({
+    "overlord-cas-convoy-tasking",
+    "overlord-cas-checkpoint-tasking",
+    "overlord-sead-tasking",
+    "overlord-kub-neutralised",
+    "overlord-fighters-launching",
+    "overlord-hind-launching",
+    "cas-convoy-destroyed",
+    "cas-checkpoint-cleared",
+    "cap-fighters-destroyed",
+    "cap-hind-destroyed",
+  }) do
+    assert(sound_count(h, name) == 1, name)
+  end
+  assert(#h.sounds == 13 and #h.errors == 0)
+  assert(sound_count(h, "cas-departure") == 0 and sound_count(h, "cap-departure") == 0)
+  for index, target in ipairs(h.sound_targets) do
+    local crew = h.sounds[index]:find("/boarding-", 1, true)
+    assert(target == (crew and h.player.id or "coalition"))
+  end
+  assert(h.runtime.objective.phase == "aboard", "Reports must not complete or gate delivery")
+  no_overlap(h)
+end)
+test("helicopter-only and late fighter joins produce no optional-role voice traffic", function()
+  local h = harness(cap_options({ cas_convoy = true, cas_checkpoint = true }))
+  h.blue_players = { h.player }
+  first_takeoff(h)
+  h.blue_players = { h.cap_hornet, h.cas_hornet }
+  first_takeoff(h, h.cap_hornet)
+  first_takeoff(h, h.cas_hornet)
+  h:tick()
+  h:flush()
+  assert(#h.sounds == 0 and #h.runtime.threat_reports == 0)
+end)
+test("CAS-only and CAP-only calls remain independent", function()
+  local h = harness(cap_options({ cas_convoy = true, cas_checkpoint = true }))
+  h.blue_players = { h.cas_warthog }
+  first_takeoff(h, h.cas_warthog)
+  h:flush()
+  assert(sound_count(h, "cas-departure") == 0 and sound_count(h, "cap-departure") == 0)
+  assert(sound_count(h, "overlord-cas-convoy-tasking") == 1)
+  assert(sound_count(h, "overlord-sead-tasking") == 0)
+  h = harness(cap_options({ cas_convoy = true, cas_checkpoint = true }))
+  h.blue_players = { h.cap_viper }
+  first_takeoff(h, h.cap_viper)
+  h:flush()
+  assert(sound_count(h, "cap-departure") == 0 and sound_count(h, "cas-departure") == 0)
+  assert(sound_count(h, "overlord-sead-tasking") == 1)
+  assert(sound_count(h, "overlord-cas-convoy-tasking") == 0)
+end)
+test("failed enemy spawns never announce a successful launch", function()
+  local h = harness(cap_options({ cap_fighters_spawn_error = true }))
+  h.blue_players = { h.cap_hornet }
+  first_takeoff(h)
+  h:flush()
+  h.radars[1].life = 0
+  h:cap_tick()
+  h:flush()
+  assert(sound_count(h, "overlord-kub-neutralised") == 1)
+  assert(sound_count(h, "overlord-fighters-launching") == 0 and sound_count(h, "overlord-hind-launching") == 0)
+  assert(h.runtime.cap.hind.state == "active", "Hind still spawns, but missing fighters are not confirmed destroyed")
+end)
+test("CAP tasking and radar transition remain voiced with pilot departure removed", function()
+  local h = harness(cap_options())
+  h.blue_players = { h.cap_hornet }
+  first_takeoff(h, h.cap_hornet)
+  h.radars[1].life = 0
+  h:cap_tick()
+  h:flush()
+  assert(sound_count(h, "cap-departure") == 0 and sound_count(h, "overlord-kub-neutralised") == 1)
+  no_overlap(h)
+end)
+test(
+  "first and repeated CAS/CAP takeoffs never play pilot departure clips, including before re-slot or landing",
+  function()
+    for _, mode in ipairs({ "airborne", "left", "landed" }) do
+      local h = harness(cap_options({ cas_convoy = true, cas_checkpoint = true }))
+      h.blue_players = { h.cap_hornet, h.cas_hornet }
+      first_takeoff(h, h.cap_hornet)
+      first_takeoff(h, h.cas_hornet)
+      first_takeoff(h, h.cap_hornet)
+      first_takeoff(h, h.cas_hornet)
+      if mode == "left" then
+        h.cap_hornet.player_name, h.cas_hornet.player_name = nil, nil
+      elseif mode == "landed" then
+        h.cap_hornet.airborne, h.cas_hornet.airborne = false, false
+      end
+      h:flush()
+      assert(sound_count(h, "cap-departure") == 0 and sound_count(h, "cas-departure") == 0, mode)
+      assert(sound_count(h, "overlord-sead-tasking") == 1 and sound_count(h, "overlord-cas-convoy-tasking") == 1)
+    end
+  end
+)
+test("removed departure cues are blocked even if a stale caller requests them directly", function()
+  local h = harness()
+  h.runtime.voice:play("cas_departure")
+  h.runtime.voice:radio("cap_departure")
+  h:flush()
+  assert(#h.sounds == 0)
+  h.runtime.voice:radio("cas_convoy_tasking")
+  h:flush()
+  assert(#h.sounds == 1 and sound_count(h, "overlord-cas-convoy-tasking") == 1)
+end)
+test("partial losses and live aircraft at base never produce all-destroyed reports", function()
+  local h = harness(cap_options({ cas_convoy = true, cas_checkpoint = true }))
+  h.blue_players = { h.cas_hornet, h.cap_hornet }
+  first_takeoff(h)
+  h:flush()
+  h.radars[1].life = 0
+  h:cap_tick()
+  h:flush()
+  h:extract()
+  h:flush()
+  h.cas_convoy.size, h.cas_checkpoint.size, h.cap_fighters.size = 1, 1, 1
+  h.cap_hind.point = config.receiving
+  h:tick()
+  h:flush()
+  for _, id in ipairs({
+    "cas_convoy_destroyed",
+    "cas_checkpoint_cleared",
+    "cap_fighters_destroyed",
+    "cap_hind_destroyed",
+  }) do
+    assert(not report_for(h, id).done)
+  end
+  assert(sound_count(h, "cas-convoy-destroyed") == 0 and sound_count(h, "cap-hind-destroyed") == 0)
+end)
+test("missing units are not declared destroyed without matching death, crash or unit-lost events", function()
+  for _, event_id in ipairs({ 8, 5, 30 }) do
+    local h = harness(cap_options())
+    h.blue_players = { h.cap_hornet }
+    first_takeoff(h)
+    h:flush()
+    h.radars[1].life = 0
+    h:cap_tick()
+    h:flush()
+    local report = report_for(h, "cap_fighters_destroyed")
+    h.cap_fighters.units_removed = true
+    h:tick()
+    h:flush()
+    assert(not report.done and sound_count(h, "cap-fighters-destroyed") == 0)
+    for _, record in ipairs(report.units) do
+      local name = record.name
+      h.runtime.cas_decision_handler:onEvent({
+        id = event_id,
+        initiator = {
+          getName = function()
+            return name
+          end,
+        },
+      })
+    end
+    h:tick()
+    h:flush()
+    h:tick()
+    h:flush()
+    assert(report.done and sound_count(h, "cap-fighters-destroyed") == 1)
+  end
+end)
+test("death events from dormant templates or unrelated units cannot clear a spawned threat", function()
+  local h = harness({ cas_convoy = true })
+  h.blue_players = { h.cas_hornet }
+  first_takeoff(h)
+  h:flush()
+  h.runtime.cas_decision_handler:onEvent({
+    id = 8,
+    initiator = {
+      getName = function()
+        return "CAS-Convoy-1"
+      end,
+    },
+  })
+  h.runtime.cas_decision_handler:onEvent({ id = 8, initiator = {} })
+  h:tick()
+  h:flush()
+  assert(not report_for(h, "cas_convoy_destroyed").done and sound_count(h, "cas-convoy-destroyed") == 0)
+end)
+test("destroyed-target pilot reports require a human in the role at detection and playback", function()
+  for _, mode in ipairs({ "left_before", "left_queued" }) do
+    local h = harness({ cas_convoy = true })
+    h.blue_players = { h.cas_hornet }
+    first_takeoff(h)
+    h:flush()
+    if mode == "left_queued" then
+      h.runtime.voice:radio("kub_neutralised")
+    else
+      h.blue_players = {}
+    end
+    h.cas_convoy.size = 0
+    h:tick()
+    h.blue_players = {}
+    h:flush()
+    assert(sound_count(h, "cas-convoy-destroyed") == 0)
+    h.blue_players = { h.cas_hornet }
+    h:tick()
+    h:flush()
+    assert(sound_count(h, "cas-convoy-destroyed") == 0, "Do not replay old reports to a late return")
+  end
+end)
+test("target-query errors fail closed and recover without failing the extraction", function()
+  local h = harness({ cas_convoy = true })
+  h.blue_players = { h.cas_hornet }
+  first_takeoff(h)
+  h:flush()
+  h.cas_convoy.unit_observation_error = true
+  h:tick()
+  h:tick()
+  assert(#h.errors == 1 and h.runtime.objective.phase == "waiting")
+  assert(sound_count(h, "cas-convoy-destroyed") == 0)
+  h.cas_convoy.unit_observation_error = false
+  h.cas_convoy.size = 0
+  h:tick()
+  h:flush()
+  assert(sound_count(h, "cas-convoy-destroyed") == 1)
+end)
+test("actual firing audio starts only at the combat gate, and stale approach warnings are dropped", function()
+  local h = harness({ firefight = true })
+  approach_firefight(h)
+  assert(sound_count(h, "hvt-taking-fire") == 0)
+  start_firefight(h)
+  h:flush()
+  h:tick()
+  h:flush()
+  assert(sound_count(h, "hvt-taking-fire") == 1 and warning_count(h) == 0)
+  assert(h.runtime.firefight.state == "active")
+  no_overlap(h)
+end)
+test("queued taking-fire audio is suppressed after the party is safely aboard", function()
+  local h = harness({ firefight = true })
+  approach_firefight(h)
+  start_firefight(h)
+  h.player.airborne, h.player.point = false, config.pickup
+  h:extract()
+  h:flush()
+  assert(h.runtime.objective.phase == "aboard" and sound_count(h, "hvt-taking-fire") == 0)
+end)
+test("urgent pickup calls jump routine intelligence without overlapping the active clip", function()
+  local h = harness()
+  h.runtime.voice:radio("cas_convoy_tasking")
+  h.runtime.voice:radio("sead_tasking")
+  h.runtime.voice:radio("hind_launching")
+  h.runtime.voice:radio("taking_fire")
+  h:flush()
+  assert(h.sounds[1] == "Sounds/OHP/overlord-cas-convoy-tasking.ogg")
+  assert(h.sounds[2] == "Sounds/OHP/hvt-taking-fire.ogg")
+  assert(h.sounds[3] == "Sounds/OHP/overlord-sead-tasking.ogg")
+  no_overlap(h)
+end)
+test("urgent insertion wakes a queue previously waiting on a long delayed routine call", function()
+  local h = harness()
+  h.runtime.voice:play("sead_tasking", 100)
+  h.runtime.voice:radio("taking_fire")
+  h:advance(0.1)
+  assert(#h.sounds == 1 and h.sounds[1] == "Sounds/OHP/hvt-taking-fire.ogg")
+  h:flush()
+  assert(#h.sounds == 2 and h.sounds[2] == "Sounds/OHP/overlord-sead-tasking.ogg")
+  no_overlap(h)
+end)
+test("stale intel is dropped without reserving its nominal playback duration", function()
+  local h = harness()
+  h.runtime.voice:radio("cas_convoy_tasking")
+  h.runtime.voice:radio("sead_tasking", function()
+    return false
+  end)
+  h.runtime.voice:radio("hind_launching")
+  h:flush()
+  assert(#h.sounds == 2 and sound_count(h, "overlord-sead-tasking") == 0)
+  local next_delay = math.max(config.overlord_confirmation_delay_s, duration_by_file[h.sounds[1]] + 0.35)
+  assert(math.abs(h.sound_times[2] - h.sound_times[1] - next_delay) < 0.001)
+  no_overlap(h)
+end)
+test("failure cancels pending crew, success and routine calls; old pumps cannot restart them", function()
+  local h = harness()
+  h.runtime.voice:radio("cas_convoy_tasking")
+  h.runtime.voice:boarding_start(h.player)
+  h.runtime.voice:boarding_complete(h.player)
+  h.runtime.voice:play("mission_success", 30)
+  h.runtime.objective:fail("test failure")
+  h:tick()
+  h:tick()
+  h.runtime.voice:radio("hind_launching")
+  h:flush()
+  h:advance(100)
+  assert(#h.sounds == 2 and h.sounds[2] == "Sounds/OHP/overlord-extraction-failed.ogg")
+  assert(sound_count(h, "overlord-extraction-failed") == 1 and sound_count(h, "hidden-passage-success") == 0)
+  no_overlap(h)
+end)
+test("failure waits for an already playing crew clip rather than overlapping it", function()
+  local h = harness()
+  h.runtime.voice:boarding_start(h.raven)
+  h.runtime.objective:fail("test failure")
+  h:tick()
+  h:flush()
+  assert(h.sound_targets[1] == h.raven.id and h.sound_targets[2] == "coalition")
+  assert(h.sounds[2] == "Sounds/OHP/overlord-extraction-failed.ogg")
+  no_overlap(h)
+end)
+local function failure_notice_count(h)
+  local total = 0
+  for _, text in ipairs(h.notices) do
+    if text:find("^Operation failed:") then
+      total = total + 1
+    end
+  end
+  return total
+end
+test("HVT casualties fail immediately but automatic text and Overlord wait twenty seconds", function()
+  assert(config.overlord_confirmation_delay_s == 20)
+  for _, boarding in ipairs({ false, true }) do
+    local h = harness()
+    h:tick()
+    if boarding then
+      h.runtime.ctld.Loaded_Cargo[config.player_unit] = { Troopsloaded = 3 }
+      h:tick()
+      assert(h.runtime.objective.phase == "boarding")
+    end
+    h.groups[h.runtime.objective.party_key].size = 2
+    local failed_at = h.now
+    h:tick()
+    assert(h.runtime.objective.phase == "failed" and h.runtime.voice.aborted)
+    assert(h.runtime.failure_report_at == failed_at + 20)
+    assert(sound_count(h, "overlord-extraction-failed") == 0 and failure_notice_count(h) == 0)
+    h:advance(19.99)
+    h:tick()
+    assert(sound_count(h, "overlord-extraction-failed") == 0 and failure_notice_count(h) == 0)
+    h:advance(0.01)
+    h:tick()
+    assert(sound_count(h, "overlord-extraction-failed") == 1 and failure_notice_count(h) == 1)
+    assert(math.abs(h.sound_times[#h.sounds] - failed_at - 20) < 0.001)
+    assert(h.runtime.objective.phase == "failed" and #h.errors == 0)
+  end
+end)
+test("repeated failure observations neither postpone nor duplicate the delayed report", function()
+  local h = harness()
+  h:tick()
+  h.groups[h.runtime.objective.party_key].size = 2
+  h:tick()
+  local deadline = h.runtime.failure_report_at
+  h:observe_for(19)
+  assert(h.runtime.failure_report_at == deadline and not h.runtime.failure_reported)
+  assert(sound_count(h, "overlord-extraction-failed") == 0 and failure_notice_count(h) == 0)
+  h:observe_for(1)
+  h:observe_for(60)
+  assert(sound_count(h, "overlord-extraction-failed") == 1 and failure_notice_count(h) == 1)
+  assert(h.runtime.failure_report_at == deadline and #h.errors == 0)
+end)
+test("failure pause cancels queued and newly requested chatter immediately", function()
+  local h = harness()
+  h:tick()
+  h.runtime.voice:play("mission_success", 5)
+  h.runtime.voice:play("boarding_confirm", 6, h.player)
+  h.runtime.voice:play("sead_tasking", 7)
+  h.groups[h.runtime.objective.party_key].size = 2
+  h:tick()
+  h.runtime.voice:radio("hind_launching")
+  h:observe_for(19)
+  assert(#h.sounds == 0 and failure_notice_count(h) == 0)
+  h:observe_for(1)
+  h:flush()
+  assert(#h.sounds == 1 and sound_count(h, "overlord-extraction-failed") == 1)
+  assert(h.runtime.objective.phase == "failed" and #h.errors == 0)
+end)
+test("delayed abort retains a longer occupied audio slot and cannot be queued twice", function()
+  local h = harness()
+  h:tick()
+  local started = h.now
+  h.runtime.voice.busy_until = started + 25
+  h.runtime.objective:fail("test failure")
+  h:tick()
+  h.runtime.voice:abort(0)
+  h:observe_for(20)
+  assert(#h.sounds == 0 and failure_notice_count(h) == 1)
+  h:advance(5)
+  assert(sound_count(h, "overlord-extraction-failed") == 1)
+  assert(h.sound_times[1] == started + 25)
+  h:flush()
+  assert(#h.sounds == 1 and #h.errors == 0)
+end)
+test(
+  "Overlord outcome cues enforce twenty seconds except five-second checkpoint tasking, even through direct callers",
+  function()
+    for _, id in ipairs({
+      "kub_neutralised",
+      "fighters_launching",
+      "hind_launching",
+      "cas_checkpoint_tasking",
+      "mission_success",
+      "mission_failed",
+    }) do
+      local h = harness()
+      local delay = id == "cas_checkpoint_tasking" and 5 or 20
+      h.runtime.voice:play(id, nil, nil, nil, nil, "Observed outcome")
+      h:advance(delay - 0.01)
+      assert(#h.sounds == 0 and #h.notices == 0, id)
+      h:advance(0.01)
+      assert(#h.sounds == 1 and h.notices[1] == "Observed outcome", id)
+      assert(h.sound_times[1] == h.notice_times[1] and #h.errors == 0)
+    end
+  end
+)
+test("Kub kill releases runway fighters immediately but its text and recording wait twenty seconds", function()
+  local h = harness(cap_options())
+  h.blue_players = { h.cap_hornet }
+  first_takeoff(h)
+  local killed = h.now
+  h.radars[1].life = 0
+  h:cap_tick()
+  assert(h.cap_spawns.fighters == 1 and h.cap_runway_starts.fighters == 1 and h.cap_spawns.hind == 1)
+  assert(h.runtime.cap.sam_destroyed_at == killed and #h.notices == 1)
+  h:advance(19.99)
+  assert(#h.notices == 1 and sound_count(h, "overlord-kub-neutralised") == 0)
+  h:advance(0.01)
+  assert(h.notices[2]:find("tracking radar is destroyed", 1, true))
+  assert(sound_count(h, "overlord-kub-neutralised") == 1 and h.notice_times[2] == killed + 20)
+  h:flush()
+  assert(#h.notices == 3 and #h.errors == 0)
+  no_overlap(h)
+end)
+test("a failed mission cancels delayed Overlord outcome text as well as audio", function()
+  local h = harness(cap_options())
+  h:tick()
+  h.blue_players = { h.cap_hornet }
+  first_takeoff(h)
+  h.radars[1].life = 0
+  h:cap_tick()
+  local notices = #h.notices
+  h:advance(5)
+  h.runtime.objective:fail("test failure")
+  h:tick()
+  h:observe_for(20)
+  h:flush()
+  assert(#h.notices == notices + 1 and failure_notice_count(h) == 1)
+  assert(sound_count(h, "overlord-kub-neutralised") == 0 and sound_count(h, "overlord-fighters-launching") == 0)
+  assert(sound_count(h, "overlord-extraction-failed") == 1 and #h.errors == 0)
+end)
+test("actual delivery succeeds immediately while Overlord's completion confirmation waits", function()
+  local h = harness()
+  h:extract()
+  h:flush()
+  local delivered, notices = h.now, #h.notices
+  h:drop(config.receiving)
+  assert(h.runtime.objective.phase == "complete" and #h.notices == notices)
+  h:advance(19.99)
+  assert(sound_count(h, "hidden-passage-success") == 0 and #h.notices == notices)
+  h:advance(0.02)
+  assert(sound_count(h, "hidden-passage-success") == 1 and h.sound_times[#h.sounds] == delivered + 20)
+  assert(#h.notices > notices and #h.errors == 0)
+end)
+test("validated pickup releases checkpoint immediately with a five-second tasking minimum", function()
+  local h = harness({ cas_convoy = true, cas_checkpoint = true })
+  h.blue_players = { h.cas_hornet }
+  first_takeoff(h, h.cas_hornet)
+  h:flush()
+  h:advance(10) -- Let the initial convoy assignment finish before the pickup receipt.
+  h:extract()
+  local picked_up = h.now
+  assert(h.runtime.objective.phase == "aboard" and h.cas_checkpoint_spawns == 1)
+  local notices = #h.notices
+  assert(config.cas.checkpoint_tasking_delay_s == 5)
+  h:advance(4.99)
+  assert(sound_count(h, "overlord-cas-checkpoint-tasking") == 0)
+  for i = notices + 1, #h.notices do
+    assert(not h.notices[i]:find("north-road checkpoint", 1, true))
+  end
+  h:advance(0.02)
+  h:flush() -- The remaining crew boarding clips can extend the minimum pause.
+  assert(sound_count(h, "overlord-cas-checkpoint-tasking") == 1)
+  assert(h.sound_times[#h.sounds] >= picked_up + 5 and h.sound_times[#h.sounds] < picked_up + 20 and #h.errors == 0)
+  no_overlap(h)
+end)
+test("five-second checkpoint tasking does not wait behind a routine twenty-second report", function()
+  local h = harness()
+  h.runtime.voice:radio("kub_neutralised")
+  h.runtime.voice:radio("cas_checkpoint_tasking", nil, "Checkpoint task")
+  h:advance(4.99)
+  assert(#h.sounds == 0 and #h.notices == 0)
+  h:advance(0.01)
+  assert(h.sounds[1] == "Sounds/OHP/overlord-cas-checkpoint-tasking.ogg" and h.notices[1] == "Checkpoint task")
+  h:flush()
+  assert(sound_count(h, "overlord-kub-neutralised") == 1 and h.sound_times[2] >= 120)
+  no_overlap(h)
+end)
+test("asynchronous aircraft births recover warnings and destruction tracking without respawning", function()
+  local h = harness(cap_options({ cap_fighters_birth_delay = 0.8, cap_hind_birth_delay = 0.8 }))
+  h.blue_players = { h.cap_hornet }
+  first_takeoff(h)
+  h.radars[1].life = 0
+  h:cap_tick()
+  assert(h.runtime.cap.fighters.state == "spawning" and h.runtime.cap.hind.state == "spawning")
+  assert(#h.runtime.threat_reports == 0 and #h.errors == 0)
+  h:advance(1)
+  for _, role in ipairs({ "fighters", "hind" }) do
+    local pending = h.runtime.cap[role].readiness_timer
+    pending.run()
+    pending.run() -- A late duplicate callback must not duplicate tracking/warnings.
+    assert(h.runtime.cap[role].state == "active" and h.cap_spawns[role] == 1)
+  end
+  assert(#h.runtime.threat_reports == 2)
+  h:flush()
+  assert(sound_count(h, "overlord-fighters-launching") == 1 and sound_count(h, "overlord-hind-launching") == 0)
+  assert(#h.errors == 0)
+end)
+test("an aircraft that never appears times out without blocking its sibling or spawning again", function()
+  local h = harness(cap_options({ cap_fighters_spawn_dead = true }))
+  h.blue_players = { h.cap_hornet }
+  first_takeoff(h)
+  h.radars[1].life = 0
+  h:cap_tick()
+  for _ = 1, config.cap.spawn_ready_timeout_s do
+    h:advance(1)
+    h.runtime.cap.fighters.readiness_timer.run()
+  end
+  assert(h.runtime.cap.fighters.state == "unavailable" and h.runtime.cap.hind.state == "active")
+  h.runtime.cap.fighters.readiness_timer.run()
+  h:cap_tick()
+  h:flush()
+  assert(h.cap_spawns.fighters == 1 and sound_count(h, "overlord-fighters-launching") == 0)
+  assert(sound_count(h, "overlord-hind-launching") == 0 and #h.errors == 1)
+end)
+test("a blocked runway or missing airfield cannot silently fall back to an airborne or parking start", function()
+  for _, fault in ipairs({ "cap_runway_blocked", "cap_airbase_missing" }) do
+    local h = harness(cap_options({ [fault] = true }))
+    h.blue_players = { h.cap_hornet }
+    first_takeoff(h)
+    h.radars[1].life = 0
+    h:cap_tick()
+    h:flush()
+    assert(h.runtime.cap.fighters.state == "unavailable" and h.runtime.cap.hind.state == "active")
+    assert(h.cap_spawns.fighters == 0 and sound_count(h, "overlord-fighters-launching") == 0)
+    assert(h.cap_runway_starts.hind == nil and #h.errors == 1)
+  end
+end)
+local function hind_task_notice_count(h)
+  local total = 0
+  for _, text in ipairs(h.notices) do
+    if text:find("an enemy Hind is preparing to launch", 1, true) then
+      total = total + 1
+    end
+  end
+  return total
+end
+test("Hind spawns with MiGs but its unchanged call waits for both confirmed kills and twenty seconds", function()
+  local h = harness(cap_options())
+  h.blue_players = { h.cap_hornet }
+  first_takeoff(h)
+  h.radars[1].life = 0
+  h:cap_tick()
+  assert(h.cap_spawns.fighters == 1 and h.cap_spawns.hind == 1)
+  assert(h.runtime.cap.hind.state == "active" and not h.runtime.cap.hind.tasking_queued)
+  h:flush()
+  h.cap_fighters.unit_life = { 0, 100 }
+  h:tick()
+  h:advance(100)
+  h:tick()
+  assert(not h.runtime.cap.fighters.destroyed and not h.runtime.cap.hind.tasking_queued)
+  assert(sound_count(h, "overlord-hind-launching") == 0 and hind_task_notice_count(h) == 0)
+  local killed = h.now
+  h.cap_fighters.unit_life[2] = 0
+  h:tick()
+  assert(h.runtime.cap.fighters.destroyed and h.runtime.cap.hind.tasking_queued)
+  assert(h.runtime.cap.fighters.destroyed_at == killed)
+  h:advance(19.99)
+  h:tick()
+  assert(sound_count(h, "overlord-hind-launching") == 0 and hind_task_notice_count(h) == 0)
+  h:advance(0.02)
+  h:tick()
+  h:flush()
+  assert(sound_count(h, "overlord-hind-launching") == 1 and hind_task_notice_count(h) == 1)
+  for index, sound in ipairs(h.sounds) do
+    if sound == "Sounds/OHP/overlord-hind-launching.ogg" then
+      assert(h.sound_times[index] >= killed + 20)
+    end
+  end
+  h:observe_for(50)
+  h:flush()
+  assert(sound_count(h, "overlord-hind-launching") == 1 and h.cap_spawns.hind == 1 and #h.errors == 0)
+  no_overlap(h)
+end)
+test("Hind handoff requires confirmed fighter deaths, not disappearance or observation errors", function()
+  local h = harness(cap_options())
+  h.blue_players = { h.cap_viper }
+  first_takeoff(h)
+  h.radars[1].life = 0
+  h:cap_tick()
+  h.cap_fighters.units_removed = true
+  h:tick()
+  h:flush()
+  assert(not h.runtime.cap.hind.tasking_queued and sound_count(h, "overlord-hind-launching") == 0)
+  local report = report_for(h, "cap_fighters_destroyed")
+  h.cap_fighters.unit_observation_error = true
+  h:tick()
+  assert(not h.runtime.cap.hind.tasking_queued)
+  h.cap_fighters.unit_observation_error = false
+  for _, record in ipairs(report.units) do
+    local name = record.name
+    h.runtime.cas_decision_handler:onEvent({
+      id = 8,
+      initiator = {
+        getName = function()
+          return name
+        end,
+      },
+    })
+  end
+  h:tick()
+  h:flush()
+  assert(sound_count(h, "overlord-hind-launching") == 1 and hind_task_notice_count(h) == 1)
+end)
+test("a Hind lost before handoff or during its reporting pause cannot receive stale tasking", function()
+  for _, when in ipairs({ "before", "during" }) do
+    local h = harness(cap_options())
+    h.blue_players = { h.cap_hornet }
+    first_takeoff(h)
+    h.radars[1].life = 0
+    h:cap_tick()
+    h:flush()
+    if when == "before" then
+      h.cap_hind.size = 0
+    end
+    h.cap_fighters.size = 0
+    h:tick()
+    if when == "during" then
+      assert(h.runtime.cap.hind.tasking_queued)
+      h:advance(5)
+      h.cap_hind.size = 0
+      h:tick()
+    end
+    h:flush()
+    assert(sound_count(h, "overlord-hind-launching") == 0 and hind_task_notice_count(h) == 0)
+    assert(h.cap_spawns.hind == 1 and #h.errors == 0)
+  end
+end)
+test("terminal mission states suppress Hind handoff before release and during its pause", function()
+  for _, phase in ipairs({ "failed", "complete" }) do
+    for _, when in ipairs({ "before", "during" }) do
+      local h = harness(cap_options())
+      h.blue_players = { h.cap_hornet }
+      first_takeoff(h)
+      h.radars[1].life = 0
+      h:cap_tick()
+      h:flush()
+      if when == "before" then
+        h.runtime.objective.phase = phase
+      end
+      h.cap_fighters.size = 0
+      h:tick()
+      if when == "during" then
+        h.runtime.objective.phase = phase
+        h:tick()
+      end
+      h:flush()
+      assert(sound_count(h, "overlord-hind-launching") == 0 and hind_task_notice_count(h) == 0)
+      assert(#h.errors == 0)
+    end
+  end
+end)
+test("late Hind birth after fighter destruction releases tasking once, without another spawn", function()
+  local h = harness(cap_options({ cap_hind_birth_delay = 0.8 }))
+  h.blue_players = { h.cap_hornet }
+  first_takeoff(h)
+  h.radars[1].life = 0
+  h:cap_tick()
+  assert(h.runtime.cap.hind.state == "spawning")
+  h.cap_fighters.size = 0
+  h:tick()
+  assert(h.runtime.cap.fighters.destroyed and not h.runtime.cap.hind.tasking_queued)
+  h:advance(1)
+  h.runtime.cap.hind.readiness_timer.run()
+  assert(h.runtime.cap.hind.tasking_queued and h.cap_spawns.hind == 1)
+  h:flush()
+  assert(sound_count(h, "overlord-hind-launching") == 1 and hind_task_notice_count(h) == 1 and #h.errors == 0)
+end)
+test("partial fighter birth cannot snapshot one MiG as the entire fighter objective", function()
+  local h = harness(cap_options({ cap_fighters_partial_birth = true }))
+  h.blue_players = { h.cap_hornet }
+  first_takeoff(h)
+  h.radars[1].life = 0
+  h:cap_tick()
+  assert(h.runtime.cap.fighters.state == "spawning" and #h.runtime.threat_reports == 1)
+  h:advance(1)
+  h.runtime.cap.fighters.readiness_timer.run()
+  assert(h.runtime.cap.fighters.state == "active" and #report_for(h, "cap_fighters_destroyed").units == 2)
+  h.cap_fighters.unit_life = { 0, 100 }
+  h:tick()
+  h:flush()
+  assert(not h.runtime.cap.hind.tasking_queued and sound_count(h, "overlord-hind-launching") == 0)
+  assert(h.cap_spawns.fighters == 1 and #h.errors == 0)
 end)
 print(
   "Hidden Passage "

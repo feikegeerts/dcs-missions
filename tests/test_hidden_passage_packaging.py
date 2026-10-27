@@ -20,6 +20,8 @@ LUA = shutil.which("lua5.1.exe") or shutil.which("lua5.1")
 def lua_table(value):
     if isinstance(value, str):
         return json.dumps(value)
+    if isinstance(value, bool):
+        return "true" if value else "false"
     if isinstance(value, (int, float)):
         return repr(value)
     items = enumerate(value, 1) if isinstance(value, list) else value.items()
@@ -79,6 +81,9 @@ class PackagingTests(unittest.TestCase):
         firefight_offset=None,
         operational_firefight=False,
         mission_description=None,
+        blue_task=None,
+        cap=False,
+        edit_mission=None,
     ):
         pickup = (151595.453125, 42823.1015625) if layout == "testing" else (86422.487668525, 41545.335676019)
         hvt = (pickup[0] - 42, pickup[1] - 72)
@@ -119,6 +124,30 @@ class PackagingTests(unittest.TestCase):
             mission_description = mission_description or self.previous_operational_description
             dictionary["DictKey_descriptionText_1"] = mission_description
             dictionary["DictKey_descriptionBlueTask_3"] = mission_description
+            if blue_task is not None:
+                dictionary["DictKey_descriptionBlueTask_3"] = blue_task
+                mission["descriptionText"] = "DictKey_descriptionText_1"
+                mission["descriptionBlueTask"] = "DictKey_descriptionBlueTask_3"
+        if cap:
+            blue = mission["coalition"]["blue"]["country"][0]
+            blue["plane"] = {"group": [
+                {"name": "CAP-Hornet", "units": [{"name": "Check-1-1", "type": "FA-18C_hornet", "skill": "Client"}]},
+                {"name": "CAP-Viper", "units": [{"name": "Dodge-1-1", "type": "F-16C_50", "skill": "Client"}]},
+            ]}
+            def aircraft(name, kind, count):
+                return {"name": name, "lateActivation": True, "units": [
+                    {"name": f"{name}-{i}", "type": kind, "skill": "High",
+                     "payload": {"pylons": [{"CLSID": "{MISSILE_R-73_APU-73}" if count == 2 else "test-rockets"}]}}
+                    for i in range(1, count + 1)
+                ], "route": {"points": [{"type": "TakeOffParkingHot"}, {"type": "Turning Point"}]}}
+            mission["coalition"]["red"]["country"].append({
+                "vehicle": {"group": [{"name": "Ground-9", "lateActivation": True,
+                                         "units": [{"type": "Kub 1S91 str"}, {"type": "Kub 2P25 ln"}]}]},
+                "plane": {"group": [aircraft("Aerial-1", "MiG-29 Fulcrum", 2)]},
+                "helicopter": {"group": [aircraft("Rotary-1", "Mi-24V", 1)]},
+            })
+        if edit_mission:
+            edit_mission(mission)
         members = {
             "mission": ("mission=" + lua_table(mission)).encode(),
             "l10n/DEFAULT/dictionary": ("dictionary=" + lua_table(dictionary)).encode(),
@@ -178,6 +207,21 @@ class PackagingTests(unittest.TestCase):
         self.assertEqual(source.read_bytes(), original)
         self.run_update(source, layout="operational")
         self.assertTrue((self.root / "out/operation-hidden-passage.miz").is_file())
+
+    def test_later_gameplay_update_preserves_preloaded_cap_dtc_assignments_and_files(self):
+        def assign(mission):
+            groups = mission["coalition"]["blue"]["country"][0]["plane"]["group"]
+            for group, name in zip(groups, ("OHP-CAP-HORNET", "OHP-CAP-VIPER")):
+                group["units"][0]["DTC"] = {"AutoLoad": True, "Cartridges": [{"name": name, "default": True}]}
+        source, before = self.fixture("operational", cap=True, edit_mission=assign)
+        cartridges = {"DTC/OHP-CAP-HORNET.dtc": b'{"name":"OHP-CAP-HORNET"}',
+                      "DTC/OHP-CAP-VIPER.dtc": b'{"name":"OHP-CAP-VIPER"}'}
+        with ZipFile(source, "a", ZIP_DEFLATED) as archive:
+            for name, data in cartridges.items(): archive.writestr(name, data)
+        self.run_update(source, layout="operational")
+        with ZipFile(self.root / "out/operation-hidden-passage.miz") as archive:
+            self.assertEqual(archive.read("mission"), before["mission"])
+            for name, data in cartridges.items(): self.assertEqual(archive.read(name), data)
 
     def test_testing_rejects_operational_mode(self):
         source, _ = self.fixture()
@@ -249,6 +293,14 @@ class PackagingTests(unittest.TestCase):
     def test_operational_story_briefing_deployment_is_idempotent(self):
         source, _ = self.fixture("operational")
         self.run_update(source, deploy=True, layout="operational")
+        # Force old ZIP timestamps so a no-op update cannot pass accidentally
+        # merely because both builds happen within the same two-second tick.
+        with ZipFile(source) as archive:
+            entries = [(entry, archive.read(entry)) for entry in archive.infolist()]
+        with ZipFile(source, "w", ZIP_DEFLATED) as archive:
+            for entry, data in entries:
+                entry.date_time = (2001, 1, 1, 0, 0, 0)
+                archive.writestr(entry, data)
         first = source.read_bytes()
         self.run_update(source, deploy=True, layout="operational")
         self.assertEqual(source.read_bytes(), first)
@@ -257,6 +309,64 @@ class PackagingTests(unittest.TestCase):
         source, _ = self.fixture("operational", mission_description="An edited editor-owned briefing.")
         with self.assertRaisesRegex(ValueError, "Unknown operational briefing"):
             self.run_update(source, layout="operational")
+
+    def test_approved_story_and_task_split_is_preserved_byte_for_byte(self):
+        story, task = self.story_briefing.split("\n\nMule One", 1)
+        source, before = self.fixture("operational", mission_description=story + "\n", blue_task="Mule One" + task)
+        self.run_update(source, deploy=True, layout="operational")
+        with ZipFile(source) as archive:
+            self.assertEqual(archive.read("l10n/DEFAULT/dictionary"), before["l10n/DEFAULT/dictionary"])
+            self.assertEqual(archive.read("mission"), before["mission"])
+
+    def test_unknown_split_task_is_not_overwritten(self):
+        story, task = self.story_briefing.split("\n\nMule One", 1)
+        source, _ = self.fixture("operational", mission_description=story, blue_task="User-edited task")
+        original = source.read_bytes()
+        with self.assertRaises(ValueError):
+            self.run_update(source, deploy=True, layout="operational")
+        self.assertEqual(source.read_bytes(), original)
+
+    def test_cap_layout_and_every_editor_owned_member_survive_deployment(self):
+        story, task = self.story_briefing.split("\n\nMule One", 1)
+        source, before = self.fixture("operational", cap=True, mission_description=story, blue_task="Mule One" + task)
+        original = source.read_bytes()
+        self.run_update(source, deploy=True, layout="operational")
+        with ZipFile(source) as archive:
+            self.assertIsNone(archive.testzip())
+            self.assertEqual(set(archive.namelist()), set(before) | {"Sounds/OHP/example.ogg"})
+            for name, data in before.items():
+                if name != "l10n/DEFAULT/OHP-main.lua":
+                    self.assertEqual(archive.read(name), data)
+        evidence = json.loads((self.root / "out/operation-hidden-passage-evidence.json").read_text())
+        self.assertEqual(Path(evidence["backup"]).read_bytes(), original)
+
+    def test_cap_layout_rejects_uncontrolled_or_incomplete_branches_without_deploying(self):
+        def red_group(mission, category):
+            return mission["coalition"]["red"]["country"][0][category]["group"][0]
+        defects = {
+            "sam_not_late": lambda m: red_group(m, "vehicle").update(lateActivation=False),
+            "fighters_not_late": lambda m: red_group(m, "plane").update(lateActivation=False),
+            "hind_not_late": lambda m: red_group(m, "helicopter").update(lateActivation=False),
+            "missing_radar": lambda m: red_group(m, "vehicle")["units"].pop(0),
+            "missing_fighters": lambda m: m["coalition"]["red"]["country"][0]["plane"]["group"].clear(),
+            "ai_hornet_seat": lambda m: m["coalition"]["blue"]["country"][0]["plane"]["group"][0]["units"][0].update(skill="High"),
+            "wrong_viper_type": lambda m: m["coalition"]["blue"]["country"][0]["plane"]["group"][1]["units"][0].update(type="F-5E-3"),
+            "missing_cap_seat": lambda m: m["coalition"]["blue"]["country"][0]["plane"]["group"].pop(),
+            "unarmed_fighters": lambda m: red_group(m, "plane")["units"][0].update(payload={"pylons": []}),
+            "tank_only_fighters": lambda m: red_group(m, "plane")["units"][0].update(payload={"pylons": [{"CLSID": "fuel-tank"}]}),
+            "two_hinds": lambda m: red_group(m, "helicopter")["units"].append(red_group(m, "helicopter")["units"][0]),
+            "airborne_fighters": lambda m: red_group(m, "plane")["route"]["points"][0].update(type="Turning Point"),
+            "uncontrolled_fighters": lambda m: red_group(m, "plane").update(uncontrolled=True),
+            "uncontrolled_hind": lambda m: red_group(m, "helicopter").update(uncontrolled=True),
+            "wrong_fighters": lambda m: red_group(m, "plane")["units"][0].update(type="MiG-25PD"),
+        }
+        for label, edit in defects.items():
+            with self.subTest(label=label):
+                source, _ = self.fixture("operational", cap=True, edit_mission=edit)
+                original = source.read_bytes()
+                with self.assertRaises(subprocess.CalledProcessError):
+                    self.run_update(source, deploy=True, layout="operational")
+                self.assertEqual(source.read_bytes(), original)
 
     def test_audio_replacement_requires_opt_in(self):
         source, _ = self.fixture(audio=b"OggSold-recording")

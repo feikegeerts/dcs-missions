@@ -1,5 +1,5 @@
 -- Chinook / UH-60L extraction using the repository's pinned MOOSE CTLD.
--- No telemetry, disk access, MIST, enemies, persistence, or native mission end.
+-- No telemetry, disk access, MIST, persistence, or native mission end.
 local config, Operation, Voice = ...
 assert(not _G.OHP_TRANSPORT_TEST, "Hidden Passage is already initialized")
 local runtime = { config = config }
@@ -29,6 +29,459 @@ local function say(text, unit)
   end
   log(text)
 end
+
+local function radio_active()
+  local objective = runtime.objective
+  return not objective or (objective.phase ~= "failed" and objective.phase ~= "complete")
+end
+
+local function radio(id, valid, announcement)
+  voice:radio(id, function()
+    return radio_active() and (not valid or valid())
+  end, announcement)
+end
+
+local function configured_slot(unit, slots)
+  if not unit then
+    return
+  end
+  local ok, group_name, type_name, player_name = pcall(function()
+    if unit.isExist and not unit:isExist() then
+      return
+    end
+    local group = unit:getGroup()
+    return group and group:getName(), unit:getTypeName(), unit:getPlayerName()
+  end)
+  if ok and player_name and player_name ~= "" and group_name and slots[group_name] == type_name then
+    return group_name
+  end
+end
+
+local function role_occupied(slots)
+  local ok, players = pcall(coalition.getPlayers, coalition.side.BLUE)
+  if ok and type(players) == "table" then
+    for _, unit in pairs(players) do
+      if configured_slot(unit, slots) then
+        return true
+      end
+    end
+  end
+  return false
+end
+
+-- Snapshot only successfully spawned threat units. Disappearance alone is not
+-- proof of destruction: RTB/despawn must not produce a false victory report.
+runtime.threat_reports, runtime.threat_deaths = {}, {}
+local function track_report(branch, id, slots)
+  local ok, units = pcall(function()
+    local found = {}
+    for _, unit in pairs(assert(branch.group:GetUnits(), "spawned units unavailable")) do
+      found[#found + 1] = { unit = unit, name = unit:GetName() }
+    end
+    assert(#found > 0, "no spawned units to track")
+    return found
+  end)
+  if not ok then
+    env.error("[hidden-passage] report tracking " .. id .. ": " .. tostring(units))
+    return
+  end
+  runtime.threat_reports[#runtime.threat_reports + 1] = {
+    branch = branch,
+    units = units,
+    id = id,
+    slots = slots,
+  }
+end
+
+local function update_threat_reports()
+  if not radio_active() then
+    return
+  end
+  for _, report in ipairs(runtime.threat_reports) do
+    if not report.done then
+      local ok, destroyed = pcall(function()
+        for _, record in ipairs(report.units) do
+          if not runtime.threat_deaths[record.name] then
+            local life = record.unit:GetLife()
+            -- GetLife == -1 means the wrapper cannot find the unit. Require a
+            -- destruction event in that case, or a known life value below 1.
+            if not life or life < 0 or life >= 1 then
+              return false
+            end
+          end
+        end
+        return true
+      end)
+      if ok and destroyed then
+        report.done, report.branch.destroyed = true, true
+        report.branch.destroyed_at = timer.getTime()
+        log("Threat destroyed: " .. report.id)
+        local slots = report.slots
+        if role_occupied(slots) then
+          radio(report.id, function()
+            return role_occupied(slots)
+          end)
+        end
+      elseif not ok and not report.observation_error then
+        report.observation_error = true
+        env.error("[hidden-passage] threat report observation (will retry): " .. tostring(destroyed))
+      elseif ok then
+        report.observation_error = false
+      end
+    end
+  end
+end
+
+-- Freeze both optional branches from ONE roster at the first human Blue takeoff.
+-- Register before setup's delayed timer so a very early departure is not missed.
+runtime.cas_convoy = { state = "waiting_for_first_blue_takeoff" }
+runtime.cas_checkpoint = { state = "waiting_for_first_blue_takeoff" }
+local function spawn_cas_checkpoint(reason)
+  local checkpoint = runtime.cas_checkpoint
+  if checkpoint.state ~= "waiting_for_pickup" or not radio_active() then
+    return
+  end
+  local objective = runtime.objective
+  if not objective or (objective.phase ~= "aboard" and reason ~= "solo_test") then
+    return
+  end
+  checkpoint.release_reason = reason or "pickup_confirmed"
+  checkpoint.state = "spawning"
+  if not GROUP:FindByName(config.cas.checkpoint_template) then
+    checkpoint.state = "unavailable"
+    log("CAS checkpoint unavailable: missing template " .. config.cas.checkpoint_template)
+    return
+  end
+  local ok, spawned = pcall(function()
+    local spawner = SPAWN:New(config.cas.checkpoint_template):InitLimit(0, 1)
+    local group = assert(spawner:Spawn(), "MOOSE did not spawn the RPG checkpoint")
+    assert(group:IsAlive(), "RPG checkpoint spawned without live units")
+    return { spawner = spawner, group = group }
+  end)
+  if not ok then
+    checkpoint.state = "unavailable"
+    env.error("[hidden-passage] CAS checkpoint spawn: " .. tostring(spawned))
+    return
+  end
+  checkpoint.state = "active"
+  checkpoint.spawner, checkpoint.group = spawned.spawner, spawned.group
+  track_report(checkpoint, "cas_checkpoint_cleared", config.cas.slots)
+  radio(
+    "cas_checkpoint_tasking",
+    function()
+      return not checkpoint.destroyed
+        and checkpoint.group:IsAlive()
+        and (runtime.objective.phase == "aboard" or checkpoint.release_reason == "solo_test")
+    end,
+    "CAS: the package is aboard. RPG infantry are holding the north-road checkpoint. Clear that position and cover the helicopters' departure."
+  )
+  log(
+    "CAS RPG checkpoint spawned once: " .. config.cas.checkpoint_template .. "; release=" .. checkpoint.release_reason
+  )
+end
+local function start_cas(occupied_slot)
+  local branch = runtime.cas_convoy
+  branch.state = "deciding"
+  if not occupied_slot then
+    branch.state = "disabled"
+    runtime.cas_checkpoint.state = "disabled"
+    log("CAS branch disabled at first Blue takeoff: no configured CAS slot occupied")
+    return
+  end
+
+  -- Freeze eligibility now, but do not activate or brief the checkpoint until
+  -- a validated extraction receipt confirms all three aboard either carrier.
+  -- A missing convoy still must not prevent the later checkpoint stage.
+  runtime.cas_checkpoint.state = "waiting_for_pickup"
+  local template = GROUP:FindByName(config.cas.convoy_template)
+  if not template then
+    branch.state = "unavailable"
+    log("CAS branch unavailable: missing convoy template " .. config.cas.convoy_template)
+    return
+  end
+  branch.state = "spawning"
+  local spawn_ok, spawned = pcall(function()
+    local spawner = SPAWN:New(config.cas.convoy_template):InitLimit(0, 1)
+    local group = assert(spawner:Spawn(), "MOOSE did not spawn the CAS convoy")
+    assert(group:IsAlive(), "CAS convoy spawned without live units")
+    -- Keep the surviving vehicles on their authored route under attack. This
+    -- disables DCS's automatic dispersal, not physical wreck/pathfinding jams.
+    group:OptionDisperseOnAttack(0)
+    return { spawner = spawner, group = group }
+  end)
+  if not spawn_ok then
+    branch.state = "unavailable"
+    env.error("[hidden-passage] CAS convoy spawn: " .. tostring(spawned))
+    log("CAS branch unavailable: convoy spawn failed")
+    return
+  end
+  branch.state = "active"
+  branch.slot = occupied_slot
+  branch.spawner = spawned.spawner
+  branch.group = spawned.group
+  track_report(branch, "cas_convoy_destroyed", config.cas.slots)
+  say(
+    "Ground intel: an enemy convoy is advancing toward the pickup. CAS, intercept it along the road; keep attacks clear of the extraction party."
+  )
+  radio("cas_convoy_tasking", function()
+    return runtime.cas_checkpoint.state == "waiting_for_pickup" and not branch.destroyed and branch.group:IsAlive()
+  end)
+  log("CAS convoy spawned once; first-takeoff snapshot found " .. occupied_slot)
+  log("CAS convoy automatic dispersal disabled; survivors retain the editor route")
+end
+
+runtime.cap = {
+  state = "waiting_for_first_blue_takeoff",
+  sam = { state = "waiting_for_first_blue_takeoff" },
+  fighters = { state = "waiting_for_first_blue_takeoff" },
+  hind = { state = "waiting_for_first_blue_takeoff" },
+}
+local function cap_inactive(state)
+  local cap = runtime.cap
+  cap.state, cap.sam.state, cap.fighters.state, cap.hind.state = state, state, state, state
+end
+
+local function update_hind_tasking()
+  local cap = runtime.cap
+  local hind = cap.hind
+  if
+    not radio_active()
+    or not cap.fighters.destroyed
+    or hind.state ~= "active"
+    or hind.destroyed
+    or hind.tasking_queued
+  then
+    return
+  end
+  local alive_ok, alive = pcall(function()
+    return hind.group:IsAlive()
+  end)
+  if not alive_ok or not alive then
+    return -- A transient DCS lookup cannot fail extraction or invent a task.
+  end
+  -- The Hind already spawned with the fighters. Only its tasking waits for
+  -- confirmed destruction of every fighter, then the normal reporting pause.
+  hind.tasking_queued = true
+  radio("hind_launching", function()
+    return not hind.destroyed and hind.group:IsAlive()
+  end, "CAP: an enemy Hind is preparing to launch. Watch for a low-level threat along the extraction corridor.")
+  log("CAP Hind tasking released after confirmed fighter destruction")
+end
+
+local function spawn_cap_group(branch, template, on_ready, runway)
+  branch.state = "spawning"
+  local ok, result = pcall(function()
+    local authored = assert(GROUP:FindByName(template), "missing template " .. template)
+    local expected_units = on_ready and #assert(authored:GetTemplate(), "missing aircraft template").units
+    if on_ready then
+      assert(expected_units > 0, "empty aircraft template")
+    end
+    local spawner = SPAWN:New(template):InitLimit(0, 1)
+    local group
+    if runway then
+      local first = assert(authored:GetTemplateRoutePoints()[1], "missing departure waypoint")
+      local airbase = assert(AIRBASE:FindByID(first.airdromeId), "missing authored airfield")
+      -- Only the approved MiG departure is changed. The pinned MOOSE method
+      -- replaces the departure point/parking, not the subsequent route/tasks.
+      -- Never silently fall back to an airborne spawn if the runway is blocked.
+      group = spawner:SpawnAtAirbase(airbase, SPAWN.Takeoff.Runway, nil, nil, false)
+    else
+      group = spawner:Spawn()
+    end
+    assert(group, "MOOSE did not spawn " .. template)
+    if not on_ready then
+      assert(group:IsAlive(), template .. " spawned without live units")
+    end
+    return { spawner = spawner, group = group, expected_units = expected_units }
+  end)
+  if not ok then
+    branch.state = "unavailable"
+    env.error("[hidden-passage] CAP spawn " .. template .. ": " .. tostring(result))
+    return
+  end
+  branch.spawner, branch.group = result.spawner, result.group
+  if on_ready then
+    local deadline = timer.getTime() + config.cap.spawn_ready_timeout_s
+    local function confirm_ready()
+      if branch.state ~= "spawning" then
+        return
+      end
+      local ready_ok, ready = pcall(function()
+        return branch.group:IsAlive() and #branch.group:GetUnits() == result.expected_units
+      end)
+      if ready_ok and ready then
+        branch.state = "active"
+        log(string.format("CAP group spawned once: %s; ready t=%.1f", template, timer.getTime()))
+        local callback_ok, err = pcall(on_ready)
+        if not callback_ok then
+          env.error("[hidden-passage] CAP ready callback " .. template .. ": " .. tostring(err))
+        end
+      elseif timer.getTime() < deadline then
+        -- Aircraft birth can be asynchronous even though Spawn returned a
+        -- wrapper. Retain it and retry observation, never the actual spawn.
+        branch.readiness_timer = TIMER:New(confirm_ready)
+        branch.readiness_timer:Start(1)
+      else
+        branch.state = "unavailable"
+        env.error("[hidden-passage] CAP spawn readiness timed out: " .. template)
+      end
+    end
+    confirm_ready()
+  else
+    branch.state = "active"
+    log("CAP group spawned once: " .. template)
+  end
+  return result.group
+end
+
+local function observe_cap_sam()
+  local cap = runtime.cap
+  if cap.state ~= "sam_active" then
+    return
+  end
+  local ok, destroyed = pcall(function()
+    for _, radar in ipairs(cap.radars) do
+      -- IsAlive alone tests existence/activation in the pinned MOOSE build.
+      -- DCS can retain a cooking-off wreck: life < 1 is also destroyed.
+      if radar:IsAlive() and radar:GetLife() >= 1 then
+        return false
+      end
+    end
+    return true
+  end)
+  if not ok then
+    if not cap.observation_error then
+      env.error("[hidden-passage] CAP radar observation (will retry): " .. tostring(destroyed))
+    end
+    cap.observation_error = true
+  else
+    cap.observation_error = false
+    if destroyed then
+      -- Latch BEFORE spawning either group. No later takeoff/poll can duplicate
+      -- the response; failure of one aircraft template must not block the other.
+      cap.state, cap.sam.state = "air_response", "neutralised"
+      cap.sam_destroyed_at = timer.getTime()
+      log("CAP SAM neutralised: all tracked Kub radars destroyed; releasing air response")
+      radio(
+        "kub_neutralised",
+        nil,
+        "SEAD: the Kub tracking radar is destroyed. CAP, cover the extraction corridor; helicopter crews, remain alert for other threats."
+      )
+      spawn_cap_group(cap.fighters, config.cap.fighters_template, function()
+        track_report(cap.fighters, "cap_fighters_destroyed", config.cap.slots)
+        radio("fighters_launching", function()
+          return not cap.fighters.destroyed and cap.fighters.group:IsAlive()
+        end, "CAP: enemy fighters are preparing to launch. Expect an interception; protect the extraction package.")
+      end, config.cap.fighters_runway_start)
+      spawn_cap_group(cap.hind, config.cap.hind_template, function()
+        track_report(cap.hind, "cap_hind_destroyed", config.cap.slots)
+        update_hind_tasking() -- Also handles a delayed Hind birth after the fighters are already down.
+      end)
+      return
+    end
+  end
+  -- One-shot re-arming: no persistent polling after completion, and errors do
+  -- not silently kill the watch. Keep the latest MOOSE timer strongly held.
+  cap.observer = TIMER:New(observe_cap_sam)
+  cap.observer:Start(config.cap.radar_check_interval_s)
+end
+
+local function start_cap(occupied_slot)
+  local cap = runtime.cap
+  if not occupied_slot then
+    cap_inactive("disabled")
+    log("CAP branch disabled at first Blue takeoff: no configured CAP slot occupied")
+    return
+  end
+  cap.slot = occupied_slot
+  cap.fighters.state, cap.hind.state = "waiting_for_sam", "waiting_for_sam"
+  local sam = spawn_cap_group(cap.sam, config.cap.sam_template)
+  if not sam then
+    cap.state = "unavailable"
+    return
+  end
+  local ok, radars = pcall(function()
+    local found = {}
+    for _, unit in pairs(assert(sam:GetUnits(), "SAM units unavailable")) do
+      if unit:GetTypeName() == config.cap.radar_type then
+        found[#found + 1] = unit
+      end
+    end
+    assert(#found > 0, "spawned SAM has no " .. config.cap.radar_type)
+    return found
+  end)
+  if not ok then
+    cap.state = "unavailable"
+    env.error("[hidden-passage] CAP radar tracking unavailable; air response held: " .. tostring(radars))
+    return
+  end
+  cap.state, cap.radars = "sam_active", radars
+  log("CAP first-takeoff snapshot found " .. occupied_slot .. "; tracking " .. #radars .. " Kub radar(s)")
+  say(
+    "SEAD: a Kub SAM site is active near the pickup. Destroy its tracking radar before helicopter approach; CAP, then cover the extraction corridor."
+  )
+  radio("sead_tasking", function()
+    return cap.state == "sam_active"
+  end)
+  cap.observer = TIMER:New(observe_cap_sam)
+  cap.observer:Start(config.cap.radar_check_interval_s)
+end
+
+local destruction_events = {}
+for _, id in pairs({ world.event.S_EVENT_DEAD, world.event.S_EVENT_CRASH, world.event.S_EVENT_UNIT_LOST }) do
+  destruction_events[id] = true
+end
+
+-- Retain the existing handler name for inspection; it owns participation
+-- decisions and the narrow native-DCS destruction-event bridge, without pilot departure calls.
+runtime.cas_decision_handler = {
+  onEvent = function(_, event)
+    if not event then
+      return
+    end
+    if event.id and destruction_events[event.id] then
+      local ok, name = pcall(function()
+        return event.initiator:getName()
+      end)
+      if ok and name then
+        runtime.threat_deaths[name] = true
+      end
+      return
+    end
+    if event.id ~= world.event.S_EVENT_TAKEOFF then
+      return
+    end
+    local aircraft = event.initiator
+    local ok, side, player_name = pcall(function()
+      return aircraft:getCoalition(), aircraft:getPlayerName()
+    end)
+    if not ok or side ~= coalition.side.BLUE or not player_name or player_name == "" then
+      return
+    end
+    if runtime.package_decided then
+      return
+    end
+    runtime.package_decided = true
+    local roster_ok, blue_players = pcall(coalition.getPlayers, coalition.side.BLUE)
+    if not roster_ok or type(blue_players) ~= "table" then
+      runtime.cas_convoy.state, runtime.cas_checkpoint.state = "unavailable", "unavailable"
+      cap_inactive("unavailable")
+      log("CAS/CAP branches unavailable: could not snapshot Blue player slots at first takeoff")
+      return
+    end
+    local cas_slot = configured_slot(aircraft, config.cas.slots)
+    local cap_slot = configured_slot(aircraft, config.cap.slots)
+    for _, unit in pairs(blue_players) do
+      cas_slot = cas_slot or configured_slot(unit, config.cas.slots)
+      cap_slot = cap_slot or configured_slot(unit, config.cap.slots)
+    end
+    -- Freeze both selections before invoking any spawn code.
+    runtime.package_slots = { cas = cas_slot, cap = cap_slot }
+    start_cap(cap_slot)
+    start_cas(cas_slot)
+  end,
+}
+world.addEventHandler(runtime.cas_decision_handler)
 
 local function is_party(group_name)
   return type(group_name) == "string" and group_name:sub(1, #config.party_template + 1) == config.party_template .. "-"
@@ -63,14 +516,25 @@ end
 
 local function report_failure()
   local objective = runtime.objective
-  if objective and objective.phase == "failed" and not runtime.failure_reported then
-    runtime.failure_reported = true
-    say(
-      "Operation failed: "
-        .. tostring(objective.reason)
-        .. " Restart the mission to retry; re-slotting does not reset the operation."
-    )
+  if not objective or objective.phase ~= "failed" or runtime.failure_reported then
+    return
   end
+  if not runtime.failure_report_at then
+    -- Lock the deadline on first detection. The regular observer publishes
+    -- the text after the same pause; repeated checks cannot postpone it.
+    local delay = config.overlord_confirmation_delay_s
+    runtime.failure_report_at = timer.getTime() + delay
+    voice:abort(delay) -- Invalidate pending crew/success/intel calls right now.
+  end
+  if timer.getTime() < runtime.failure_report_at then
+    return
+  end
+  runtime.failure_reported = true
+  say(
+    "Operation failed: "
+      .. tostring(objective.reason)
+      .. " Restart the mission to retry; re-slotting does not reset the operation."
+  )
 end
 
 local stop_firefight
@@ -96,8 +560,9 @@ local function status(name)
   end
   local messages = {
     waiting = string.format(
-      "Pickup is %.1f NM from Hatay. Land on green smoke within 105 m of the party, 35 m clear of personnel, and stop for 2 seconds.",
-      runtime.distance_nm
+      "Pickup is %.1f NM from Hatay. Land near green smoke within %d m of the party, 35 m clear of personnel, and stop for 2 seconds.",
+      runtime.distance_nm,
+      config.extraction_distance_m
     ),
     boarding = "Boarding. Remain landed until all three are aboard.",
     aboard = "Three aboard. Return to Hatay and unload at " .. config.return_zone .. ".",
@@ -125,6 +590,20 @@ local function safe(label, fn)
 end
 
 local function setup()
+  -- Suppress only the aircraft's built-in "passing waypoint" calls. Keep its
+  -- AWACS task, contact responses, datalink and our recorded Overlord cues.
+  local awacs = GROUP:FindByName(config.awacs_group)
+  if awacs and awacs:IsAlive() then
+    local ok, err = pcall(function()
+      awacs:SetOptionWaypointPassReport(false)
+    end)
+    if ok then
+      log("AWACS waypoint reports disabled: " .. config.awacs_group)
+    else
+      -- Radio housekeeping must not stop extraction if the controller is lost.
+      env.error("[hidden-passage] AWACS waypoint report option: " .. tostring(err))
+    end
+  end
   local pickup = assert(ZONE:New(config.pickup_zone), "Missing pickup zone")
   local personnel = assert(ZONE:New(config.personnel_zone), "Missing personnel zone")
   local receiving = assert(ZONE:New(config.return_zone), "Missing return zone")
@@ -147,7 +626,7 @@ local function setup()
   local separation = math.sqrt((landing_point.x - waiting_point.x) ^ 2 + (landing_point.y - waiting_point.y) ^ 2)
   assert(
     separation >= config.minimum_personnel_clearance_m and separation <= config.extraction_distance_m,
-    "Landing/personnel zones must be 35-105 m apart for extraction"
+    string.format("Landing/personnel zones must be 35-%d m apart for extraction", config.extraction_distance_m)
   )
   local landing_bearing = math.deg(math.atan2(landing_point.y - waiting_point.y, landing_point.x - waiting_point.x))
   local return_point = receiving:GetVec2()
@@ -222,7 +701,22 @@ local function setup()
     log("FIREFIGHT pickup reinforcement armed: " .. config.firefight.pickup_template)
   end
 
-  -- The primary Red template spawns at setup, held beyond firing range. It
+  local function nearest_enemy_distance(enemy)
+    local hvt_position = party:GetVec2()
+    local nearest = math.huge
+    for _, unit in pairs(enemy:GetUnits()) do
+      local life = unit:GetLife()
+      if life and life >= 1 then
+        local point = unit:GetVec2()
+        if point then
+          nearest = math.min(nearest, math.sqrt((point.x - hvt_position.x) ^ 2 + (point.y - hvt_position.y) ^ 2))
+        end
+      end
+    end
+    return nearest
+  end
+
+  -- The primary Red template spawns at setup, held until the contact trigger. It
   -- begins its approach when a Blue helicopter reaches the outbound contact point.
   if opposition_template_name then
     -- CTLD's injected HVTs otherwise retain autonomous/default ROE and can
@@ -250,7 +744,7 @@ local function setup()
       log(
         string.format(
           "FIREFIGHT enemies staged %.0f m from the HVT site, held until the outbound contact point",
-          math.sqrt(2) * config.firefight.staging_offset_m
+          nearest_enemy_distance(spawned.group)
         )
       )
     else
@@ -360,6 +854,9 @@ local function setup()
     end
     fight.hvt_fire_stopped = false
     say("Enemy contact. HVT under fire.")
+    radio("taking_fire", function()
+      return fight.state == "active" and (runtime.objective.phase == "waiting" or runtime.objective.phase == "boarding")
+    end)
     log("FIREFIGHT started enemy=" .. enemy:GetName() .. " HVT=" .. party:GetName())
   end
 
@@ -385,7 +882,15 @@ local function setup()
     end
     fight.fire_position = destination
     fight.state = "approaching"
-    log("FIREFIGHT opposition moving in after " .. name .. " reached the outbound contact point")
+    log(
+      string.format(
+        "FIREFIGHT opposition moving in after %s reached the outbound contact point; nearest enemy %.1f m, firing gate %d m, t=%.1f",
+        name,
+        nearest_enemy_distance(enemy),
+        config.firefight.fire_start_distance_m,
+        timer.getTime()
+      )
+    )
   end
 
   local function update_firefight()
@@ -433,10 +938,11 @@ local function setup()
       elseif not fight.enemy_group:IsAlive() then
         stop_firefight("enemy force eliminated while advancing")
       else
-        local enemy_position = fight.enemy_group:GetVec2()
-        local hvt_position = party:GetVec2()
-        local distance = math.sqrt((enemy_position.x - hvt_position.x) ^ 2 + (enemy_position.y - hvt_position.y) ^ 2)
+        -- A dispersed group leader can stay outside the gate even while another
+        -- surviving soldier closes in. Never count a dead/missing wrapper.
+        local distance = nearest_enemy_distance(fight.enemy_group)
         if distance <= config.firefight.fire_start_distance_m then
+          log(string.format("FIREFIGHT contact range %.1f m at t=%.1f", distance, timer.getTime()))
           start_firefight()
         end
       end
@@ -519,6 +1025,7 @@ local function setup()
     -- CTLD's separate 10-20 s removal was suppressed only during extraction.
     troops:Destroy(false)
     voice:boarding_complete(live)
+    spawn_cas_checkpoint("pickup_confirmed")
   end)
 
   ctld.OnAfterTroopsDeployed = safe("delivery", function(_, _, _, _, _, unit, troops)
@@ -542,13 +1049,15 @@ local function setup()
       return
     end
     report_failure()
-    if message and runtime.objective.phase ~= "failed" then
+    if message and not complete and runtime.objective.phase ~= "failed" then
       say(message)
     end
     if complete then
       -- No forced mission end: leave the prototype available for inspection.
       log("PASS delivered " .. troops:GetName())
-      voice:play("mission_success") -- Mission-wide success, heard by all Blue crews.
+      voice:play("mission_success", nil, nil, nil, function()
+        return runtime.objective.phase == "complete"
+      end, message) -- Delay Overlord's text and recording, not actual delivery.
     end
   end)
 
@@ -716,9 +1225,66 @@ local function setup()
     log("Green smoke requested by " .. transport_by_name[name].callsign .. (under_fire and " under fire" or ""))
   end
 
+  runtime.cas_test_menus = {}
+  local function update_cas_test_menus()
+    for name in pairs(config.cas.slots) do
+      local name = name -- Bind each callback to its own CAS group in Lua 5.1.
+      local group = GROUP:FindByName(name)
+      local available = config.cas.enable_pickup_test_menu and group and group:IsAlive()
+      local existing = runtime.cas_test_menus[name]
+      if existing and (not available or existing.group ~= group) then
+        existing.menu:Remove()
+        runtime.cas_test_menus[name] = nil
+      end
+      if available and not runtime.cas_test_menus[name] then
+        local menu = MENU_GROUP:New(group, config.title .. " - TEMP TEST")
+        runtime.cas_test_menus[name] = { group = group, menu = menu }
+        MENU_GROUP_COMMAND:New(
+          group,
+          "TEST: Simulate pickup complete (CAS stage only)",
+          menu,
+          safe("CAS test pickup", function()
+            if not config.cas.enable_pickup_test_menu or not radio_active() then
+              return
+            end
+            -- Only one human Blue pilot, in the invoking CAS group. Never enable a
+            -- late/disabled CAS branch or let this become an accidental MP cheat.
+            local ok, players = pcall(coalition.getPlayers, coalition.side.BLUE)
+            local count, matching = 0, false
+            if ok and type(players) == "table" then
+              for _, player in pairs(players) do
+                count = count + 1
+                matching = matching or configured_slot(player, config.cas.slots) == name
+              end
+            end
+            if count ~= 1 or not matching then
+              say("TEST denied: use this only with one human Blue pilot, in this CAS slot.")
+              return
+            end
+            if runtime.cas_checkpoint.state ~= "waiting_for_pickup" or runtime.objective.phase ~= "waiting" then
+              say(
+                "TEST unavailable: take off in an enabled CAS role first; do not use during boarding or after stage release."
+              )
+              return
+            end
+            say(
+              "TEST ONLY: simulating pickup completion for the CAS checkpoint stage. Actual extraction, carrier and mission success are unchanged."
+            )
+            log(string.format("TEST CAS pickup override by %s at t=%.1f", name, timer.getTime()))
+            spawn_cas_checkpoint("solo_test")
+          end)
+        )
+      end
+    end
+  end
+
   runtime.observer = TIMER:New(safe("observer", function()
     local objective = runtime.objective
+    update_cas_test_menus()
+    update_threat_reports()
+    update_hind_tasking() -- Observe both destruction reports before deciding whether the Hind still needs tasking.
     update_firefight()
+    spawn_cas_checkpoint() -- Also handles a first takeoff after a confirmed pickup.
     -- Independent menus and settling clocks; merely occupying a slot claims nothing.
     for _, spec in ipairs(transports) do
       local name = spec.name
@@ -906,7 +1472,9 @@ local function setup()
           runtime.hvt_under_fire_announced = name
           advance_firefight(name)
           log(string.format("HVT under fire trigger %s at %.2f NM from pickup", name, contact_distance_m / 1852))
-          voice:play("hvt_under_fire") -- Explicit Blue-wide radio call, not crew-only.
+          radio("hvt_under_fire", function()
+            return objective.phase == "waiting" and (not runtime.firefight or runtime.firefight.state == "approaching")
+          end) -- Explicit Blue-wide radio call, not crew-only.
           return
         end
         departure.previous_distance = distance
